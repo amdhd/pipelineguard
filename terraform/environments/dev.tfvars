@@ -8,7 +8,7 @@ log_retention_days     = 7
 app_port               = 3000
 ecs_cpu                = 256
 ecs_memory             = 512
-ecs_desired_count      = 1
+ecs_desired_count      = 3
 enable_manual_approval = false
 
 # Sensitive values — do NOT commit real secrets here.

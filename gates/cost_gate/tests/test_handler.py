@@ -128,3 +128,23 @@ def test_parse_diff_extracts_top_drivers():
     assert out["total_monthly_cost"] == 150.5
     assert out["top_resources"][0]["name"] == "aws_nat_gateway.main"
     assert len(out["top_resources"]) == 2  # zero-cost resource dropped
+
+
+def test_direct_invoke_passes_under_threshold(monkeypatch, _boto3_stub):
+    handler, _ = _boto3_stub
+    monkeypatch.setattr(
+        handler, "run_infracost", lambda **_: {"monthly_cost_delta": 5.0, "top_resources": []}
+    )
+    out = handler.lambda_handler({"plan_s3_bucket": "b", "plan_s3_key": "k"}, None)
+    assert out["gate_status"] == "passed"
+
+
+def test_direct_invoke_blocks_over_threshold(monkeypatch, _boto3_stub):
+    handler, _ = _boto3_stub
+    monkeypatch.setattr(
+        handler,
+        "run_infracost",
+        lambda **_: {"monthly_cost_delta": 99.0, "top_resources": [{"name": "nat", "monthly_cost": 90}]},
+    )
+    out = handler.lambda_handler({"plan_s3_bucket": "b", "plan_s3_key": "k"}, None)
+    assert out["gate_status"] == "failed"

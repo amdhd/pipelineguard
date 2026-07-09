@@ -112,6 +112,38 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = ["ssm:GetParameter", "ssm:GetParameters"]
         Resource = [aws_ssm_parameter.ecr_repo_url.arn]
+      },
+      {
+        # The tf-plan buildspec pulls the gate secrets into TF_VAR_* so the
+        # required sensitive variables resolve during `terraform plan`.
+        Sid      = "ReadGateSecret"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = ["arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:pipelineguard/gates/${var.environment}-*"]
+      },
+      {
+        # Terraform remote state (created out-of-band by scripts/bootstrap.sh).
+        Sid    = "TerraformStateBackend"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+        Resource = [
+          "arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}",
+          "arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/*"
+        ]
+      },
+      {
+        Sid      = "TerraformStateLock"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = ["arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/pipelineguard-tflock-${var.environment}"]
+      },
+      {
+        # `terraform plan -refresh=false` still evaluates data sources; the only
+        # AWS read it needs is the availability-zone lookup.
+        Sid      = "PlanDataSources"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeAvailabilityZones"]
+        Resource = ["*"]
       }
     ]
   })
@@ -287,7 +319,8 @@ resource "aws_codebuild_project" "cost_gate" {
     privileged_mode = false
     dynamic "environment_variable" {
       for_each = concat(local.common_env, [
-        { name = "COST_GATE_FUNCTION", value = var.cost_gate_name }
+        { name = "COST_GATE_FUNCTION", value = var.cost_gate_name },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket }
       ])
       content {
         name  = environment_variable.value.name

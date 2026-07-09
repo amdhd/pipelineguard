@@ -10,13 +10,13 @@ phases:
     commands:
       - echo "Uploading plan.json for the cost gate..."
       - PLAN_KEY="cost-gate/${CODEBUILD_RESOLVED_SOURCE_VERSION}/plan.json"
-      - aws s3 cp terraform/plan.json "s3://${ARTIFACT_BUCKET:-$CODEBUILD_SOURCE_REPO_URL}/$PLAN_KEY" || true
+      - aws s3 cp terraform/plan.json "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}"
       - echo "Invoking cost gate Lambda ${COST_GATE_FUNCTION}..."
       - |
         aws lambda invoke \
           --function-name "$COST_GATE_FUNCTION" \
           --cli-binary-format raw-in-base64-out \
-          --payload "$(printf '{"plan_s3_key":"%s"}' "$PLAN_KEY" | base64)" \
+          --payload "$(printf '{"plan_s3_bucket":"%s","plan_s3_key":"%s"}' "$ARTIFACT_BUCKET" "$PLAN_KEY" | base64)" \
           /tmp/cost_response.json
       - cat /tmp/cost_response.json
       - |

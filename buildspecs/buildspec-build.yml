@@ -20,14 +20,15 @@ phases:
       - echo "Building Docker image..."
       - cd app
       - docker build -t $ECR_REPO_URL:$IMAGE_TAG .
-      - docker tag $ECR_REPO_URL:$IMAGE_TAG $ECR_REPO_URL:latest
       - cd ..
 
   post_build:
     commands:
+      # Push only the immutable, SHA-tagged image. The repo is IMMUTABLE, so a
+      # second ':latest' push would be rejected; the deploy uses the SHA tag via
+      # imagedefinitions.json anyway, so ':latest' is unnecessary.
       - echo "Pushing to ECR..."
       - docker push $ECR_REPO_URL:$IMAGE_TAG
-      - docker push $ECR_REPO_URL:latest
       - printf '[{"name":"app","imageUri":"%s"}]' "$ECR_REPO_URL:$IMAGE_TAG" > imagedefinitions.json
       - echo "$IMAGE_TAG" > image_tag.txt
       - echo "Build complete. Image $ECR_REPO_URL:$IMAGE_TAG"

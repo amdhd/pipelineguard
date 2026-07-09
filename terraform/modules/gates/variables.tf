@@ -36,3 +36,9 @@ variable "log_retention" {
   type        = number
   default     = 7
 }
+
+variable "security_gate_image_tag" {
+  description = "Tag of the security gate container image in ECR (built by scripts/deploy-gates.sh)"
+  type        = string
+  default     = "latest"
+}

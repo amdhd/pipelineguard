@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
 #
-# Packages the Lambda layers (infracost, trivy, checkov + python deps) that the
-# gate functions depend on, then lets Terraform pick them up on the next apply.
+# Packages the gate build artifacts:
+#   1. Cost gate    -> infracost binary Lambda layer (small; fits a zip Lambda).
+#   2. Security gate -> container image (Trivy + Checkov exceed Lambda's 250 MB
+#      unzipped zip limit, so it runs as an image). See gates/security_gate/Dockerfile.
 #
-# Layers are built with Docker to match the Lambda python3.12 runtime.
+# The security gate ECR repo must already exist before this pushes the image, so
+# the first-time flow is two-phase (see docs/runbook.md):
+#   terraform apply -target=module.gates.aws_ecr_repository.security_gate
+#   ./scripts/deploy-gates.sh
+#   terraform apply -var-file=environments/dev.tfvars
 #
-# Usage: ./scripts/deploy-gates.sh
+# Usage: AWS_PROFILE=... ./scripts/deploy-gates.sh [environment] [region]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAYER_DIR="${ROOT}/gates/layers"
+ENVIRONMENT="${1:-dev}"
+REGION="${2:-ap-southeast-1}"
+IMAGE_TAG="${SECURITY_GATE_IMAGE_TAG:-latest}"
 mkdir -p "${LAYER_DIR}"
 
 INFRACOST_VERSION="${INFRACOST_VERSION:-v0.10.39}"
-TRIVY_VERSION="${TRIVY_VERSION:-0.53.0}"
 
+# --- Cost gate: infracost binary layer ---
 echo "==> Building infracost layer..."
 work="$(mktemp -d)"
 mkdir -p "${work}/layer"
@@ -26,28 +35,43 @@ chmod +x "${work}/layer/infracost"
 rm -rf "${work}"
 echo "    -> ${LAYER_DIR}/infracost_layer.zip"
 
-echo "==> Building trivy layer..."
-work="$(mktemp -d)"
-mkdir -p "${work}/layer"
-curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
-  | tar -xz -C "${work}"
-mv "${work}/trivy" "${work}/layer/trivy"
-chmod +x "${work}/layer/trivy"
-( cd "${work}/layer" && zip -qr "${LAYER_DIR}/trivy_layer.zip" . )
-rm -rf "${work}"
-echo "    -> ${LAYER_DIR}/trivy_layer.zip"
+# --- Security gate: container image (Trivy + Checkov) ---
+echo "==> Resolving security gate ECR repository..."
+ECR_URL="$(aws ecr describe-repositories \
+  --repository-names "pipelineguard-security-gate-${ENVIRONMENT}" \
+  --region "${REGION}" \
+  --query 'repositories[0].repositoryUri' --output text 2>/dev/null || true)"
 
-echo "==> Building checkov + python deps layer (Docker, python3.12)..."
-work="$(mktemp -d)"
-docker run --rm --entrypoint /bin/bash \
-  -v "${work}:/out" \
-  public.ecr.aws/lambda/python:3.12 -c "
-    pip install --no-cache-dir -t /out/python \
-      checkov anthropic requests >/dev/null &&
-    find /out/python -name '__pycache__' -type d -prune -exec rm -rf {} +
-  "
-( cd "${work}" && zip -qr "${LAYER_DIR}/checkov_layer.zip" python )
-rm -rf "${work}"
-echo "    -> ${LAYER_DIR}/checkov_layer.zip"
+if [ -z "${ECR_URL}" ] || [ "${ECR_URL}" = "None" ]; then
+  echo "ERROR: ECR repo pipelineguard-security-gate-${ENVIRONMENT} not found." >&2
+  echo "       Create it first, then re-run this script:" >&2
+  echo "       cd terraform && terraform apply -target=module.gates.aws_ecr_repository.security_gate" >&2
+  exit 1
+fi
+REGISTRY="${ECR_URL%%/*}"
+echo "    repo: ${ECR_URL}"
 
-echo "==> Layers built. Run: cd terraform && terraform apply -var-file=environments/dev.tfvars"
+echo "==> Logging in to ECR..."
+aws ecr get-login-password --region "${REGION}" \
+  | docker login --username AWS --password-stdin "${REGISTRY}"
+
+# Build for linux/amd64 to match the Lambda function architecture (important on
+# Apple Silicon, where docker would otherwise produce an arm64 image).
+#
+# --provenance=false is REQUIRED: without it, buildx emits an OCI image index
+# with an attestation manifest, and Lambda rejects it with "The image manifest,
+# config or layer media type ... is not supported." Disabling provenance yields
+# a plain Docker v2 schema-2 manifest that Lambda accepts.
+echo "==> Building + pushing security gate image (linux/amd64)..."
+# The docker-container driver reliably supports --push and --provenance=false
+# (the default 'docker' driver may not, depending on Docker Desktop settings).
+docker buildx inspect pg-builder >/dev/null 2>&1 \
+  || docker buildx create --name pg-builder --driver docker-container >/dev/null
+docker buildx build --builder pg-builder --platform linux/amd64 \
+  --provenance=false \
+  -t "${ECR_URL}:${IMAGE_TAG}" \
+  --push \
+  "${ROOT}/gates/security_gate"
+echo "    -> ${ECR_URL}:${IMAGE_TAG}"
+
+echo "==> Done. Now run: cd terraform && terraform apply -var-file=environments/dev.tfvars"

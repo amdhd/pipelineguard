@@ -13,6 +13,7 @@ terraform {
   }
 
   backend "s3" {
+    use_lockfile = true
     # Values provided via backend config file or env vars:
     #   terraform init -backend-config=backend.conf
     # backend.conf should contain: bucket, key, region, dynamodb_table, encrypt

@@ -1,0 +1,5 @@
+# Runtime deps baked into the security gate container image (see Dockerfile).
+# boto3 is provided by the Lambda base image, so it is intentionally omitted.
+anthropic>=0.39.0
+checkov>=3.2.0
+requests>=2.31.0

@@ -21,12 +21,6 @@ data "archive_file" "cost_gate" {
   output_path = "${path.module}/build/cost_gate.zip"
 }
 
-data "archive_file" "security_gate" {
-  type        = "zip"
-  source_dir  = "${path.root}/../gates/security_gate"
-  output_path = "${path.module}/build/security_gate.zip"
-}
-
 # --- Lambda layers (binaries built out-of-band by scripts/deploy-gates.sh) ---
 # The layer zips are expected under gates/layers/. See docs/runbook.md.
 resource "aws_lambda_layer_version" "infracost_binary" {
@@ -41,26 +35,34 @@ resource "aws_lambda_layer_version" "infracost_binary" {
   }
 }
 
-resource "aws_lambda_layer_version" "trivy_binary" {
-  layer_name          = "pipelineguard-trivy-${var.environment}"
-  filename            = "${path.root}/../gates/layers/trivy_layer.zip"
-  compatible_runtimes = ["python3.12"]
-  description         = "trivy CLI binary + vuln DB cache"
+# The security gate ships Trivy (~160 MB) + Checkov (~160 MB), which together
+# blow past Lambda's 250 MB unzipped zip limit, so it is packaged as a container
+# image instead. This ECR repo holds that image (built by scripts/deploy-gates.sh).
+resource "aws_ecr_repository" "security_gate" {
+  # Mutable so the "latest" gate image can be re-pushed on redeploys. (The app
+  # image repo, by contrast, is immutable + SHA-tagged per pipeline run.)
+  name                 = "pipelineguard-security-gate-${var.environment}"
+  image_tag_mutability = "MUTABLE"
 
-  lifecycle {
-    ignore_changes = [filename]
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
   }
 }
 
-resource "aws_lambda_layer_version" "checkov_packages" {
-  layer_name          = "pipelineguard-checkov-${var.environment}"
-  filename            = "${path.root}/../gates/layers/checkov_layer.zip"
-  compatible_runtimes = ["python3.12"]
-  description         = "checkov + python deps (anthropic, requests)"
-
-  lifecycle {
-    ignore_changes = [filename]
-  }
+resource "aws_ecr_lifecycle_policy" "security_gate" {
+  repository = aws_ecr_repository.security_gate.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 5 images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 5 }
+      action       = { type = "expire" }
+    }]
+  })
 }
 
 # --- Cost Gate Lambda ---
@@ -85,16 +87,14 @@ resource "aws_lambda_function" "cost_gate" {
   layers = [aws_lambda_layer_version.infracost_binary.arn]
 }
 
-# --- Security Gate Lambda ---
+# --- Security Gate Lambda (container image; Trivy + Checkov too large for zip) ---
 resource "aws_lambda_function" "security_gate" {
-  function_name    = "pipelineguard-security-gate-${var.environment}"
-  filename         = data.archive_file.security_gate.output_path
-  source_code_hash = data.archive_file.security_gate.output_base64sha256
-  handler          = "handler.lambda_handler"
-  runtime          = "python3.12"
-  timeout          = 600 # Trivy scan can be slow on large images
-  memory_size      = 512
-  role             = aws_iam_role.gate_lambda.arn
+  function_name = "pipelineguard-security-gate-${var.environment}"
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.security_gate.repository_url}:${var.security_gate_image_tag}"
+  timeout       = 600 # Trivy scan can be slow on large images
+  memory_size   = 512
+  role          = aws_iam_role.gate_lambda.arn
 
   ephemeral_storage {
     size = 2048 # Trivy needs temp space for its vuln DB
@@ -106,11 +106,6 @@ resource "aws_lambda_function" "security_gate" {
       ENVIRONMENT = var.environment
     }
   }
-
-  layers = [
-    aws_lambda_layer_version.trivy_binary.arn,
-    aws_lambda_layer_version.checkov_packages.arn
-  ]
 }
 
 # --- Log groups (explicit so retention is enforced) ---

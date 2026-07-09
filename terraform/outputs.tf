@@ -37,3 +37,8 @@ output "security_gate_function" {
   description = "Security gate Lambda function name"
   value       = module.gates.security_gate_name
 }
+
+output "security_gate_ecr_url" {
+  description = "ECR repository URL for the security gate container image"
+  value       = module.gates.security_gate_ecr_url
+}

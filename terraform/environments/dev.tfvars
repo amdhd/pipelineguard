@@ -1,7 +1,7 @@
 aws_region             = "ap-southeast-1"
 environment            = "dev"
 owner_tag              = "amad"
-github_repo            = "amad/pipelineguard"
+github_repo            = "amdhd/pipelineguard"
 github_branch          = "main"
 cost_gate_threshold    = 50
 log_retention_days     = 7

@@ -18,6 +18,11 @@ output "security_gate_name" {
   value       = aws_lambda_function.security_gate.function_name
 }
 
+output "security_gate_ecr_url" {
+  description = "ECR repository URL for the security gate container image"
+  value       = aws_ecr_repository.security_gate.repository_url
+}
+
 output "secrets_arn" {
   description = "Gate secrets ARN in Secrets Manager"
   value       = aws_secretsmanager_secret.gate_secrets.arn

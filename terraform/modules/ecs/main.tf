@@ -136,7 +136,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "ecs_tasks" {
   name        = "pipelineguard-ecs-${var.environment}"
-  description = "ECS tasks — only reachable from the ALB"
+  description = "ECS tasks - only reachable from the ALB"
   vpc_id      = var.vpc_id
 
   ingress {

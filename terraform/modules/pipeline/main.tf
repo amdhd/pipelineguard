@@ -354,7 +354,8 @@ resource "aws_codebuild_project" "security_gate" {
     privileged_mode = false
     dynamic "environment_variable" {
       for_each = concat(local.common_env, [
-        { name = "SECURITY_GATE_FUNCTION", value = var.security_gate_name }
+        { name = "SECURITY_GATE_FUNCTION", value = var.security_gate_name },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket }
       ])
       content {
         name  = environment_variable.value.name

@@ -17,7 +17,7 @@ def _stubs(monkeypatch):
     """Stub boto3 + the anthropic SDK so no network/AWS calls happen."""
     import boto3
 
-    clients = {"codepipeline": MagicMock(), "secretsmanager": MagicMock()}
+    clients = {"codepipeline": MagicMock(), "secretsmanager": MagicMock(), "s3": MagicMock()}
     monkeypatch.setattr(boto3, "client", lambda name, *a, **k: clients[name])
 
     # Provide a fake `anthropic` module before handler imports claude_summariser.
@@ -90,6 +90,27 @@ def test_error_fails_the_job(monkeypatch, _stubs):
     handler.lambda_handler(_event({"ecr_image_uri": "repo:tag"}), None)
 
     clients["codepipeline"].put_job_failure_result.assert_called_once()
+
+
+def test_direct_invoke_blocks_on_checkov(monkeypatch, _stubs):
+    handler, _ = _stubs
+    monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "run_checkov", lambda *_: {"HIGH": 3, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "summarise_findings", lambda **_: "checkov found issues")
+
+    out = handler.lambda_handler({"ecr_image_uri": "repo:tag"}, None)
+    assert out["gate_status"] == "failed"
+    assert out["high"] == 3
+
+
+def test_direct_invoke_passes_clean(monkeypatch, _stubs):
+    handler, _ = _stubs
+    monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "run_checkov", lambda *_: {"HIGH": 0, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "summarise_findings", lambda **_: "clean")
+
+    out = handler.lambda_handler({"ecr_image_uri": "repo:tag"}, None)
+    assert out["gate_status"] == "passed"
 
 
 def test_summarise_trivy_counts_severities():

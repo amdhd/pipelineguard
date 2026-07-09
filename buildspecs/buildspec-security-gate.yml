@@ -7,6 +7,10 @@ phases:
       - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - ECR_IMAGE_URI="${ECR_REPO_URL}:${COMMIT_HASH}"
       - PR_NUMBER=$(cat pr_number.txt 2>/dev/null || echo "")
+      # The Lambda has no source checkout, so ship the Terraform to S3 for Checkov.
+      - TF_KEY="security-gate/${CODEBUILD_RESOLVED_SOURCE_VERSION}/terraform.zip"
+      - (cd terraform && zip -qr /tmp/terraform.zip . -x '.terraform/*' 'plan.tfplan' 'plan.json' 'backend.conf')
+      - aws s3 cp /tmp/terraform.zip "s3://${ARTIFACT_BUCKET}/${TF_KEY}"
 
   build:
     commands:
@@ -15,8 +19,7 @@ phases:
         aws lambda invoke \
           --function-name "$SECURITY_GATE_FUNCTION" \
           --cli-binary-format raw-in-base64-out \
-          --payload "$(printf '{"ecr_image_uri":"%s","pr_number":"%s","github_repo":"%s"}' \
-            "$ECR_IMAGE_URI" "$PR_NUMBER" "$GITHUB_REPO" | base64)" \
+          --payload "$(printf '{"ecr_image_uri":"%s","terraform_s3_bucket":"%s","terraform_s3_key":"%s","pr_number":"%s","github_repo":"%s"}' "$ECR_IMAGE_URI" "$ARTIFACT_BUCKET" "$TF_KEY" "$PR_NUMBER" "$GITHUB_REPO")" \
           /tmp/gate_response.json
       - cat /tmp/gate_response.json
       - |

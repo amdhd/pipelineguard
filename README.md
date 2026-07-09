@@ -18,7 +18,13 @@ halt the pipeline before a costly or vulnerable change ever reaches production:
 > Portfolio project demonstrating **DevOps · DevSecOps · FinOps** in one repo — platform-level
 > guardrails a whole team can rely on, not just "an app I deployed."
 
-**Status:** deployed and serving traffic on ECS Fargate behind an ALB · dev · `ap-southeast-1`.
+**Status:** runs in a dev environment (`ap-southeast-1`), brought up on demand and torn down between demos — see [Deploy it](#deploy-it).
+
+![PipelineGuard — overview: the pipeline blocks deploys that are too expensive or too insecure](docs/images/pipelineguard-brief.png)
+
+![Three disciplines in one — the DevOps, DevSecOps, and FinOps responsibilities this project demonstrates](docs/images/2image.png)
+
+![Mapping the AWS SAA-C03 Well-Architected pillars to what the project implements](docs/images/3image.png)
 
 ---
 
@@ -124,6 +130,22 @@ docker buildx build --platform linux/amd64 --provenance=false -t "$ECR:latest" -
 Full walkthrough — remote state, the GitHub connection, troubleshooting — is in
 [`docs/runbook.md`](docs/runbook.md).
 
+## Running the gates (operational notes)
+
+- **How the gates are invoked.** The `CostGate` and `SecurityGate` stages are CodeBuild steps that
+  invoke the gate Lambdas and read a `gate_status` from the response (the handlers are dual-mode and
+  also support a native CodePipeline action). A failing status makes the stage exit non-zero, which
+  stops the pipeline before Deploy. The security gate's Lambda has no source checkout, so the build
+  ships the Terraform to S3 for Checkov to scan.
+- **CI secrets & backend.** `backend.conf` and `dev.auto.tfvars` are git-ignored, so the build
+  regenerates `backend.conf` from the account/region and pulls the Infracost / Anthropic / Slack
+  values from Secrets Manager into `TF_VAR_*` at plan time — nothing sensitive is committed.
+- **The security gate is strict by design.** Checkov flags every HIGH/CRITICAL misconfiguration in
+  the Terraform, so out of the box the gate **blocks** — the sample infra has open security groups,
+  unencrypted buckets, and the like. To let a clean change reach Deploy, either fix/baseline those
+  findings (a `.checkov.yaml` skip list) or run the gate in warn-only mode. The strictness is the
+  point: it proves the gate actually stops a bad change.
+
 ## Quick start (local, no AWS)
 
 ```bash
@@ -142,6 +164,9 @@ pytest gates/cost_gate/tests gates/security_gate/tests
 
 The choices that took real thought — and double as interview talking points:
 
+- **The cost gate measures the *delta*, not the total.** It runs `infracost diff` on the plan (not
+  `infracost breakdown`, which never emits a delta field), so it thresholds on the monthly cost
+  *increase* a change introduces — the whole point of a cost gate.
 - **Security gate is a container-image Lambda, not zip + layers.** Trivy (~160 MB) + Checkov
   (~160 MB) together exceed Lambda's **250 MB unzipped** package limit, so that function is packaged
   as a Docker image (10 GB ceiling). Its image is built with `--provenance=false` — plain `buildx`
@@ -170,9 +195,9 @@ run `./scripts/destroy-dev.sh` when you're done and it costs ~$0 parked.
 ## Setting the cost threshold
 
 `cost_gate_threshold` (USD/month) lives in `terraform/environments/dev.tfvars` (default **$50**).
-When a `terraform plan` projects a monthly increase above it, the cost gate calls
-`PutJobFailureResult`, posts to Slack, and the pipeline stops. Raise the threshold and re-apply if
-an increase is intentional.
+When a `terraform plan` projects a monthly increase above it, the cost gate returns a failing
+`gate_status`, posts to Slack, and the CodeBuild stage exits non-zero so the pipeline stops. Raise
+the threshold and re-apply if an increase is intentional.
 
 ## Non-negotiables (enforced in this repo)
 

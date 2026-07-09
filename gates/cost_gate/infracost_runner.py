@@ -1,7 +1,12 @@
 """
 Thin wrapper around the Infracost CLI (shipped via a Lambda layer at
-/opt/infracost). Runs `infracost breakdown` against a Terraform plan JSON and
-returns a normalised summary: total monthly delta plus the biggest cost drivers.
+/opt/infracost). Runs `infracost diff` against a Terraform plan JSON and
+returns a normalised summary: the monthly cost delta of the change plus the
+biggest cost drivers.
+
+`diff` (not `breakdown`) is required: only `diff` populates diffTotalMonthlyCost,
+which is the delta the cost gate thresholds on. `breakdown` reports the absolute
+projected cost with no delta field, so the gate could never see an increase.
 """
 
 import json
@@ -28,7 +33,7 @@ def run_infracost(plan_path: str, api_key: str) -> dict[str, Any]:
 
     cmd = [
         INFRACOST_BIN,
-        "breakdown",
+        "diff",
         "--path",
         plan_path,
         "--format",
@@ -46,24 +51,32 @@ def run_infracost(plan_path: str, api_key: str) -> dict[str, Any]:
     if proc.returncode != 0:
         raise RuntimeError(f"infracost failed (exit {proc.returncode}): {proc.stderr}")
 
-    return _parse_breakdown(json.loads(proc.stdout))
+    return _parse_diff(json.loads(proc.stdout))
 
 
-def _parse_breakdown(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalise the raw Infracost breakdown JSON into the summary we care about."""
+def _parse_diff(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalise the raw Infracost `diff` JSON into the summary we care about.
+
+    `infracost diff` reports the plan's cost delta via diffTotalMonthlyCost and,
+    per project, a `diff` block listing only the changed resources whose
+    monthlyCost is that resource's contribution to the delta.
+    """
     total_monthly = float(data.get("totalMonthlyCost") or 0.0)
     diff_monthly = float(data.get("diffTotalMonthlyCost") or 0.0)
 
-    # Collect per-resource monthly costs across all projects to find top drivers.
+    # Collect the changed resources across all projects to find the top drivers
+    # of the delta. Fall back to the full breakdown if a diff block is absent.
     resources: list[dict[str, Any]] = []
     for project in data.get("projects", []):
-        breakdown = project.get("breakdown") or {}
-        for res in breakdown.get("resources", []):
+        changed = (project.get("diff") or {}).get("resources")
+        if changed is None:
+            changed = (project.get("breakdown") or {}).get("resources", [])
+        for res in changed:
             cost = float(res.get("monthlyCost") or 0.0)
-            if cost > 0:
+            if cost != 0:
                 resources.append({"name": res.get("name"), "monthly_cost": round(cost, 2)})
 
-    resources.sort(key=lambda r: r["monthly_cost"], reverse=True)
+    resources.sort(key=lambda r: abs(r["monthly_cost"]), reverse=True)
 
     return {
         "monthly_cost_delta": round(diff_monthly, 2),

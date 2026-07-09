@@ -105,15 +105,15 @@ def test_error_fails_the_job(monkeypatch, _boto3_stub):
     clients["codepipeline"].put_job_failure_result.assert_called_once()
 
 
-def test_parse_breakdown_extracts_top_drivers():
-    from infracost_runner import _parse_breakdown
+def test_parse_diff_extracts_top_drivers():
+    from infracost_runner import _parse_diff
 
     raw = {
         "totalMonthlyCost": "150.5",
         "diffTotalMonthlyCost": "60.0",
         "projects": [
             {
-                "breakdown": {
+                "diff": {
                     "resources": [
                         {"name": "aws_nat_gateway.main", "monthlyCost": "32.4"},
                         {"name": "aws_lb.app", "monthlyCost": "18.0"},
@@ -123,7 +123,7 @@ def test_parse_breakdown_extracts_top_drivers():
             }
         ],
     }
-    out = _parse_breakdown(raw)
+    out = _parse_diff(raw)
     assert out["monthly_cost_delta"] == 60.0
     assert out["total_monthly_cost"] == 150.5
     assert out["top_resources"][0]["name"] == "aws_nat_gateway.main"

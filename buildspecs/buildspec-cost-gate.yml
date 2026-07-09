@@ -16,7 +16,7 @@ phases:
         aws lambda invoke \
           --function-name "$COST_GATE_FUNCTION" \
           --cli-binary-format raw-in-base64-out \
-          --payload "$(printf '{"plan_s3_bucket":"%s","plan_s3_key":"%s"}' "$ARTIFACT_BUCKET" "$PLAN_KEY" | base64)" \
+          --payload "$(printf '{"plan_s3_bucket":"%s","plan_s3_key":"%s"}' "$ARTIFACT_BUCKET" "$PLAN_KEY")" \
           /tmp/cost_response.json
       - cat /tmp/cost_response.json
       - |

@@ -1,0 +1,28 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Installing Terraform..."
+      - curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o tf.zip
+      - unzip -o tf.zip && mv terraform /usr/local/bin/
+      - terraform version
+
+  build:
+    commands:
+      - cd terraform
+      - terraform init -backend-config=backend.conf -reconfigure
+      - terraform validate
+      - terraform plan -var-file=environments/${ENVIRONMENT}.tfvars -out=plan.tfplan -no-color
+      - terraform show -json plan.tfplan > plan.json
+      - echo "Plan complete"
+
+artifacts:
+  files:
+    - terraform/plan.json
+    - terraform/plan.tfplan
+    - terraform/**/*
+    - gates/**/*
+    - buildspecs/**/*
+    - imagedefinitions.json
+    - image_tag.txt

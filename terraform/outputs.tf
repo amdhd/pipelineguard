@@ -1,0 +1,39 @@
+output "alb_dns_name" {
+  description = "Public DNS name of the application load balancer"
+  value       = module.ecs.alb_dns_name
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for the app image"
+  value       = module.ecr.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = module.ecs.cluster_name
+}
+
+output "pipeline_name" {
+  description = "CodePipeline name"
+  value       = module.pipeline.pipeline_name
+}
+
+output "artifact_bucket" {
+  description = "Pipeline artifact S3 bucket"
+  value       = module.pipeline.artifact_bucket_name
+}
+
+output "github_connection_arn" {
+  description = "CodeStar GitHub connection ARN — must be authorised once in the console"
+  value       = module.pipeline.github_connection_arn
+}
+
+output "cost_gate_function" {
+  description = "Cost gate Lambda function name"
+  value       = module.gates.cost_gate_name
+}
+
+output "security_gate_function" {
+  description = "Security gate Lambda function name"
+  value       = module.gates.security_gate_name
+}

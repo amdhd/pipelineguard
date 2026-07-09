@@ -1,0 +1,11 @@
+# Runtime deps for the security gate Lambda.
+# These are packaged into the checkov layer (see scripts/deploy-gates.sh), not
+# the function zip, because they are large.
+anthropic>=0.39.0
+checkov>=3.2.0
+
+# boto3 is provided by the Lambda runtime — pinned for local dev only.
+boto3>=1.34.0
+
+# Test-only:
+pytest>=8.0.0

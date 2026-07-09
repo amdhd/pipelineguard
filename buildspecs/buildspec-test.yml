@@ -1,0 +1,22 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - echo "Installing app dependencies..."
+      - cd app
+      - npm ci
+
+  build:
+    commands:
+      - echo "Running app tests..."
+      - npm test
+      - echo "Type-checking..."
+      - npm run build
+
+artifacts:
+  files:
+    - '**/*'
+  base-directory: .

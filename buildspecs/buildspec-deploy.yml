@@ -1,0 +1,26 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Installing Terraform..."
+      - curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o tf.zip
+      - unzip -o tf.zip && mv terraform /usr/local/bin/
+
+  build:
+    commands:
+      - echo "Applying Terraform..."
+      - cd terraform
+      - terraform init -backend-config=backend.conf -reconfigure
+      - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -auto-approve
+      - cd ..
+
+  post_build:
+    commands:
+      - echo "Forcing ECS rolling deploy with the new image..."
+      - IMAGE_TAG=$(cat image_tag.txt 2>/dev/null || echo latest)
+      - echo "Deploying image tag $IMAGE_TAG"
+      - aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force-new-deployment
+      - echo "Waiting for service to stabilise (circuit breaker will roll back on failure)..."
+      - aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+      - echo "Deploy complete."

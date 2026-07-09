@@ -1,0 +1,28 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo "Preparing security gate invocation..."
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - ECR_IMAGE_URI="${ECR_REPO_URL}:${COMMIT_HASH}"
+      - PR_NUMBER=$(cat pr_number.txt 2>/dev/null || echo "")
+
+  build:
+    commands:
+      - echo "Invoking security gate Lambda ${SECURITY_GATE_FUNCTION}..."
+      - |
+        aws lambda invoke \
+          --function-name "$SECURITY_GATE_FUNCTION" \
+          --cli-binary-format raw-in-base64-out \
+          --payload "$(printf '{"ecr_image_uri":"%s","pr_number":"%s","github_repo":"%s"}' \
+            "$ECR_IMAGE_URI" "$PR_NUMBER" "$GITHUB_REPO" | base64)" \
+          /tmp/gate_response.json
+      - cat /tmp/gate_response.json
+      - |
+        STATUS=$(python3 -c "import sys,json; d=json.load(open('/tmp/gate_response.json')); print(d.get('gate_status','failed'))" 2>/dev/null || echo failed)
+        if [ "$STATUS" != "passed" ]; then
+          echo "Security gate FAILED (status=$STATUS)"
+          exit 1
+        fi
+        echo "Security gate PASSED"

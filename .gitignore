@@ -1,0 +1,40 @@
+# Node
+node_modules/
+dist/
+coverage/
+*.log
+npm-debug.log*
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.json
+crash.log
+backend.conf
+*.auto.tfvars
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Lambda packaging
+gates/**/build/
+*.zip
+
+# Secrets / local
+.env
+.env.*
+secrets.json
+*.pem
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

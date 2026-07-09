@@ -4,11 +4,13 @@ phases:
   pre_build:
     commands:
       - echo "Preparing security gate invocation..."
-      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
-      - ECR_IMAGE_URI="${ECR_REPO_URL}:${COMMIT_HASH}"
+      # CODEBUILD_RESOLVED_SOURCE_VERSION is empty here (input is the build_output
+      # artifact, not the Git source), so read the tag the build stage recorded.
+      - IMAGE_TAG=$(cat image_tag.txt 2>/dev/null || echo latest)
+      - ECR_IMAGE_URI="${ECR_REPO_URL}:${IMAGE_TAG}"
       - PR_NUMBER=$(cat pr_number.txt 2>/dev/null || echo "")
       # The Lambda has no source checkout, so ship the Terraform to S3 for Checkov.
-      - TF_KEY="security-gate/${CODEBUILD_RESOLVED_SOURCE_VERSION}/terraform.zip"
+      - TF_KEY="security-gate/${IMAGE_TAG}/terraform.zip"
       - (cd terraform && zip -qr /tmp/terraform.zip . -x '.terraform/*' 'plan.tfplan' 'plan.json' 'backend.conf')
       - aws s3 cp /tmp/terraform.zip "s3://${ARTIFACT_BUCKET}/${TF_KEY}"
 

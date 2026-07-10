@@ -190,6 +190,28 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = ["ec2:DescribeAvailabilityZones"]
         Resource = ["*"]
+      },
+      {
+        # Deploy stage: `terraform apply -refresh=false` rolls the ECS service to
+        # the new image — register a task-def revision and update the service.
+        Sid    = "EcsDeploy"
+        Effect = "Allow"
+        Action = [
+          "ecs:RegisterTaskDefinition",
+          "ecs:DeregisterTaskDefinition",
+          "ecs:DescribeTaskDefinition",
+          "ecs:UpdateService",
+          "ecs:DescribeServices",
+          "ecs:TagResource"
+        ]
+        Resource = ["*"] # Register/DescribeTaskDefinition do not support resource scoping
+      },
+      {
+        # RegisterTaskDefinition passes the ECS execution + task roles.
+        Sid      = "PassEcsRoles"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/pipelineguard-ecs-*-${var.environment}"]
       }
     ]
   })

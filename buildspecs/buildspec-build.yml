@@ -31,12 +31,17 @@ phases:
       - docker push $ECR_REPO_URL:$IMAGE_TAG
       - printf '[{"name":"app","imageUri":"%s"}]' "$ECR_REPO_URL:$IMAGE_TAG" > imagedefinitions.json
       - echo "$IMAGE_TAG" > image_tag.txt
+      # Record the full commit SHA so the security gate can map it back to its PR
+      # (CODEBUILD_RESOLVED_SOURCE_VERSION is empty in the gate stage — its input
+      # is this build_output artifact, not the Git source).
+      - echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" > commit_sha.txt
       - echo "Build complete. Image $ECR_REPO_URL:$IMAGE_TAG"
 
 artifacts:
   files:
     - imagedefinitions.json
     - image_tag.txt
+    - commit_sha.txt
     - terraform/**/*
     - gates/**/*
     - buildspecs/**/*

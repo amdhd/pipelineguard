@@ -13,6 +13,44 @@ logger = logging.getLogger()
 GITHUB_API = "https://api.github.com"
 
 
+def resolve_pr_number(
+    repo: str | None,
+    commit_sha: str | None,
+    github_token: str | None,
+) -> str | None:
+    """
+    Map a commit to the PR that introduced it, or return None.
+
+    The pipeline runs post-merge on the tracked branch, so the event carries no
+    PR number. GitHub's "list PRs associated with a commit" endpoint maps the
+    merge commit back to the originating PR. Failures return None (the report
+    still posts to Slack); the gate decision never depends on this.
+    """
+    if not (repo and commit_sha):
+        return None
+
+    url = f"{GITHUB_API}/repos/{repo}/commits/{commit_sha}/pulls"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "pipelineguard-security-gate",
+    }
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            prs = json.loads(resp.read().decode())
+    except Exception as e:  # noqa: BLE001 — PR lookup must never fail the gate
+        logger.warning("PR lookup failed for %s@%s: %s", repo, commit_sha, e)
+        return None
+
+    if not prs:
+        logger.info("No PR associated with commit %s", commit_sha)
+        return None
+    return str(prs[0].get("number"))
+
+
 def post_pr_comment(
     repo: str,
     pr_number: str | int,

@@ -16,3 +16,4 @@ enable_manual_approval = false
 #   slack_webhook_url = "https://hooks.slack.com/services/..."
 #   infracost_api_key = "ico-..."
 #   anthropic_api_key = "sk-ant-..."
+#   github_token      = "ghp_..."   # optional; enables the security gate PR comment

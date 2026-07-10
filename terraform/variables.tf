@@ -57,10 +57,23 @@ variable "anthropic_api_key" {
   sensitive   = true
 }
 
+variable "github_token" {
+  description = "GitHub token for the security gate to post PR comments (optional; the comment is skipped when empty)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "app_port" {
   description = "Port the container listens on"
   type        = number
   default     = 3000
+}
+
+variable "app_image_tag" {
+  description = "App image tag to deploy (the pipeline passes the Git SHA; 'latest' for the initial manual bootstrap apply)"
+  type        = string
+  default     = "latest"
 }
 
 variable "ecs_cpu" {

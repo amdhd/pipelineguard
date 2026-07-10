@@ -9,6 +9,8 @@ phases:
       - IMAGE_TAG=$(cat image_tag.txt 2>/dev/null || echo latest)
       - ECR_IMAGE_URI="${ECR_REPO_URL}:${IMAGE_TAG}"
       - PR_NUMBER=$(cat pr_number.txt 2>/dev/null || echo "")
+      # No PR number on a post-merge run; the gate resolves it from the commit SHA.
+      - COMMIT_SHA=$(cat commit_sha.txt 2>/dev/null || echo "")
       # The Lambda has no source checkout, so ship the Terraform to S3 for Checkov.
       - TF_KEY="security-gate/${IMAGE_TAG}/terraform.zip"
       - (cd terraform && zip -qr /tmp/terraform.zip . -x '.terraform/*' 'plan.tfplan' 'plan.json' 'backend.conf')
@@ -21,7 +23,7 @@ phases:
         aws lambda invoke \
           --function-name "$SECURITY_GATE_FUNCTION" \
           --cli-binary-format raw-in-base64-out \
-          --payload "$(printf '{"ecr_image_uri":"%s","terraform_s3_bucket":"%s","terraform_s3_key":"%s","pr_number":"%s","github_repo":"%s"}' "$ECR_IMAGE_URI" "$ARTIFACT_BUCKET" "$TF_KEY" "$PR_NUMBER" "$GITHUB_REPO")" \
+          --payload "$(printf '{"ecr_image_uri":"%s","terraform_s3_bucket":"%s","terraform_s3_key":"%s","pr_number":"%s","github_repo":"%s","commit_sha":"%s"}' "$ECR_IMAGE_URI" "$ARTIFACT_BUCKET" "$TF_KEY" "$PR_NUMBER" "$GITHUB_REPO" "$COMMIT_SHA")" \
           /tmp/gate_response.json
       - cat /tmp/gate_response.json
       - |

@@ -11,6 +11,7 @@ resource "aws_secretsmanager_secret_version" "gate_secrets" {
     INFRACOST_API_KEY = var.infracost_api_key
     ANTHROPIC_API_KEY = var.anthropic_api_key
     SLACK_WEBHOOK_URL = var.slack_webhook_url
+    GITHUB_TOKEN      = var.github_token
   })
 }
 

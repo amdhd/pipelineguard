@@ -24,7 +24,7 @@ import boto3
 
 from checkov_runner import run_checkov
 from claude_summariser import summarise_findings
-from github_commenter import post_pr_comment
+from github_commenter import post_pr_comment, resolve_pr_number
 from trivy_runner import run_trivy
 
 logger = logging.getLogger()
@@ -64,6 +64,7 @@ def _evaluate(
     secrets: dict,
     pr_number: str | None,
     github_repo: str | None,
+    commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Run both scans, summarise, notify, and decide. Fail-closed on scanner error."""
     logger.info("Running Trivy scan on %s", image_uri)
@@ -82,6 +83,11 @@ def _evaluate(
         checkov_results=checkov_results,
         anthropic_api_key=secrets["ANTHROPIC_API_KEY"],
     )
+
+    # Post-merge pipeline runs carry no PR number in the event; recover it from
+    # the merge commit so the report still lands on the PR that shipped the change.
+    if not pr_number and commit_sha and github_repo:
+        pr_number = resolve_pr_number(github_repo, commit_sha, secrets.get("GITHUB_TOKEN"))
 
     if pr_number and github_repo:
         post_pr_comment(
@@ -108,7 +114,12 @@ def _handle_direct(event: dict) -> dict:
             _download_terraform(tf_bucket, tf_key, terraform_dir)
 
         summary = _evaluate(
-            image_uri, terraform_dir, secrets, event.get("pr_number"), event.get("github_repo")
+            image_uri,
+            terraform_dir,
+            secrets,
+            event.get("pr_number"),
+            event.get("github_repo"),
+            event.get("commit_sha"),
         )
         return {
             "gate_status": "failed" if summary["blocked"] else "passed",
@@ -135,6 +146,7 @@ def _handle_pipeline_job(event: dict) -> None:
             secrets,
             user_params.get("pr_number"),
             user_params.get("github_repo"),
+            user_params.get("commit_sha"),
         )
         if summary["blocked"]:
             codepipeline.put_job_failure_result(

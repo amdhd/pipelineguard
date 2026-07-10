@@ -26,6 +26,13 @@ variable "anthropic_api_key" {
   sensitive   = true
 }
 
+variable "github_token" {
+  description = "GitHub token used by the security gate to post PR comments (optional; the comment is skipped when empty)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "artifact_bucket_arn" {
   description = "Pipeline artifact bucket ARN (gates read plan/terraform artifacts)"
   type        = string

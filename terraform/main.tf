@@ -15,6 +15,7 @@ module "ecs" {
   private_subnets = module.networking.private_subnet_ids
   public_subnets  = module.networking.public_subnet_ids
   ecr_repo_url    = module.ecr.repository_url
+  app_image_tag   = var.app_image_tag
   app_port        = var.app_port
   cpu             = var.ecs_cpu
   memory          = var.ecs_memory
@@ -49,6 +50,7 @@ module "gates" {
   slack_webhook_url   = var.slack_webhook_url
   infracost_api_key   = var.infracost_api_key
   anthropic_api_key   = var.anthropic_api_key
+  github_token        = var.github_token
   artifact_bucket_arn = module.pipeline.artifact_bucket_arn
   log_retention       = var.log_retention_days
 }

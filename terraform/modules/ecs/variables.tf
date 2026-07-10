@@ -23,6 +23,12 @@ variable "ecr_repo_url" {
   type        = string
 }
 
+variable "app_image_tag" {
+  description = "App image tag to deploy (Git SHA in the pipeline; 'latest' for the initial manual bootstrap apply)"
+  type        = string
+  default     = "latest"
+}
+
 variable "app_port" {
   description = "Container port"
   type        = number

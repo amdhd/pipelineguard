@@ -27,16 +27,17 @@ phases:
       - export TF_VAR_infracost_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['INFRACOST_API_KEY'])")
       - export TF_VAR_anthropic_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['ANTHROPIC_API_KEY'])")
       - export TF_VAR_slack_webhook_url=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['SLACK_WEBHOOK_URL'])")
+      # Deploy the exact image this pipeline run built (the immutable Git-SHA tag),
+      # not a floating ':latest'. Applying the new tag updates the task definition,
+      # which rolls the ECS service automatically — no separate force-new-deployment.
+      - IMAGE_TAG=$(cat ../image_tag.txt 2>/dev/null || cat image_tag.txt 2>/dev/null || echo latest)
+      - echo "Deploying image tag $IMAGE_TAG"
       - terraform init -backend-config=backend.conf -reconfigure
-      - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -auto-approve
+      - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -var="app_image_tag=${IMAGE_TAG}" -auto-approve
       - cd ..
 
   post_build:
     commands:
-      - echo "Forcing ECS rolling deploy with the new image..."
-      - IMAGE_TAG=$(cat image_tag.txt 2>/dev/null || echo latest)
-      - echo "Deploying image tag $IMAGE_TAG"
-      - aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force-new-deployment
       - echo "Waiting for service to stabilise (circuit breaker will roll back on failure)..."
       - aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
       - echo "Deploy complete."

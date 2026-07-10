@@ -63,6 +63,12 @@ variable "app_port" {
   default     = 3000
 }
 
+variable "app_image_tag" {
+  description = "App image tag to deploy (the pipeline passes the Git SHA; 'latest' for the initial manual bootstrap apply)"
+  type        = string
+  default     = "latest"
+}
+
 variable "ecs_cpu" {
   description = "Fargate task CPU units"
   type        = number

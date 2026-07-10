@@ -15,6 +15,7 @@ module "ecs" {
   private_subnets = module.networking.private_subnet_ids
   public_subnets  = module.networking.public_subnet_ids
   ecr_repo_url    = module.ecr.repository_url
+  app_image_tag   = var.app_image_tag
   app_port        = var.app_port
   cpu             = var.ecs_cpu
   memory          = var.ecs_memory

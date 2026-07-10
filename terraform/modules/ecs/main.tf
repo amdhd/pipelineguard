@@ -20,7 +20,7 @@ resource "aws_ecs_task_definition" "app" {
 
   container_definitions = jsonencode([{
     name         = "app"
-    image        = "${var.ecr_repo_url}:latest"
+    image        = "${var.ecr_repo_url}:${var.app_image_tag}"
     essential    = true
     portMappings = [{ containerPort = var.app_port, protocol = "tcp" }]
     environment = [
@@ -70,10 +70,6 @@ resource "aws_ecs_service" "app" {
   }
 
   depends_on = [aws_lb_listener.http]
-
-  lifecycle {
-    ignore_changes = [task_definition] # deployments manage the task definition
-  }
 }
 
 # --- ALB ---

@@ -79,9 +79,15 @@ resource "aws_lb" "app" {
   load_balancer_type = "application"
   subnets            = var.public_subnets
   security_groups    = [aws_security_group.alb.id]
+  # checkov:skip=CKV_AWS_150:Deletion protection off by design — dev stack is torn down between demos.
+  # checkov:skip=CKV_AWS_91:Access logging omitted for a cost-conscious demo (needs a dedicated log bucket).
+  # checkov:skip=CKV2_AWS_28:No WAF — demo app on a plain public ALB, no custom domain.
+  # checkov:skip=CKV2_AWS_20:No HTTP->HTTPS redirect — HTTP-only demo (no ACM cert/custom domain).
+  drop_invalid_header_fields = true # CKV_AWS_131
 }
 
 resource "aws_lb_target_group" "app" {
+  # checkov:skip=CKV_AWS_378:HTTP target protocol — internal ALB->task hop on a demo app, no TLS termination in-cluster.
   name        = "pipelineguard-tg-${var.environment}"
   port        = var.app_port
   protocol    = "HTTP"
@@ -97,6 +103,8 @@ resource "aws_lb_target_group" "app" {
 }
 
 resource "aws_lb_listener" "http" {
+  # checkov:skip=CKV_AWS_2:HTTP listener — demo has no ACM cert/custom domain for HTTPS.
+  # checkov:skip=CKV_AWS_103:TLS 1.2 N/A without an HTTPS listener (see above).
   load_balancer_arn = aws_lb.app.arn
   port              = 80
   protocol          = "HTTP"
@@ -109,6 +117,8 @@ resource "aws_lb_listener" "http" {
 
 # --- Security Groups ---
 resource "aws_security_group" "alb" {
+  # checkov:skip=CKV_AWS_260:Public web app — port 80 from 0.0.0.0/0 is the intended entrypoint.
+  # checkov:skip=CKV_AWS_382:Open egress — ALB forwards to tasks; scoping adds no value on a demo.
   name        = "pipelineguard-alb-${var.environment}"
   description = "ALB ingress from the internet"
   vpc_id      = var.vpc_id
@@ -131,6 +141,7 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "ecs_tasks" {
+  # checkov:skip=CKV_AWS_382:Open egress needed for ECR image pulls + AWS APIs via NAT.
   name        = "pipelineguard-ecs-${var.environment}"
   description = "ECS tasks - only reachable from the ALB"
   vpc_id      = var.vpc_id
@@ -154,8 +165,10 @@ resource "aws_security_group" "ecs_tasks" {
 
 # --- CloudWatch Logs ---
 resource "aws_cloudwatch_log_group" "ecs" {
+  # checkov:skip=CKV_AWS_338:Short dev retention is intentional (cost); prod uses 30d.
   name              = "/ecs/pipelineguard-${var.environment}"
   retention_in_days = var.log_retention
+  kms_key_id        = var.kms_key_arn
 }
 
 # --- IAM Roles ---
@@ -175,6 +188,20 @@ resource "aws_iam_role" "ecs_execution" {
 resource "aws_iam_role_policy_attachment" "ecs_execution" {
   role       = aws_iam_role.ecs_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Decrypt the KMS-encrypted app image (ECR) at pull time.
+resource "aws_iam_role_policy" "ecs_execution_kms" {
+  name = "pipelineguard-ecs-execution-kms-${var.environment}"
+  role = aws_iam_role.ecs_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = [var.kms_key_arn]
+    }]
+  })
 }
 
 # Task role: the app itself needs no AWS permissions (least privilege).

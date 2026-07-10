@@ -134,6 +134,30 @@ def test_summarise_trivy_counts_severities():
     assert len(out["findings"]) == 2  # only HIGH/CRITICAL kept
 
 
+def test_resolve_pr_number_maps_commit_to_pr(monkeypatch):
+    import github_commenter
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps([{"number": 42}]).encode()
+
+    monkeypatch.setattr(github_commenter.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    assert github_commenter.resolve_pr_number("owner/repo", "abc123", "tok") == "42"
+
+
+def test_resolve_pr_number_returns_none_without_inputs():
+    import github_commenter
+
+    assert github_commenter.resolve_pr_number("owner/repo", None, "tok") is None
+    assert github_commenter.resolve_pr_number(None, "abc123", "tok") is None
+
+
 def test_summarise_checkov_defaults_severity_to_high():
     from checkov_runner import summarise_checkov
 

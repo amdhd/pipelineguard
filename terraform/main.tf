@@ -50,6 +50,7 @@ module "gates" {
   slack_webhook_url   = var.slack_webhook_url
   infracost_api_key   = var.infracost_api_key
   anthropic_api_key   = var.anthropic_api_key
+  github_token        = var.github_token
   artifact_bucket_arn = module.pipeline.artifact_bucket_arn
   log_retention       = var.log_retention_days
 }

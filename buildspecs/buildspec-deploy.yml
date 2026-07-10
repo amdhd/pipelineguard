@@ -40,7 +40,10 @@ phases:
       - IMAGE_TAG=$(cat ../image_tag.txt 2>/dev/null || cat image_tag.txt 2>/dev/null || echo latest)
       - echo "Deploying image tag $IMAGE_TAG"
       - terraform init -backend-config=backend.conf -reconfigure
-      - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -var="app_image_tag=${IMAGE_TAG}" -auto-approve
+      # -refresh=false keeps the deploy role least-privilege: with the infra
+      # already applied, the only change is the ECS task-def image, so Terraform
+      # writes just that instead of needing Describe/Get across every service.
+      - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -var="app_image_tag=${IMAGE_TAG}" -refresh=false -auto-approve
       - cd ..
 
   post_build:

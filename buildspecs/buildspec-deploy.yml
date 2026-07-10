@@ -11,6 +11,22 @@ phases:
     commands:
       - echo "Applying Terraform..."
       - cd terraform
+      # backend.conf and *.auto.tfvars are git-ignored, so regenerate them in CI.
+      # (The deploy stage's input artifact is build_output, which carries neither.)
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - |
+        cat > backend.conf <<EOF
+        bucket         = "pipelineguard-tfstate-${ACCOUNT_ID}-${AWS_DEFAULT_REGION}"
+        key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
+        region         = "${AWS_DEFAULT_REGION}"
+        dynamodb_table = "pipelineguard-tflock-${ENVIRONMENT}"
+        encrypt        = true
+        EOF
+      # Pull the gate secrets into TF_VAR_* so the required sensitive vars resolve.
+      - SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "pipelineguard/gates/${ENVIRONMENT}" --query SecretString --output text)
+      - export TF_VAR_infracost_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['INFRACOST_API_KEY'])")
+      - export TF_VAR_anthropic_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['ANTHROPIC_API_KEY'])")
+      - export TF_VAR_slack_webhook_url=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['SLACK_WEBHOOK_URL'])")
       - terraform init -backend-config=backend.conf -reconfigure
       - terraform apply -var-file=environments/${ENVIRONMENT}.tfvars -auto-approve
       - cd ..

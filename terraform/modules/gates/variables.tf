@@ -49,3 +49,8 @@ variable "security_gate_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "kms_key_arn" {
+  description = "CMK ARN for encrypting gate secrets, logs, SNS, ECR, and Lambda env vars"
+  type        = string
+}

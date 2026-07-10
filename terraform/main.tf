@@ -1,11 +1,13 @@
 module "networking" {
   source      = "./modules/networking"
   environment = var.environment
+  kms_key_arn = aws_kms_key.main.arn
 }
 
 module "ecr" {
   source      = "./modules/ecr"
   environment = var.environment
+  kms_key_arn = aws_kms_key.main.arn
 }
 
 module "ecs" {
@@ -21,6 +23,7 @@ module "ecs" {
   memory          = var.ecs_memory
   desired_count   = var.ecs_desired_count
   log_retention   = var.log_retention_days
+  kms_key_arn     = aws_kms_key.main.arn
 }
 
 # The pipeline module owns the artifact bucket, so gates depends on it for the ARN.
@@ -41,6 +44,7 @@ module "pipeline" {
   security_gate_name     = module.gates.security_gate_name
   enable_manual_approval = var.enable_manual_approval
   log_retention          = var.log_retention_days
+  kms_key_arn            = aws_kms_key.main.arn
 }
 
 module "gates" {
@@ -53,4 +57,5 @@ module "gates" {
   github_token        = var.github_token
   artifact_bucket_arn = module.pipeline.artifact_bucket_arn
   log_retention       = var.log_retention_days
+  kms_key_arn         = aws_kms_key.main.arn
 }

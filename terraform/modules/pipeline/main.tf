@@ -6,6 +6,9 @@ locals {
 
 # --- Artifact bucket (versioning required for pipeline integrity) ---
 resource "aws_s3_bucket" "artifacts" {
+  # checkov:skip=CKV_AWS_18:Access logging omitted for a cost-conscious demo (would need a second log bucket).
+  # checkov:skip=CKV_AWS_144:Cross-region replication is unnecessary for transient CI artifacts.
+  # checkov:skip=CKV2_AWS_62:No event notifications — nothing consumes bucket events in this pipeline.
   bucket        = "${local.name_prefix}-artifacts-${data.aws_caller_identity.current.account_id}"
   force_destroy = true # portfolio: allow terraform destroy to clean up
 }
@@ -21,7 +24,28 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
   bucket = aws_s3_bucket.artifacts.id
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms" # CKV_AWS_145
+      kms_master_key_id = var.kms_key_arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# Expire old CI artifacts (CKV2_AWS_61) — keeps the bucket from growing forever.
+resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
+  bucket = aws_s3_bucket.artifacts.id
+  rule {
+    id     = "expire-old-artifacts"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 30
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7 # CKV_AWS_300
     }
   }
 }
@@ -36,9 +60,10 @@ resource "aws_s3_bucket_public_access_block" "artifacts" {
 
 # --- Expose the ECR repo URL to buildspecs via SSM Parameter Store ---
 resource "aws_ssm_parameter" "ecr_repo_url" {
-  name  = "/pipelineguard/ecr_repo_url"
-  type  = "String"
-  value = var.ecr_repo_url
+  name   = "/pipelineguard/ecr_repo_url"
+  type   = "SecureString" # CKV2_AWS_34
+  key_id = var.kms_key_arn
+  value  = var.ecr_repo_url
 }
 
 # --- GitHub connection (must be authorised once in the console after apply) ---
@@ -49,8 +74,10 @@ resource "aws_codestarconnections_connection" "github" {
 
 # --- CloudWatch log group for CodeBuild ---
 resource "aws_cloudwatch_log_group" "codebuild" {
+  # checkov:skip=CKV_AWS_338:Short dev retention is intentional (cost); prod uses 30d.
   name              = "/codebuild/${local.name_prefix}"
   retention_in_days = var.log_retention
+  kms_key_id        = var.kms_key_arn
 }
 
 # =========================================================================
@@ -85,6 +112,25 @@ resource "aws_iam_role_policy" "codebuild" {
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketLocation", "s3:ListBucket"]
         Resource = [aws_s3_bucket.artifacts.arn, "${aws_s3_bucket.artifacts.arn}/*"]
+      },
+      {
+        # Use the CMK for encrypted artifacts + SSM SecureString, and the reads
+        # Terraform's refresh needs (the deploy stage applies the KMS config).
+        Sid    = "UseCmk"
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*",
+          "kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus",
+          "kms:ListResourceTags", "kms:PutKeyPolicy", "kms:EnableKeyRotation",
+          "kms:TagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"
+        ]
+        Resource = [var.kms_key_arn]
+      },
+      {
+        Sid      = "KmsAliases"
+        Effect   = "Allow"
+        Action   = ["kms:ListAliases", "kms:CreateAlias", "kms:UpdateAlias", "kms:DeleteAlias"]
+        Resource = ["*"] # alias actions are not scopable to a single key ARN
       },
       {
         Sid    = "EcrPushPull"
@@ -165,6 +211,7 @@ resource "aws_iam_role" "pipeline" {
 }
 
 resource "aws_iam_role_policy" "pipeline" {
+  # checkov:skip=CKV_AWS_355:"*" is required — StartBuild/InvokeFunction/ListFunctions do not support resource scoping.
   name = "${local.name_prefix}-pipeline-policy"
   role = aws_iam_role.pipeline.id
   policy = jsonencode({
@@ -175,6 +222,13 @@ resource "aws_iam_role_policy" "pipeline" {
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketLocation", "s3:ListBucket"]
         Resource = [aws_s3_bucket.artifacts.arn, "${aws_s3_bucket.artifacts.arn}/*"]
+      },
+      {
+        # Read/write the KMS-encrypted artifact store.
+        Sid      = "UseCmk"
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource = [var.kms_key_arn]
       },
       {
         Sid      = "UseGithubConnection"
@@ -211,8 +265,9 @@ locals {
 }
 
 resource "aws_codebuild_project" "test" {
-  name         = "${local.name_prefix}-test"
-  service_role = aws_iam_role.codebuild.arn
+  name           = "${local.name_prefix}-test"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -243,8 +298,10 @@ resource "aws_codebuild_project" "test" {
 }
 
 resource "aws_codebuild_project" "build" {
-  name         = "${local.name_prefix}-build"
-  service_role = aws_iam_role.codebuild.arn
+  # checkov:skip=CKV_AWS_316:Privileged mode is required to run `docker build` for the app image.
+  name           = "${local.name_prefix}-build"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -275,8 +332,9 @@ resource "aws_codebuild_project" "build" {
 }
 
 resource "aws_codebuild_project" "tf_plan" {
-  name         = "${local.name_prefix}-tf-plan"
-  service_role = aws_iam_role.codebuild.arn
+  name           = "${local.name_prefix}-tf-plan"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -307,8 +365,9 @@ resource "aws_codebuild_project" "tf_plan" {
 }
 
 resource "aws_codebuild_project" "cost_gate" {
-  name         = "${local.name_prefix}-cost-gate"
-  service_role = aws_iam_role.codebuild.arn
+  name           = "${local.name_prefix}-cost-gate"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -342,8 +401,9 @@ resource "aws_codebuild_project" "cost_gate" {
 }
 
 resource "aws_codebuild_project" "security_gate" {
-  name         = "${local.name_prefix}-security-gate"
-  service_role = aws_iam_role.codebuild.arn
+  name           = "${local.name_prefix}-security-gate"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -377,8 +437,9 @@ resource "aws_codebuild_project" "security_gate" {
 }
 
 resource "aws_codebuild_project" "deploy" {
-  name         = "${local.name_prefix}-deploy"
-  service_role = aws_iam_role.codebuild.arn
+  name           = "${local.name_prefix}-deploy"
+  service_role   = aws_iam_role.codebuild.arn
+  encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
 
@@ -421,6 +482,11 @@ resource "aws_codepipeline" "main" {
   artifact_store {
     location = aws_s3_bucket.artifacts.bucket
     type     = "S3"
+
+    encryption_key {
+      id   = var.kms_key_arn # CKV_AWS_219
+      type = "KMS"
+    }
   }
 
   stage {

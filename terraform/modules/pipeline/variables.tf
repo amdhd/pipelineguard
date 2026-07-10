@@ -74,3 +74,8 @@ variable "log_retention" {
   type        = number
   default     = 7
 }
+
+variable "kms_key_arn" {
+  description = "CMK ARN for encrypting artifacts, logs, CodeBuild, CodePipeline, and SSM"
+  type        = string
+}

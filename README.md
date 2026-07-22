@@ -1,7 +1,5 @@
 # PipelineGuard
 
-More details: https://claude.ai/code/artifact/85d68df4-a96a-4a3f-8208-405500442c46?via=auto_preview
-
 **A CI/CD pipeline that automatically blocks deploys that are too expensive or too insecure.**
 
 An AWS-native delivery pipeline for a containerized Node.js API, provisioned **100% in Terraform**

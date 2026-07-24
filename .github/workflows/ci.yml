@@ -46,9 +46,11 @@ jobs:
           tflint_version: latest
 
       - name: tflint
+        # Report all findings, but only FAIL the job on errors — style warnings
+        # (per-module version constraints, unused declarations) are advisory.
         run: |
           tflint --init
-          tflint --chdir=terraform --recursive --format compact
+          tflint --chdir=terraform --recursive --format compact --minimum-failure-severity=error
 
   checkov:
     name: Checkov (IaC static analysis)

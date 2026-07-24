@@ -7,7 +7,6 @@ module "networking" {
 module "ecr" {
   source      = "./modules/ecr"
   environment = var.environment
-  kms_key_arn = aws_kms_key.main.arn
 }
 
 module "ecs" {
@@ -34,8 +33,6 @@ module "pipeline" {
   github_repo            = var.github_repo
   github_branch          = var.github_branch
   ecr_repo_url           = module.ecr.repository_url
-  ecr_repo_arn           = module.ecr.repository_arn
-  ecs_cluster_arn        = module.ecs.cluster_arn
   ecs_cluster_name       = module.ecs.cluster_name
   ecs_service_name       = module.ecs.service_name
   cost_gate_arn          = module.gates.cost_gate_arn

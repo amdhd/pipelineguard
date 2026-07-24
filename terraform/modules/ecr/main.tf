@@ -3,12 +3,6 @@ variable "environment" {
   type        = string
 }
 
-variable "kms_key_arn" {
-  description = "CMK ARN (unused; ECR stays on AES256 — see below)"
-  type        = string
-  default     = ""
-}
-
 resource "aws_ecr_repository" "app" {
   # checkov:skip=CKV_AWS_136:AES256 at-rest encryption is enabled; a CMK forces repo REPLACEMENT, which would destroy the immutable image history mid-pipeline.
   name                 = "pipelineguard-app-${var.environment}"

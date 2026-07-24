@@ -23,16 +23,6 @@ variable "ecr_repo_url" {
   type        = string
 }
 
-variable "ecr_repo_arn" {
-  description = "ECR repository ARN"
-  type        = string
-}
-
-variable "ecs_cluster_arn" {
-  description = "ECS cluster ARN"
-  type        = string
-}
-
 variable "ecs_cluster_name" {
   description = "ECS cluster name"
   type        = string

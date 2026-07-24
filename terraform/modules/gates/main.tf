@@ -1,5 +1,3 @@
-data "aws_region" "current" {}
-
 # --- Secrets: store sensitive values in Secrets Manager, never in env vars ---
 resource "aws_secretsmanager_secret" "gate_secrets" {
   # checkov:skip=CKV2_AWS_57:Auto-rotation N/A — these are third-party API keys rotated manually.

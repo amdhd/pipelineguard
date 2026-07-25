@@ -209,4 +209,4 @@ Setup, the non-negotiables, and the pre-PR checklist are in [`CONTRIBUTING.md`](
 
 ## License
 
-MIT — portfolio / demonstration use.
+MIT — portfolio / demonstration use. See [`LICENSE`](LICENSE).

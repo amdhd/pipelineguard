@@ -1,5 +1,7 @@
 # PipelineGuard
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **A CI/CD pipeline that automatically blocks deploys that are too expensive or too insecure.**
 
 An AWS-native delivery pipeline for a containerized Node.js API, provisioned **100% in Terraform**
@@ -83,7 +85,7 @@ terraform/    All infra: networking, ecr, ecs, gates, pipeline modules
 gates/        Lambda source: cost_gate (zip) + security_gate (container image, Dockerfile)
 buildspecs/   CodeBuild YAMLs for each pipeline stage
 scripts/      bootstrap · deploy-gates · apply-dev · destroy-dev · local-scan
-docs/         architecture.md, runbook.md
+docs/         architecture.md, deploy.md, runbook.md
 ```
 
 ## Deploy it
@@ -203,6 +205,10 @@ Everything is Terraform · least-privilege IAM · secrets only in Secrets Manage
 resources · gates never silently pass · ECS circuit breaker · immutable ECR tags · bounded log
 retention · S3 versioning · typed Python handlers.
 
+## Contributing
+
+Setup, the non-negotiables, and the pre-PR checklist are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## License
 
-MIT — portfolio / demonstration use.
+MIT — portfolio / demonstration use. See [`LICENSE`](LICENSE).

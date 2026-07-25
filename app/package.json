@@ -2,6 +2,7 @@
   "name": "pipelineguard-app",
   "version": "1.0.0",
   "description": "Sample Node.js Express API deployed by the PipelineGuard pipeline",
+  "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

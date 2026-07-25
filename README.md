@@ -1,5 +1,7 @@
 # PipelineGuard
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **A CI/CD pipeline that automatically blocks deploys that are too expensive or too insecure.**
 
 An AWS-native delivery pipeline for a containerized Node.js API, provisioned **100% in Terraform**

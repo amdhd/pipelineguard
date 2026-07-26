@@ -10,7 +10,7 @@ phases:
     commands:
       - echo "Uploading plan.json for the cost gate..."
       - PLAN_KEY="cost-gate/${CODEBUILD_RESOLVED_SOURCE_VERSION}/plan.json"
-      - aws s3 cp terraform/plan.json "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}"
+      - aws s3 cp infra/plan.json "s3://${ARTIFACT_BUCKET}/${PLAN_KEY}"
       - echo "Invoking cost gate Lambda ${COST_GATE_FUNCTION}..."
       - |
         aws lambda invoke \

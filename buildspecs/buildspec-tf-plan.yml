@@ -4,8 +4,6 @@ phases:
   install:
     commands:
       - echo "Installing Terraform..."
-      # Unzip to /tmp — the archive contains a file named 'terraform', which would
-      # collide with the repo's ./terraform directory if extracted in place.
       - curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o /tmp/tf.zip
       - unzip -o /tmp/tf.zip -d /tmp/tfbin
       - mv /tmp/tfbin/terraform /usr/local/bin/
@@ -13,7 +11,7 @@ phases:
 
   build:
     commands:
-      - cd terraform
+      - cd infra
       # backend.conf and *.auto.tfvars are git-ignored, so regenerate them in CI.
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
@@ -41,9 +39,9 @@ phases:
 
 artifacts:
   files:
-    - terraform/plan.json
-    - terraform/plan.tfplan
-    - terraform/**/*
+    - infra/plan.json
+    - infra/plan.tfplan
+    - infra/**/*
     - gates/**/*
     - buildspecs/**/*
     - imagedefinitions.json

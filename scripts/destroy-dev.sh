@@ -22,7 +22,7 @@ for repo in pipelineguard-app-dev pipelineguard-security-gate-dev; do
   fi
 done
 
-cd "${ROOT}/terraform"
+cd "${ROOT}/infra"
 terraform destroy -var-file=environments/dev.tfvars "$@"
 
 echo ""

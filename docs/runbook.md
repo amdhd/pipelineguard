@@ -15,7 +15,7 @@ export TF_VAR_infracost_api_key="ico-..."
 export TF_VAR_anthropic_api_key="sk-ant-..."
 
 # 4. Init + apply
-cd terraform
+cd infra
 terraform init -backend-config=backend.conf
 terraform apply -var-file=environments/dev.tfvars
 
@@ -57,7 +57,7 @@ terraform apply -var-file=environments/dev.tfvars
 ## Teardown
 
 ```bash
-cd terraform
+cd infra
 terraform destroy -var-file=environments/dev.tfvars
 
 # ECR images block repo deletion if any remain — force-delete first if needed:

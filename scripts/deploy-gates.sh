@@ -45,7 +45,7 @@ ECR_URL="$(aws ecr describe-repositories \
 if [ -z "${ECR_URL}" ] || [ "${ECR_URL}" = "None" ]; then
   echo "ERROR: ECR repo pipelineguard-security-gate-${ENVIRONMENT} not found." >&2
   echo "       Create it first, then re-run this script:" >&2
-  echo "       cd terraform && terraform apply -target=module.gates.aws_ecr_repository.security_gate" >&2
+  echo "       cd infra && terraform apply -target=module.gates.aws_ecr_repository.security_gate" >&2
   exit 1
 fi
 REGISTRY="${ECR_URL%%/*}"
@@ -74,4 +74,4 @@ docker buildx build --builder pg-builder --platform linux/amd64 \
   "${ROOT}/gates/security_gate"
 echo "    -> ${ECR_URL}:${IMAGE_TAG}"
 
-echo "==> Done. Now run: cd terraform && terraform apply -var-file=environments/dev.tfvars"
+echo "==> Done. Now run: cd infra && terraform apply -var-file=environments/dev.tfvars"

@@ -42,6 +42,6 @@ artifacts:
     - imagedefinitions.json
     - image_tag.txt
     - commit_sha.txt
-    - terraform/**/*
+    - infra/**/*
     - gates/**/*
     - buildspecs/**/*

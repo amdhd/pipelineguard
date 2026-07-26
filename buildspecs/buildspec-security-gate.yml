@@ -13,7 +13,7 @@ phases:
       - COMMIT_SHA=$(cat commit_sha.txt 2>/dev/null || echo "")
       # The Lambda has no source checkout, so ship the Terraform to S3 for Checkov.
       - TF_KEY="security-gate/${IMAGE_TAG}/terraform.zip"
-      - (cd terraform && zip -qr /tmp/terraform.zip . -x '.terraform/*' 'plan.tfplan' 'plan.json' 'backend.conf')
+      - (cd infra && zip -qr /tmp/terraform.zip . -x '.terraform/*' 'plan.tfplan' 'plan.json' 'backend.conf')
       - aws s3 cp /tmp/terraform.zip "s3://${ARTIFACT_BUCKET}/${TF_KEY}"
 
   build:

@@ -1,0 +1,114 @@
+name: CI
+
+# Fast pre-flight checks on every PR and push to main. This is the shift-left
+# mirror of the in-AWS pipeline: it validates and tests a change *before* merge,
+# so the expensive CodePipeline run only ever sees green code.
+#
+# Nothing here touches AWS — no credentials, no backend, no apply. Terraform is
+# validated with `-backend=false`; the gate unit tests stub boto3/anthropic.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. a force-push to a PR branch).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform (fmt · validate · tflint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: terraform fmt
+        run: terraform -chdir=infra fmt -check -recursive
+
+      - name: terraform init (no backend)
+        run: terraform -chdir=infra init -backend=false
+
+      - name: terraform validate
+        run: terraform -chdir=infra validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        # Report all findings, but only FAIL the job on errors — style warnings
+        # (per-module version constraints, unused declarations) are advisory.
+        run: |
+          tflint --init
+          tflint --chdir=infra --recursive --format compact --minimum-failure-severity=error
+
+  checkov:
+    name: Checkov (IaC static analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mirrors the pipeline's security gate: HIGH/CRITICAL misconfigurations
+      # fail the check. The repo is hardened to 0 findings (see #4), so this
+      # stays green until a change reintroduces one — which is the whole point.
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra
+          quiet: true
+          soft_fail: false
+          output_format: cli
+
+  python-gates:
+    name: Gate handlers (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The unit tests stub boto3, the anthropic SDK, and shell out to
+      # checkov/trivy, so only these two deps are needed to run them.
+      - name: Install test deps
+        run: pip install boto3 pytest
+
+      - name: pytest
+        run: pytest -q
+
+  node-app:
+    name: App (build · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        run: npm ci --prefix app
+
+      - name: Type-check + build
+        run: npm run build --prefix app
+
+      - name: Test
+        run: npm test --prefix app
+
+      # SCA on the app's dependency tree — the one scan the pipeline's image +
+      # IaC gates don't cover. Informational for now (does not block the PR).
+      - name: npm audit (high+)
+        run: npm audit --omit=dev --audit-level=high --prefix app || true

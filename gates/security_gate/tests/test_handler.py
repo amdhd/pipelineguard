@@ -92,25 +92,68 @@ def test_error_fails_the_job(monkeypatch, _stubs):
     clients["codepipeline"].put_job_failure_result.assert_called_once()
 
 
+def _direct_event(**overrides):
+    """A well-formed direct-invoke event; the gate requires the Terraform location."""
+    event = {
+        "ecr_image_uri": "repo:tag",
+        "terraform_s3_bucket": "artifacts-bucket",
+        "terraform_s3_key": "security-gate/abc/terraform.zip",
+    }
+    event.update(overrides)
+    return event
+
+
 def test_direct_invoke_blocks_on_checkov(monkeypatch, _stubs):
     handler, _ = _stubs
+    monkeypatch.setattr(handler, "_download_terraform", lambda *_: None)
     monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
     monkeypatch.setattr(handler, "run_checkov", lambda *_: {"HIGH": 3, "CRITICAL": 0})
     monkeypatch.setattr(handler, "summarise_findings", lambda **_: "checkov found issues")
 
-    out = handler.lambda_handler({"ecr_image_uri": "repo:tag"}, None)
+    out = handler.lambda_handler(_direct_event(), None)
     assert out["gate_status"] == "failed"
     assert out["high"] == 3
 
 
 def test_direct_invoke_passes_clean(monkeypatch, _stubs):
     handler, _ = _stubs
+    monkeypatch.setattr(handler, "_download_terraform", lambda *_: None)
     monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
     monkeypatch.setattr(handler, "run_checkov", lambda *_: {"HIGH": 0, "CRITICAL": 0})
     monkeypatch.setattr(handler, "summarise_findings", lambda **_: "clean")
 
-    out = handler.lambda_handler({"ecr_image_uri": "repo:tag"}, None)
+    out = handler.lambda_handler(_direct_event(), None)
     assert out["gate_status"] == "passed"
+
+
+@pytest.mark.parametrize("missing", ["terraform_s3_key", "terraform_s3_bucket"])
+def test_direct_invoke_fails_closed_without_terraform_artifact(monkeypatch, _stubs, missing):
+    """No Terraform to scan must fail the gate, never pass it unscanned."""
+    handler, _ = _stubs
+    monkeypatch.delenv("ARTIFACT_BUCKET", raising=False)
+    monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "summarise_findings", lambda **_: "clean")
+
+    out = handler.lambda_handler(_direct_event(**{missing: ""}), None)
+    assert out["gate_status"] == "failed"
+    assert "terraform" in out["error"].lower()
+
+
+def test_run_checkov_raises_when_dir_is_missing(tmp_path):
+    """A clean result for a scan that never ran would pass the gate — refuse it."""
+    from checkov_runner import run_checkov
+
+    with pytest.raises(RuntimeError, match="not found"):
+        run_checkov(str(tmp_path / "nope"))
+
+
+def test_run_checkov_raises_when_dir_holds_no_terraform(tmp_path):
+    """An empty or half-extracted artifact must not read as a clean scan."""
+    from checkov_runner import run_checkov
+
+    (tmp_path / "README.md").write_text("not terraform")
+    with pytest.raises(RuntimeError, match="No .tf"):
+        run_checkov(str(tmp_path))
 
 
 def test_summarise_trivy_counts_severities():

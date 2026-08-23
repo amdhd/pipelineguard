@@ -5,6 +5,11 @@ directory of Terraform files and returns severity counts plus failed checks.
 Checkov's community edition does not attach CVSS severities to every check, so
 we map by check outcome: any failed check is treated as HIGH unless Checkov
 reports an explicit severity.
+
+Fail-closed contract: this module never returns zero findings for a scan that
+did not actually happen. A missing directory, or one holding no Terraform,
+raises — otherwise "nothing was scanned" is indistinguishable from "nothing was
+found" and the gate would wave the change through with no IaC coverage.
 """
 
 import json
@@ -19,14 +24,33 @@ logger = logging.getLogger()
 CHECKOV_BIN = os.environ.get("CHECKOV_BIN", "checkov")
 
 
+def _has_terraform_files(terraform_dir: str) -> bool:
+    """True when the tree holds at least one file Checkov would actually parse."""
+    for _root, _dirs, files in os.walk(terraform_dir):
+        if any(f.endswith((".tf", ".tf.json")) for f in files):
+            return True
+    return False
+
+
 def run_checkov(terraform_dir: str) -> dict[str, Any]:
     """
     Run Checkov against a directory of Terraform and return a dict of
     severity -> count plus a trimmed list of failed checks.
+
+    Raises when there is nothing to scan. Returning zeros here would read as a
+    clean IaC scan and pass the gate, so an absent or empty tree must surface as
+    an error the handler can fail closed on.
     """
     if not os.path.isdir(terraform_dir):
-        logger.warning("Terraform dir %s not found; skipping Checkov", terraform_dir)
-        return {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "findings": []}
+        raise RuntimeError(
+            f"Terraform dir {terraform_dir} not found — refusing to report a clean "
+            "IaC scan that never ran."
+        )
+    if not _has_terraform_files(terraform_dir):
+        raise RuntimeError(
+            f"No .tf/.tf.json files under {terraform_dir} — the Terraform artifact is "
+            "empty or failed to extract; refusing to report a clean IaC scan."
+        )
 
     cmd = [
         CHECKOV_BIN,

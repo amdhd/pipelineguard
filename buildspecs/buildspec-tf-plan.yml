@@ -12,7 +12,7 @@ phases:
   build:
     commands:
       - cd infra
-      # backend.conf and *.auto.tfvars are git-ignored, so regenerate them in CI.
+      # backend.conf is git-ignored, so regenerate it in CI.
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
         cat > backend.conf <<EOF
@@ -22,13 +22,9 @@ phases:
         dynamodb_table = "pipelineguard-tflock-${ENVIRONMENT}"
         encrypt        = true
         EOF
-      # Pull the gate secrets into TF_VAR_* so the required sensitive vars resolve.
-      - SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "pipelineguard/gates/${ENVIRONMENT}" --query SecretString --output text)
-      - export TF_VAR_infracost_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['INFRACOST_API_KEY'])")
-      - export TF_VAR_anthropic_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['ANTHROPIC_API_KEY'])")
-      - export TF_VAR_slack_webhook_url=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['SLACK_WEBHOOK_URL'])")
-      # Keep the plan consistent with the token already stored in the secret.
-      - export TF_VAR_github_token=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('GITHUB_TOKEN',''))")
+      # No secrets are passed to Terraform: `terraform show -json` writes sensitive
+      # values into plan.json in plaintext, and that file ships as an artifact.
+      # The gate API keys live only in Secrets Manager, read by the Lambdas at runtime.
       - terraform init -backend-config=backend.conf -reconfigure
       - terraform validate
       # -refresh=false keeps the plan role least-privilege (no describe on every

@@ -9,15 +9,21 @@ AWS_PROFILE=your-profile ./scripts/bootstrap.sh dev ap-southeast-1
 # 2. Build Lambda layers (infracost, trivy, checkov). Needs docker + curl + zip.
 ./scripts/deploy-gates.sh
 
-# 3. Provide secrets out-of-band (never commit these)
-export TF_VAR_slack_webhook_url="https://hooks.slack.com/services/..."
-export TF_VAR_infracost_api_key="ico-..."
-export TF_VAR_anthropic_api_key="sk-ant-..."
-
-# 4. Init + apply
-cd terraform
+# 3. Init + apply (creates the empty gate secret, among ~60 resources)
+cd infra
 terraform init -backend-config=backend.conf
 terraform apply -var-file=environments/dev.tfvars
+cd ..
+
+# 4. Seed the gate API keys straight into Secrets Manager.
+#    They are NOT Terraform variables: `terraform show -json` writes sensitive
+#    values into plan.json in plaintext, and plan.json ships as a pipeline
+#    artifact to S3. Keeping them out of Terraform keeps them out of the plan.
+export INFRACOST_API_KEY="ico-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+export GITHUB_TOKEN="ghp_..."          # optional; enables the PR comment
+./scripts/seed-gate-secrets.sh dev ap-southeast-1
 
 # 5. Authorise the GitHub connection ONCE in the console:
 #    Developer Tools -> Settings -> Connections -> pg-dev -> Update pending connection
@@ -57,7 +63,7 @@ terraform apply -var-file=environments/dev.tfvars
 ## Teardown
 
 ```bash
-cd terraform
+cd infra
 terraform destroy -var-file=environments/dev.tfvars
 
 # ECR images block repo deletion if any remain — force-delete first if needed:

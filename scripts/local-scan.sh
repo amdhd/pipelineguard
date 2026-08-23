@@ -25,7 +25,7 @@ fi
 echo
 echo "==> Checkov: Terraform static analysis"
 if command -v checkov >/dev/null 2>&1; then
-  checkov --directory "${ROOT}/terraform" --compact --quiet || true
+  checkov --directory "${ROOT}/infra" --compact --quiet || true
 else
   echo "    checkov not installed — 'pip install checkov'"
 fi

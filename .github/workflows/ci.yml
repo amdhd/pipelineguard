@@ -33,13 +33,13 @@ jobs:
           terraform_version: "1.7.5"
 
       - name: terraform fmt
-        run: terraform -chdir=terraform fmt -check -recursive
+        run: terraform -chdir=infra fmt -check -recursive
 
       - name: terraform init (no backend)
-        run: terraform -chdir=terraform init -backend=false
+        run: terraform -chdir=infra init -backend=false
 
       - name: terraform validate
-        run: terraform -chdir=terraform validate
+        run: terraform -chdir=infra validate
 
       - uses: terraform-linters/setup-tflint@v4
         with:
@@ -50,7 +50,7 @@ jobs:
         # (per-module version constraints, unused declarations) are advisory.
         run: |
           tflint --init
-          tflint --chdir=terraform --recursive --format compact --minimum-failure-severity=error
+          tflint --chdir=infra --recursive --format compact --minimum-failure-severity=error
 
   checkov:
     name: Checkov (IaC static analysis)
@@ -64,7 +64,7 @@ jobs:
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory: terraform
+          directory: infra
           quiet: true
           soft_fail: false
           output_format: cli

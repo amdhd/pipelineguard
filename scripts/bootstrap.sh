@@ -54,7 +54,7 @@ else
 fi
 
 # --- backend.conf for terraform init ---
-BACKEND_CONF="terraform/backend.conf"
+BACKEND_CONF="infra/backend.conf"
 cat > "${BACKEND_CONF}" <<EOF
 bucket         = "${STATE_BUCKET}"
 key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
@@ -65,4 +65,4 @@ EOF
 
 echo "==> Wrote ${BACKEND_CONF}"
 echo "==> Bootstrap complete. Next:"
-echo "    cd terraform && terraform init -backend-config=backend.conf"
+echo "    cd infra && terraform init -backend-config=backend.conf"

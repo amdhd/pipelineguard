@@ -4,8 +4,6 @@ phases:
   install:
     commands:
       - echo "Installing Terraform..."
-      # Unzip to /tmp — the archive contains a file named 'terraform', which would
-      # collide with the repo's ./terraform directory if extracted in place.
       - curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o /tmp/tf.zip
       - unzip -o /tmp/tf.zip -d /tmp/tfbin
       - mv /tmp/tfbin/terraform /usr/local/bin/
@@ -14,9 +12,8 @@ phases:
   build:
     commands:
       - echo "Applying Terraform..."
-      - cd terraform
-      # backend.conf and *.auto.tfvars are git-ignored, so regenerate them in CI.
-      # (The deploy stage's input artifact is build_output, which carries neither.)
+      - cd infra
+      # backend.conf is git-ignored, so regenerate it in CI.
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
         cat > backend.conf <<EOF
@@ -26,14 +23,9 @@ phases:
         dynamodb_table = "pipelineguard-tflock-${ENVIRONMENT}"
         encrypt        = true
         EOF
-      # Pull the gate secrets into TF_VAR_* so the required sensitive vars resolve.
-      - SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "pipelineguard/gates/${ENVIRONMENT}" --query SecretString --output text)
-      - export TF_VAR_infracost_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['INFRACOST_API_KEY'])")
-      - export TF_VAR_anthropic_api_key=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['ANTHROPIC_API_KEY'])")
-      - export TF_VAR_slack_webhook_url=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['SLACK_WEBHOOK_URL'])")
-      # Re-export the existing token so apply preserves it instead of resetting the
-      # secret's GITHUB_TOKEN to the var's "" default. .get() tolerates first apply.
-      - export TF_VAR_github_token=$(printf '%s' "$SECRET_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('GITHUB_TOKEN',''))")
+      # No secrets are passed to Terraform: `terraform show -json` writes sensitive
+      # values into plan.json in plaintext, and that file ships as an artifact.
+      # The gate API keys live only in Secrets Manager, read by the Lambdas at runtime.
       # Deploy the exact image this pipeline run built (the immutable Git-SHA tag),
       # not a floating ':latest'. Applying the new tag updates the task definition,
       # which rolls the ECS service automatically — no separate force-new-deployment.

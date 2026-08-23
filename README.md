@@ -81,7 +81,7 @@ Full diagram and component map: [`docs/architecture.md`](docs/architecture.md).
 
 ```
 app/          Sample Express API (the deployed workload) + Dockerfile + tests
-terraform/    All infra: networking, ecr, ecs, gates, pipeline modules
+infra/        All Terraform: networking, ecr, ecs, pipeline, gates modules (see infra/README.md)
 gates/        Lambda source: cost_gate (zip) + security_gate (container image, Dockerfile)
 buildspecs/   CodeBuild YAMLs for each pipeline stage
 scripts/      bootstrap · deploy-gates · apply-dev · destroy-dev · local-scan
@@ -100,26 +100,28 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 # 0. One-time backend bootstrap (S3 state bucket + DynamoDB lock table)
 ./scripts/bootstrap.sh dev ap-southeast-1
 
-# 1. Secrets — create terraform/dev.auto.tfvars (git-ignored, never committed):
-#      infracost_api_key = "ico-..."
-#      anthropic_api_key = "sk-ant-..."
-#      slack_webhook_url = "https://hooks.slack.com/services/..."
-
-# 2. Two-phase: create the security-gate ECR repo first, then build gate artifacts
+# 1. Two-phase: create the security-gate ECR repo first, then build gate artifacts
 #    (infracost layer + the security-gate container image) and push them.
-terraform -chdir=terraform apply -var-file=environments/dev.tfvars \
+terraform -chdir=infra apply -var-file=environments/dev.tfvars \
   -target=module.gates.aws_ecr_repository.security_gate
 ./scripts/deploy-gates.sh dev ap-southeast-1
 
-# 3. Apply the full stack (~60 resources)
+# 2. Apply the full stack (~60 resources)
 ./scripts/apply-dev.sh -auto-approve
+
+# 3. Seed the gate API keys directly into Secrets Manager. They are deliberately
+#    not Terraform variables: `terraform show -json` writes sensitive values into
+#    plan.json in plaintext, and plan.json ships as a pipeline artifact to S3.
+export INFRACOST_API_KEY="ico-..." ANTHROPIC_API_KEY="sk-ant-..."
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+./scripts/seed-gate-secrets.sh dev ap-southeast-1
 
 # 4. Authorize the GitHub connection ONCE in the console:
 #    Developer Tools → Connections → pg-dev → Update pending connection
 #    (AWS exposes no API for the OAuth handshake — this is the only manual step.)
 
 # 5. Push the app's bootstrap image so ECS can start its first task:
-ECR=$(terraform -chdir=terraform output -raw ecr_repository_url)
+ECR=$(terraform -chdir=infra output -raw ecr_repository_url)
 aws ecr get-login-password | docker login --username AWS --password-stdin "${ECR%%/*}"
 docker buildx build --platform linux/amd64 --provenance=false -t "$ECR:latest" --push app/
 
@@ -137,9 +139,12 @@ Full walkthrough — remote state, the GitHub connection, troubleshooting — is
   also support a native CodePipeline action). A failing status makes the stage exit non-zero, which
   stops the pipeline before Deploy. The security gate's Lambda has no source checkout, so the build
   ships the Terraform to S3 for Checkov to scan.
-- **CI secrets & backend.** `backend.conf` and `dev.auto.tfvars` are git-ignored, so the build
-  regenerates `backend.conf` from the account/region and pulls the Infracost / Anthropic / Slack
-  values from Secrets Manager into `TF_VAR_*` at plan time — nothing sensitive is committed.
+- **CI secrets & backend.** `backend.conf` is git-ignored, so the build regenerates it from the
+  account/region. Secrets never reach Terraform at all: `terraform show -json` does not redact
+  sensitive values, so a `TF_VAR_*` secret would be written in plaintext into `plan.json` — an
+  artifact the pipeline stores in S3. The Infracost / Anthropic / Slack / GitHub values live only
+  in Secrets Manager (seeded by `scripts/seed-gate-secrets.sh`) and are read by the gate Lambdas
+  at runtime.
 - **The security gate is strict by design.** Checkov flags every HIGH/CRITICAL misconfiguration in
   the Terraform, so out of the box the gate **blocks** — the sample infra has open security groups,
   unencrypted buckets, and the like. To let a clean change reach Deploy, either fix/baseline those
@@ -194,7 +199,7 @@ run `./scripts/destroy-dev.sh` when you're done and it costs ~$0 parked.
 
 ## Setting the cost threshold
 
-`cost_gate_threshold` (USD/month) lives in `terraform/environments/dev.tfvars` (default **$50**).
+`cost_gate_threshold` (USD/month) lives in `infra/environments/dev.tfvars` (default **$50**).
 When a `terraform plan` projects a monthly increase above it, the cost gate returns a failing
 `gate_status`, posts to Slack, and the CodeBuild stage exits non-zero so the pipeline stops. Raise
 the threshold and re-apply if an increase is intentional.

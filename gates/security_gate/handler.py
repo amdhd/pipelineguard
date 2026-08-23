@@ -8,7 +8,8 @@ HIGH or CRITICAL finding.
 Two invocation modes:
   * CodePipeline custom action — event carries "CodePipeline.job"; result signalled
     with put_job_success_result / put_job_failure_result. Terraform files are read
-    from the local path in UserParameters (terraform_dir).
+    from the local path in UserParameters (terraform_dir); if that path holds no
+    Terraform the scan raises and the job fails rather than passing unscanned.
   * CodeBuild direct invoke — event carries {"ecr_image_uri","terraform_s3_bucket",
     "terraform_s3_key","pr_number","github_repo"}; the Terraform is downloaded from
     S3 (the Lambda has no source checkout) and the handler returns a gate_status.
@@ -110,8 +111,15 @@ def _handle_direct(event: dict) -> dict:
         terraform_dir = "/tmp/terraform"
         tf_bucket = event.get("terraform_s3_bucket") or os.environ.get("ARTIFACT_BUCKET")
         tf_key = event.get("terraform_s3_key")
-        if tf_key:
-            _download_terraform(tf_bucket, tf_key, terraform_dir)
+        # No Terraform artifact means Checkov has nothing to scan. Skipping it
+        # would return zero findings and pass the gate with no IaC coverage, so
+        # a missing location is an error, not an optional step.
+        if not (tf_bucket and tf_key):
+            raise ValueError(
+                "terraform_s3_bucket/terraform_s3_key missing from the event; "
+                "refusing to run the gate without the Terraform to scan."
+            )
+        _download_terraform(tf_bucket, tf_key, terraform_dir)
 
         summary = _evaluate(
             image_uri,

@@ -27,7 +27,7 @@ Deploying the real stack — remote state, the GitHub connection, teardown — i
 | Path | What lives there |
 |---|---|
 | `app/` | Sample Express API (the deployed workload) + Dockerfile + tests |
-| `terraform/` | All infra: networking, ecr, ecs, gates, pipeline modules |
+| `infra/` | All Terraform: networking, ecr, ecs, pipeline, gates modules — see [`infra/README.md`](infra/README.md) |
 | `gates/` | Lambda source: `cost_gate` (zip) + `security_gate` (container image) |
 | `buildspecs/` | CodeBuild YAMLs, one per pipeline stage |
 | `scripts/` | bootstrap · deploy-gates · apply-dev · destroy-dev · local-scan · aws-usage |
@@ -50,15 +50,15 @@ These are enforced in review and, where possible, by the gates themselves:
 ## Before you open a PR
 
 ```bash
-npm test --prefix app                  # app unit tests
-pytest                                 # gate handler tests
-terraform -chdir=terraform fmt -check  # formatting
-terraform -chdir=terraform validate
-./scripts/local-scan.sh                # Trivy + Checkov, same tools as the gate
+npm test --prefix app                         # app unit tests
+pytest                                        # gate handler tests
+terraform -chdir=infra fmt -recursive -check  # formatting
+terraform -chdir=infra validate
+./scripts/local-scan.sh                       # Trivy + Checkov, same tools as the gate
 ```
 
 For Terraform changes, run a plan and eyeball the cost delta — the cost gate blocks anything above
-**$50/month** in dev (`cost_gate_threshold` in `terraform/environments/dev.tfvars`). If an increase
+**$50/month** in dev (`cost_gate_threshold` in `infra/environments/dev.tfvars`). If an increase
 is intentional, raise the threshold in the same PR and say why.
 
 Note that the security gate is **strict by design**: Checkov flags every HIGH/CRITICAL

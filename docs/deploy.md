@@ -116,7 +116,7 @@ aws dynamodb create-table \
   --region "$REGION"
 
 # Write backend config file
-cat > terraform/backend.conf << EOF
+cat > infra/backend.conf << EOF
 bucket         = "${BUCKET_NAME}"
 key            = "pipelineguard/terraform.tfstate"
 region         = "${REGION}"
@@ -127,7 +127,7 @@ EOF
 echo "Bootstrap complete."
 echo "State bucket: s3://${BUCKET_NAME}"
 echo "Lock table:   ${TABLE_NAME}"
-echo "Backend config written to terraform/backend.conf"
+echo "Backend config written to infra/backend.conf"
 ```
 
 ---
@@ -205,8 +205,8 @@ aws codestarconnections create-connection \
 ## Step 3 — Configure Terraform Variables
 
 ```bash
-# terraform/environments/dev.tfvars
-cat > terraform/environments/dev.tfvars << 'EOF'
+# infra/environments/dev.tfvars
+cat > infra/environments/dev.tfvars << 'EOF'
 aws_region          = "ap-southeast-1"
 environment         = "dev"
 owner_tag           = "amad"
@@ -219,12 +219,20 @@ ecs_desired_count   = 1
 EOF
 ```
 
-Store secrets as environment variables — never in tfvars files:
+Secrets never go through Terraform — not in a tfvars file, and not as `TF_VAR_*`
+either. `terraform show -json` does not redact sensitive values, so any secret
+reaching Terraform is written in plaintext into `plan.json`, which the pipeline
+stores in S3 as an artifact.
+
+The gate API keys go straight into Secrets Manager instead, after the apply in
+Step 5 creates the (empty) secret:
 
 ```bash
-export TF_VAR_slack_webhook_url="https://hooks.slack.com/services/YOUR/WEBHOOK"
-export TF_VAR_infracost_api_key="YOUR_INFRACOST_KEY"
-export TF_VAR_anthropic_api_key="YOUR_ANTHROPIC_KEY"
+export INFRACOST_API_KEY="YOUR_INFRACOST_KEY"
+export ANTHROPIC_API_KEY="YOUR_ANTHROPIC_KEY"
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK"
+export GITHUB_TOKEN="YOUR_GITHUB_TOKEN"   # optional; enables the PR comment
+./scripts/seed-gate-secrets.sh dev ap-southeast-1
 ```
 
 ---
@@ -264,7 +272,7 @@ echo "All gates packaged."
 ## Step 5 — Deploy Infrastructure with Terraform
 
 ```bash
-cd terraform
+cd infra
 
 # Initialise with S3 backend
 terraform init -backend-config=backend.conf
@@ -339,7 +347,7 @@ aws ecs describe-services \
 
 ### 7b. Hit the health endpoint
 ```bash
-ALB_URL=$(cd terraform && terraform output -raw alb_dns_name)
+ALB_URL=$(cd infra && terraform output -raw alb_dns_name)
 curl http://$ALB_URL/health
 # Expected: {"status":"healthy","timestamp":"...","version":"unknown","environment":"unknown"}
 ```
@@ -372,7 +380,7 @@ Temporarily set the threshold to $0 to force a block:
 
 ```bash
 export TF_VAR_cost_gate_threshold=0
-cd terraform && terraform apply -var-file=environments/dev.tfvars -target=module.gates
+cd infra && terraform apply -var-file=environments/dev.tfvars -target=module.gates
 ```
 
 Push a commit — the cost gate should block and you'll get a Slack message.
@@ -393,7 +401,7 @@ Add a deliberately vulnerable dependency to the app or an insecure Terraform res
 
 ```bash
 # Destroy all infrastructure
-cd terraform
+cd infra
 terraform destroy -var-file=environments/dev.tfvars
 
 # Delete ECR images first (destroy won't remove non-empty ECR)

@@ -39,31 +39,6 @@ variable "log_retention_days" {
   default     = 7
 }
 
-variable "slack_webhook_url" {
-  description = "Slack incoming webhook URL for gate notifications"
-  type        = string
-  sensitive   = true
-}
-
-variable "infracost_api_key" {
-  description = "Infracost API key"
-  type        = string
-  sensitive   = true
-}
-
-variable "anthropic_api_key" {
-  description = "Anthropic Claude API key for security summarisation"
-  type        = string
-  sensitive   = true
-}
-
-variable "github_token" {
-  description = "GitHub token for the security gate to post PR comments (optional; the comment is skipped when empty)"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 variable "app_port" {
   description = "Port the container listens on"
   type        = number

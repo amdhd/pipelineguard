@@ -1,16 +1,6 @@
 # VPC with 2 public + 2 private subnets across 2 AZs.
 # Single NAT Gateway (cost-conscious for a portfolio; prod would use one per AZ).
 
-variable "environment" {
-  description = "Deployment environment"
-  type        = string
-}
-
-variable "kms_key_arn" {
-  description = "CMK ARN for encrypting the VPC flow-log group"
-  type        = string
-}
-
 data "aws_availability_zones" "available" {
   state = "available"
 }

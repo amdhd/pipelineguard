@@ -7,5 +7,5 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export AWS_PROFILE="${AWS_PROFILE:-pipelineguard}"
 
-cd "${ROOT}/terraform"
+cd "${ROOT}/infra"
 terraform apply -var-file=environments/dev.tfvars "$@"

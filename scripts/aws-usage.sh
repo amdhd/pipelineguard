@@ -24,7 +24,7 @@ dim  "profile=${AWS_PROFILE}  region=${AWS_REGION}  account=$(aws sts get-caller
 echo
 
 # --- Resolve the ECS cluster name from Terraform state (falls back gracefully) ---
-CLUSTER="$(terraform -chdir="${ROOT}/terraform" output -raw ecs_cluster_name 2>/dev/null || true)"
+CLUSTER="$(terraform -chdir="${ROOT}/infra" output -raw ecs_cluster_name 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 bold "1. ECS / Fargate (main cost driver)"

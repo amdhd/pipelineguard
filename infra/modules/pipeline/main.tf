@@ -160,14 +160,6 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = [aws_ssm_parameter.ecr_repo_url.arn]
       },
       {
-        # The tf-plan buildspec pulls the gate secrets into TF_VAR_* so the
-        # required sensitive variables resolve during `terraform plan`.
-        Sid      = "ReadGateSecret"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = ["arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:pipelineguard/gates/${var.environment}-*"]
-      },
-      {
         # Terraform remote state (created out-of-band by scripts/bootstrap.sh).
         Sid    = "TerraformStateBackend"
         Effect = "Allow"

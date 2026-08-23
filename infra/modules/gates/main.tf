@@ -1,18 +1,17 @@
-# --- Secrets: store sensitive values in Secrets Manager, never in env vars ---
+# --- Secrets: Terraform owns the container, never the material ---
+#
+# Only the empty secret is managed here. The API keys are seeded out-of-band by
+# scripts/seed-gate-secrets.sh and read by the gate Lambdas at runtime.
+#
+# They are deliberately NOT Terraform variables: `terraform show -json` does not
+# redact sensitive values, so anything reaching the plan is written in plaintext
+# into plan.json — a pipeline artifact that lands in S3. A
+# `data "aws_secretsmanager_secret_version"` lookup leaks the same way, so this
+# module never reads the values back either.
 resource "aws_secretsmanager_secret" "gate_secrets" {
   # checkov:skip=CKV2_AWS_57:Auto-rotation N/A — these are third-party API keys rotated manually.
   name       = "pipelineguard/gates/${var.environment}"
   kms_key_id = var.kms_key_arn
-}
-
-resource "aws_secretsmanager_secret_version" "gate_secrets" {
-  secret_id = aws_secretsmanager_secret.gate_secrets.id
-  secret_string = jsonencode({
-    INFRACOST_API_KEY = var.infracost_api_key
-    ANTHROPIC_API_KEY = var.anthropic_api_key
-    SLACK_WEBHOOK_URL = var.slack_webhook_url
-    GITHUB_TOKEN      = var.github_token
-  })
 }
 
 # --- Lambda deployment packages ---

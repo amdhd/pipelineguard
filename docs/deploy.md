@@ -219,12 +219,20 @@ ecs_desired_count   = 1
 EOF
 ```
 
-Store secrets as environment variables — never in tfvars files:
+Secrets never go through Terraform — not in a tfvars file, and not as `TF_VAR_*`
+either. `terraform show -json` does not redact sensitive values, so any secret
+reaching Terraform is written in plaintext into `plan.json`, which the pipeline
+stores in S3 as an artifact.
+
+The gate API keys go straight into Secrets Manager instead, after the apply in
+Step 5 creates the (empty) secret:
 
 ```bash
-export TF_VAR_slack_webhook_url="https://hooks.slack.com/services/YOUR/WEBHOOK"
-export TF_VAR_infracost_api_key="YOUR_INFRACOST_KEY"
-export TF_VAR_anthropic_api_key="YOUR_ANTHROPIC_KEY"
+export INFRACOST_API_KEY="YOUR_INFRACOST_KEY"
+export ANTHROPIC_API_KEY="YOUR_ANTHROPIC_KEY"
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK"
+export GITHUB_TOKEN="YOUR_GITHUB_TOKEN"   # optional; enables the PR comment
+./scripts/seed-gate-secrets.sh dev ap-southeast-1
 ```
 
 ---

@@ -11,9 +11,11 @@ ecs_memory             = 512
 ecs_desired_count      = 1
 enable_manual_approval = false
 
-# Sensitive values — do NOT commit real secrets here.
-# Provide via -var, TF_VAR_* env vars, or a git-ignored *.auto.tfvars file:
-#   slack_webhook_url = "https://hooks.slack.com/services/..."
-#   infracost_api_key = "ico-..."
-#   anthropic_api_key = "sk-ant-..."
-#   github_token      = "ghp_..."   # optional; enables the security gate PR comment
+# No secrets belong in this file, or in any Terraform variable.
+# `terraform show -json` does not redact sensitive values, so anything passed to
+# Terraform is written in plaintext into plan.json — a pipeline artifact stored in
+# S3. The gate API keys therefore live only in Secrets Manager, seeded with:
+#
+#   export INFRACOST_API_KEY=... ANTHROPIC_API_KEY=... SLACK_WEBHOOK_URL=...
+#   export GITHUB_TOKEN=...        # optional; enables the security gate PR comment
+#   ./scripts/seed-gate-secrets.sh dev ap-southeast-1

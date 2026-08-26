@@ -376,3 +376,80 @@ resource "aws_iam_role_policy" "github_qa" {
     ]
   })
 }
+
+# --- AgentCore runtime ---
+#
+# Created only once a zip exists (see qa_agent_code_key). A runtime cannot
+# reference an S3 object that is not there, so the order is: apply everything
+# else -> scripts/package-qa-agent.sh -> apply again with the key and version.
+# The gate container image has the same constraint; this is that pattern with a
+# zip instead of an image.
+#
+# Schema below was read from `terraform providers schema -json` on the pinned
+# provider rather than from documentation. Two things it settles that the docs
+# do not make obvious:
+#   * lifecycle_configuration is an ATTRIBUTE (list of object), not a block.
+#     Writing `lifecycle_configuration { ... }` does not parse.
+#   * network_configuration is REQUIRED, even for PUBLIC.
+resource "aws_bedrockagentcore_agent_runtime" "qa" {
+  count = var.qa_agent_code_key == "" ? 0 : 1
+
+  # UNDERSCORES, not hyphens. The API pattern is [a-zA-Z][a-zA-Z0-9_]{0,47} --
+  # this is the one resource in the repo that rejects the hyphenated convention
+  # used everywhere else, and it fails at apply, not at plan. Also capped at 48
+  # characters starting with a letter; "pipelineguard_qa_dev_runtime" is 28.
+  agent_runtime_name = replace("${local.name_prefix}-runtime", "-", "_")
+  description        = "UI-QA agent: drives a browser against a deployed app and returns findings JSON"
+  role_arn           = aws_iam_role.agent_runtime.arn
+
+  agent_runtime_artifact {
+    code_configuration {
+      runtime = var.agent_runtime_python
+
+      # A COMMAND ARRAY, not [module, function]. Read from the starter toolkit's
+      # own packaging code; a docs page found by search claimed the latter and
+      # was wrong on every point. ["opentelemetry-instrument", "agent.py"] is
+      # the observability variant.
+      entry_point = ["agent.py"]
+
+      code {
+        s3 {
+          bucket = aws_s3_bucket.code.bucket
+          prefix = var.qa_agent_code_key
+          # Pinning the version makes a deploy immutable: re-running the
+          # packaging script does not silently change what a runtime executes.
+          version_id = var.qa_agent_code_version_id == "" ? null : var.qa_agent_code_version_id
+        }
+      }
+    }
+  }
+
+  # PUBLIC, deliberately. The provider bug that leaves undeletable ENIs and hangs
+  # destroy on a dependency cycle is VPC-only -- ENIs exist only there -- and this
+  # project tears down as a matter of routine. PUBLIC is also correct on the
+  # merits: the agent reaches a public tunnel URL and public AWS APIs, and needs
+  # no VPC reachability.
+  network_configuration {
+    network_mode = "PUBLIC"
+  }
+
+  # The one cost control in this design enforced by the PLATFORM rather than by
+  # harness logic, so it survives a harness bug or a wedged session. The default
+  # idle timeout is 900s and memory bills for every second a session is alive,
+  # including idle.
+  #
+  # BOTH fields must be set together. Specifying max_lifetime alone triggers
+  # hashicorp/terraform-provider-aws#45290: AWS computes a default for the
+  # omitted idle timeout, Terraform expected null, and the apply fails with
+  # "inconsistent result after apply".
+  lifecycle_configuration = [{
+    idle_runtime_session_timeout = var.idle_session_timeout
+    max_lifetime                 = var.max_session_lifetime
+  }]
+
+  environment_variables = {
+    REPORTS_BUCKET = aws_s3_bucket.reports.bucket
+    QA_SECRET_ARN  = aws_secretsmanager_secret.qa_target.arn
+    LOG_LEVEL      = "INFO"
+  }
+}

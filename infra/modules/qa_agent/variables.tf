@@ -48,3 +48,39 @@ variable "qa_workflow_ref" {
   type        = string
   default     = "refs/heads/main"
 }
+
+# --- Runtime code artifact ---
+#
+# Empty by default, which is what makes the cold-start ordering work: the
+# runtime cannot reference a zip that does not exist yet, so it is created only
+# once scripts/package-qa-agent.sh has uploaded one and printed these values.
+# Same shape as the repo's existing phased apply for the gate container image.
+variable "qa_agent_code_key" {
+  description = "S3 key of the agent deployment zip. Empty disables the runtime resource entirely."
+  type        = string
+  default     = ""
+}
+
+variable "qa_agent_code_version_id" {
+  description = "S3 object version of the agent zip. Pinning it makes a deploy immutable and a rollback a variable change."
+  type        = string
+  default     = ""
+}
+
+variable "agent_runtime_python" {
+  description = "Runtime enum for the code artifact. MUST match PY_VERSION in scripts/package-qa-agent.sh -- vendored .so files are tagged cpython-3XX and will not load on another minor."
+  type        = string
+  default     = "PYTHON_3_12"
+}
+
+variable "idle_session_timeout" {
+  description = "Seconds an idle session survives before reclamation. AWS defaults to 900; memory bills for every second a session is alive, including idle."
+  type        = number
+  default     = 300
+}
+
+variable "max_session_lifetime" {
+  description = "Hard ceiling on a single session, in seconds."
+  type        = number
+  default     = 1800
+}

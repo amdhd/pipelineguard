@@ -37,3 +37,13 @@ output "code_bucket_name" {
   description = "S3 bucket holding the agent deployment zip (packaged by scripts/package-qa-agent.sh)"
   value       = aws_s3_bucket.code.bucket
 }
+
+output "runtime_arn" {
+  description = "AgentCore runtime ARN. Null until scripts/package-qa-agent.sh has uploaded a zip and its key was passed in."
+  value       = try(aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_arn, null)
+}
+
+output "runtime_id" {
+  description = "AgentCore runtime id, or null when the runtime is not yet created."
+  value       = try(aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id, null)
+}

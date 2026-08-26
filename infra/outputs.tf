@@ -62,3 +62,13 @@ output "qa_github_role_arn" {
   description = "Role ARN for the vesselAI QA workflow's aws-actions/configure-aws-credentials step"
   value       = module.qa_agent.github_role_arn
 }
+
+output "qa_runtime_arn" {
+  description = "AgentCore QA runtime ARN — null until the agent zip is packaged and passed in"
+  value       = module.qa_agent.runtime_arn
+}
+
+output "qa_code_bucket" {
+  description = "S3 bucket for the QA agent deployment zip"
+  value       = module.qa_agent.code_bucket_name
+}

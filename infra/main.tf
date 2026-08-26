@@ -52,3 +52,14 @@ module "gates" {
   log_retention       = var.log_retention_days
   kms_key_arn         = aws_kms_key.main.arn
 }
+
+# The QA agent's own infrastructure: reports bucket, target credentials, and the
+# AgentCore runtime execution role. The runtime itself is added separately --
+# it needs an image in ECR before it can be created.
+module "qa_agent" {
+  source        = "./modules/qa_agent"
+  environment   = var.environment
+  aws_region    = var.aws_region
+  log_retention = var.log_retention_days
+  kms_key_arn   = aws_kms_key.main.arn
+}

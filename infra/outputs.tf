@@ -42,3 +42,18 @@ output "security_gate_ecr_url" {
   description = "ECR repository URL for the security gate container image"
   value       = module.gates.security_gate_ecr_url
 }
+
+output "qa_reports_bucket" {
+  description = "S3 bucket for QA agent screenshots and findings JSON"
+  value       = module.qa_agent.reports_bucket_name
+}
+
+output "qa_secret_name" {
+  description = "QA target credentials secret — seed with scripts/seed-qa-secret.sh"
+  value       = module.qa_agent.qa_secret_name
+}
+
+output "qa_runtime_role_arn" {
+  description = "Execution role ARN for the AgentCore QA runtime"
+  value       = module.qa_agent.runtime_role_arn
+}

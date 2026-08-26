@@ -375,12 +375,12 @@ Lambda rejects. Same tool, same silent-rejection class.
 
 Things that could not be settled from source alone.
 
-1. **Bedrock model access — BLOCKED, and it is the one thing gating Phase 1.**
-   The Anthropic **use-case form has never been submitted** for this account, so
-   every `converse` call is rejected with `ResourceNotFoundException`. Note that
-   `get-foundation-model-availability` reports `AUTHORIZED`/`AVAILABLE` anyway —
-   it is not a permission check. Must be submitted by the account owner (the
-   form asks for real company and use-case details). See the correction in §11.
+1. ~~**Bedrock model access**~~ — **resolved.** The Anthropic use-case form was
+   submitted and approved; both rungs invoke successfully (`OK`, 16 tokens).
+   The failure mode is documented in §11 because the diagnosis is non-obvious:
+   `get-foundation-model-availability` reported `AUTHORIZED`/`AVAILABLE`
+   throughout, including while every call was being rejected. It is not a
+   permission check.
 
    Still true, and still worth saying in an interview: this repo had **zero
    Bedrock usage** before the QA agent.
@@ -433,7 +433,11 @@ Things that could not be settled from source alone.
 
 Verified live on 2026-08-26 from the `pipelineguard` profile, `ap-southeast-1`.
 
-> ### CORRECTION — model invocation is BLOCKED. **[2026-08-26, later the same day]**
+> ### RESOLVED — but the reasoning below is the part worth keeping. **[2026-08-26]**
+>
+> **Model invocation now works.** The Anthropic use-case form was submitted and
+> approval landed in about a minute; both rungs return `OK` / 16 tokens. The
+> account history, kept because it explains the failure mode:
 >
 > An earlier revision of this section said "access is already enabled." That was
 > written from two `converse` calls that genuinely succeeded (Haiku and Sonnet,
@@ -455,14 +459,20 @@ Verified live on 2026-08-26 from the `pipelineguard` profile, `ap-southeast-1`.
 > entitlement, not whether a call will be accepted. **Only an invoke tells the
 > truth** — which is the one reason the original error was caught at all.
 >
-> **This is a hard blocker for Phase 1.** It is fixed by submitting the Anthropic
-> use-case form once, per account. There is a CLI path,
-> `aws bedrock put-use-case-for-model-access --form-data <blob>`, but the blob is
-> a customer profile — company, website, industry, intended use — and those must
-> be truthful, so it is the account owner's to submit, not something to
-> fabricate. The console's Bedrock → Model access page is the practical route.
-> Allow ~15 minutes for propagation after submitting; the error message says so
-> explicitly.
+> **Fixed by** submitting the Anthropic use-case form once, per account, via
+> `aws bedrock put-use-case-for-model-access --form-data <blob>` (or the
+> console's Bedrock → Model access page). The blob is a customer profile —
+> company, website, industry, intended use — which must be truthful, so it is
+> the account owner's to submit rather than something to fabricate.
+>
+> The error advises waiting 15 minutes; in practice approval landed in ~1 minute.
+> `intendedUsers: "0"` was accepted without issue — a solo project does not need
+> to inflate the number.
+>
+> **If a future account hits this**, the tell is that
+> `get-use-case-for-model-access` errors with "You have not filled out the
+> request form" while `get-foundation-model-availability` reports `AUTHORIZED`.
+> Trust the former.
 
 The rest of this section (ARNs, profile routing, IAM shape) is unaffected — it
 describes what to grant, and remains correct once the form clears.

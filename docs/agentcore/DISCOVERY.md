@@ -375,11 +375,12 @@ Lambda rejects. Same tool, same silent-rejection class.
 
 Things that could not be settled from source alone.
 
-1. ~~**Bedrock model access**~~ — **already enabled; nothing to request.**
-   `get-foundation-model-availability` reports `authorizationStatus: AUTHORIZED`
-   and `entitlementAvailability: AVAILABLE`, and — the check that actually
-   settles it — a live `bedrock-runtime converse` call **succeeded** on both
-   candidate models from the `pipelineguard` profile. See §11 for the ARNs.
+1. **Bedrock model access — BLOCKED, and it is the one thing gating Phase 1.**
+   The Anthropic **use-case form has never been submitted** for this account, so
+   every `converse` call is rejected with `ResourceNotFoundException`. Note that
+   `get-foundation-model-availability` reports `AUTHORIZED`/`AVAILABLE` anyway —
+   it is not a permission check. Must be submitted by the account owner (the
+   form asks for real company and use-case details). See the correction in §11.
 
    Still true, and still worth saying in an interview: this repo had **zero
    Bedrock usage** before the QA agent.
@@ -432,8 +433,39 @@ Things that could not be settled from source alone.
 
 Verified live on 2026-08-26 from the `pipelineguard` profile, `ap-southeast-1`.
 
-**Access is already enabled.** No agreement to accept, no console request. Both
-candidate models answered a real `converse` call (16 tokens each).
+> ### CORRECTION — model invocation is BLOCKED. **[2026-08-26, later the same day]**
+>
+> An earlier revision of this section said "access is already enabled." That was
+> written from two `converse` calls that genuinely succeeded (Haiku and Sonnet,
+> 16 tokens each, ~15:55). **Re-running the identical calls at ~16:10 fails:**
+>
+> ```
+> ResourceNotFoundException: Model use case details have not been submitted for
+> this account. Fill out the Anthropic use case details form before using the
+> model.
+> ```
+>
+> and `get-use-case-for-model-access` confirms it: *"You have not filled out the
+> request form."*
+>
+> **The lesson worth keeping: the availability API is not a permission check.**
+> `get-foundation-model-availability` still reports `authorizationStatus:
+> AUTHORIZED` and `entitlementAvailability: AVAILABLE` for these models *right
+> now*, while every invoke is rejected. Those fields describe region and
+> entitlement, not whether a call will be accepted. **Only an invoke tells the
+> truth** — which is the one reason the original error was caught at all.
+>
+> **This is a hard blocker for Phase 1.** It is fixed by submitting the Anthropic
+> use-case form once, per account. There is a CLI path,
+> `aws bedrock put-use-case-for-model-access --form-data <blob>`, but the blob is
+> a customer profile — company, website, industry, intended use — and those must
+> be truthful, so it is the account owner's to submit, not something to
+> fabricate. The console's Bedrock → Model access page is the practical route.
+> Allow ~15 minutes for propagation after submitting; the error message says so
+> explicitly.
+
+The rest of this section (ARNs, profile routing, IAM shape) is unaffected — it
+describes what to grant, and remains correct once the form clears.
 
 ### Current-generation Anthropic models are inference-profile only
 
@@ -492,3 +524,54 @@ proves **account-level** access — no SCP or entitlement blocks these models. I
 does *not* prove the AgentCore execution role will work, since that role does not
 exist yet. Re-run the same `converse` call from the execution role once Phase 1a
 applies.
+
+---
+
+## 12. AgentCore in `ap-southeast-1` — verified from the API
+
+Previously asserted from a web search. Now confirmed against the control plane
+(`aws bedrock-agentcore-control`, CLI 2.35.19):
+
+| Check | Result |
+|---|---|
+| Control plane reachable in region | ✅ `list-agent-runtimes` returns `[]` |
+| `aws.browser.v1` | ✅ **READY** |
+| `aws.codeinterpreter.v1` | ✅ **READY** |
+
+Both tools the QA agent needs (PLAN.md 1b) are system-provided and live in the
+chosen region. `list-browsers`/`list-code-interpreters` return empty because
+those list *custom* instances; the system ones are fetched by id.
+
+### Two findings from the `create-agent-runtime` contract that change the plan
+
+**1. A container image is not required. `--agent-runtime-artifact` is a tagged
+union:** `containerConfiguration` (ECR URI) **or** `codeConfiguration` — an S3
+bucket + prefix, a `runtime` enum, and an `entryPoint`. Supported runtimes
+include `PYTHON_3_10` … `PYTHON_3_14` and `NODE_22`.
+
+This makes PLAN.md's ECR repo, `scripts/deploy-qa-agent.sh`, the
+`--platform linux/arm64` requirement, the silent-amd64-rejection trap, and the
+3-phase cold apply **all unnecessary**. Zip the agent, put it in S3, point the
+runtime at it.
+
+It also mirrors a split this repo already makes: the **cost gate is a zip
+Lambda** and the **security gate is a container**, and the reason is size —
+Trivy + Checkov are ~320 MB. A Python agent using the Claude Agent SDK is small,
+so it belongs on the zip side, exactly like the cost gate. Take
+`codeConfiguration` and delete the container work.
+
+> **Trap to avoid when doing so:** the agent code must **not** live in the
+> reports bucket. That bucket has a 7-day expiry lifecycle (§ PLAN.md 1a), which
+> would silently delete the agent's own code and break the runtime a week after
+> it starts working. Use a separate bucket, or a prefix explicitly excluded from
+> the lifecycle rule.
+
+**2. `--network-configuration` is required, and `networkMode` is `PUBLIC` or
+`VPC`.** Choose **`PUBLIC`**. The known provider issue where
+`aws_bedrockagentcore_agent_runtime` leaves undeletable ENIs and hangs `destroy`
+on a dependency cycle is a **VPC-mode** problem — ENIs only exist there. This
+project destroys and rebuilds routinely, so picking `PUBLIC` removes that
+failure mode by construction rather than documenting a workaround for it.
+
+`PUBLIC` is also correct on the merits: the agent's targets are a public tunnel
+URL and public AWS APIs. It needs no VPC reachability.

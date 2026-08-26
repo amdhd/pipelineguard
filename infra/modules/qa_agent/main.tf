@@ -88,6 +88,70 @@ resource "aws_s3_bucket_public_access_block" "reports" {
   restrict_public_buckets = true
 }
 
+# --- Code bucket: the agent's deployment zip ---
+#
+# DELIBERATELY A SEPARATE BUCKET FROM reports.
+#
+# The reports bucket expires EVERYTHING after 7 days (its lifecycle rule uses an
+# empty filter). Agent code parked there would be deleted a week after it started
+# working, breaking the runtime with no recent change to blame -- the worst kind
+# of failure to diagnose. Sharing one bucket and excluding a prefix would leave
+# that rule one careless edit away from doing exactly this. A separate bucket
+# makes it impossible by construction.
+#
+# Versioned, and no expiry: the object version IS the deployment history, and the
+# runtime pins one by version id.
+resource "aws_s3_bucket" "code" {
+  # checkov:skip=CKV_AWS_18:Access logging omitted for a cost-conscious demo -- matches the pipeline artifact bucket.
+  # checkov:skip=CKV_AWS_144:Cross-region replication is unnecessary for a rebuildable artefact.
+  # checkov:skip=CKV2_AWS_62:No event notifications -- nothing consumes bucket events.
+  bucket        = "${local.name_prefix}-code-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true # portfolio: allow terraform destroy to clean up
+}
+
+resource "aws_s3_bucket_versioning" "code" {
+  bucket = aws_s3_bucket.code.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "code" {
+  bucket = aws_s3_bucket.code.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms" # CKV_AWS_145
+      kms_master_key_id = var.kms_key_arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# Only incomplete uploads are cleaned up. NOTHING here expires -- see above.
+resource "aws_s3_bucket_lifecycle_configuration" "code" {
+  bucket = aws_s3_bucket.code.id
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1 # CKV_AWS_300
+    }
+    # Keep a few previous versions for rollback, but not forever.
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "code" {
+  bucket                  = aws_s3_bucket.code.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 # --- QA target credentials: Terraform owns the container, never the material ---
 #
 # Same reasoning as the gate secret in modules/gates: `terraform show -json`
@@ -163,6 +227,17 @@ resource "aws_iam_role_policy" "agent_runtime" {
         Effect   = "Allow"
         Action   = ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
         Resource = [var.kms_key_arn]
+      },
+      {
+        # AgentCore fetches the deployment zip under this role at cold start.
+        # UNVERIFIED until the runtime exists: if the service reads the artifact
+        # with its own service principal instead, this statement is unnecessary
+        # rather than wrong. Left in because a missing read fails the runtime at
+        # startup with an error that points at the artifact, not at IAM.
+        Sid      = "ReadAgentCode"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = ["${aws_s3_bucket.code.arn}/*"]
       },
       {
         Sid      = "ReadQaCredentials"

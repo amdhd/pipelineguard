@@ -32,3 +32,8 @@ output "github_role_arn" {
   description = "Role the vesselAI QA workflow assumes via OIDC"
   value       = aws_iam_role.github_qa.arn
 }
+
+output "code_bucket_name" {
+  description = "S3 bucket holding the agent deployment zip (packaged by scripts/package-qa-agent.sh)"
+  value       = aws_s3_bucket.code.bucket
+}

@@ -1,18 +1,20 @@
 """
-The browser tools exposed to the model, and their Playwright implementations.
+The browser tools exposed to the model.
 
 AgentCore's Browser tool is a REMOTE Chromium. `BrowserClient.generate_ws_headers()`
-returns a CDP websocket endpoint plus SigV4 headers; Playwright connects to that
-over CDP. Nothing runs a browser locally, which is why the deployment zip needs
-the Playwright client library but none of its bundled browsers.
+returns a CDP websocket endpoint plus SigV4 headers; cdp.py speaks that protocol
+directly. Nothing runs a browser locally and no native binary ships in the zip --
+see the note at the top of cdp.py for why Playwright could not be used.
 
-Tool surface is deliberately small. Every tool is more schema in every request
-and more ways for a run to wander, and PLAN.md 1d counts both tokens and
+The tool surface is deliberately small. Every tool is more schema in every
+request and more ways for a run to wander, and PLAN.md 1d counts both tokens and
 wall-clock as cost.
 """
 
-import base64
+import json
 import logging
+
+from cdp import CDPError, CDPSession
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +31,8 @@ def tool_specs() -> list[dict]:
                 "name": "navigate",
                 "description": (
                     "Navigate to a path on the target application, e.g. '/voyage'. "
-                    "Waits for the network to settle. Returns the final URL, HTTP "
-                    "status, and the page's visible text (truncated)."
+                    "Waits for the network to settle. Returns the final URL and the "
+                    "page's visible text, plus any console errors or failed requests."
                 ),
                 "inputSchema": {
                     "json": {
@@ -50,9 +52,9 @@ def tool_specs() -> list[dict]:
             "toolSpec": {
                 "name": "read_page",
                 "description": (
-                    "Read the current page without navigating: visible text, any "
-                    "console errors since the last read, and any failed network "
-                    "requests. Use this to check whether something rendered."
+                    "Read the current page without navigating: visible text, console "
+                    "errors since the last read, and failed network requests. Use "
+                    "this to check whether something actually rendered."
                 ),
                 "inputSchema": {"json": {"type": "object", "properties": {}}},
             }
@@ -61,18 +63,13 @@ def tool_specs() -> list[dict]:
             "toolSpec": {
                 "name": "click",
                 "description": (
-                    "Click the first element matching a CSS selector or visible "
-                    "text. Returns the page state afterwards."
+                    "Click the first element matching a CSS selector, or use "
+                    "'text=Some Label' to match visible text. Returns page state after."
                 ),
                 "inputSchema": {
                     "json": {
                         "type": "object",
-                        "properties": {
-                            "selector": {
-                                "type": "string",
-                                "description": "CSS selector, or text=... for visible text.",
-                            }
-                        },
+                        "properties": {"selector": {"type": "string"}},
                         "required": ["selector"],
                     }
                 },
@@ -81,7 +78,7 @@ def tool_specs() -> list[dict]:
         {
             "toolSpec": {
                 "name": "type_text",
-                "description": "Type text into the field matching a CSS selector.",
+                "description": "Type text into the input matching a CSS selector.",
                 "inputSchema": {
                     "json": {
                         "type": "object",
@@ -98,9 +95,9 @@ def tool_specs() -> list[dict]:
             "toolSpec": {
                 "name": "screenshot",
                 "description": (
-                    "Capture the current viewport as evidence for a finding. "
-                    "ONLY call this when you have found something to report -- it "
-                    "is the most expensive tool available."
+                    "Capture the viewport as evidence for a finding. ONLY call this "
+                    "when you have found something to report -- it is the most "
+                    "expensive tool available."
                 ),
                 "inputSchema": {
                     "json": {
@@ -119,122 +116,138 @@ def tool_specs() -> list[dict]:
     ]
 
 
+# React controls its inputs, so assigning `el.value` directly is swallowed --
+# React's synthetic event system never sees it, state never updates, and the form
+# submits empty. The value must go through the NATIVE setter with an input event
+# dispatched after it. Without this the agent appears to type the login
+# credentials successfully and then fails to log in, which reads as a broken
+# login page rather than a broken tool.
+_REACT_SET_VALUE = """
+(function(sel, value) {
+  const el = document.querySelector(sel);
+  if (!el) return {ok: false, error: 'no element matching ' + sel};
+  const proto = el instanceof HTMLTextAreaElement
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  setter.call(el, value);
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  return {ok: true};
+})(%s, %s)
+"""
+
+_CLICK = """
+(function(sel) {
+  let el = null;
+  if (sel.startsWith('text=')) {
+    const wanted = sel.slice(5).trim().toLowerCase();
+    const candidates = document.querySelectorAll('button, a, [role=button], input[type=submit]');
+    for (const c of candidates) {
+      if ((c.innerText || c.value || '').trim().toLowerCase().includes(wanted)) { el = c; break; }
+    }
+  } else {
+    el = document.querySelector(sel);
+  }
+  if (!el) return {ok: false, error: 'no element matching ' + sel};
+  el.click();
+  return {ok: true};
+})(%s)
+"""
+
+
 class BrowserSession:
     """
-    Playwright over AgentCore's remote CDP endpoint, plus the passive collectors
-    (console errors, failed requests) that make 'the page silently broke' visible.
+    Drives the remote browser and collects the passive signals.
 
-    Those collectors matter more than they look: vesselAI's own contract audit
-    found that most of its breakage did NOT 404 -- it rendered NaN, blank charts,
-    or crashed the React tree. A QA agent looking only at rendered text would
-    miss exactly the class of bug this project exists to catch.
+    Those signals matter more than they look: vesselAI's own contract audit found
+    that most of its breakage did NOT 404 -- it rendered NaN, blank charts, or
+    crashed the React tree. An agent reading only visible text would miss exactly
+    the class of bug this project exists to catch.
     """
 
     def __init__(self, base_url: str, screenshot_sink):
         self.base_url = base_url.rstrip("/")
         self._sink = screenshot_sink
-        self._console_errors: list[str] = []
-        self._failed_requests: list[str] = []
-        self._page = None
-        self._browser = None
-        self._pw = None
+        self.cdp: CDPSession | None = None
         self.screenshots: list[dict] = []
 
     def attach(self, ws_url: str, headers: dict) -> None:
-        from playwright.sync_api import sync_playwright
-
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.connect_over_cdp(ws_url, headers=headers)
-        context = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
-        self._page = context.pages[0] if context.pages else context.new_page()
-
-        self._page.on("console", self._on_console)
-        self._page.on("requestfailed", self._on_request_failed)
-        # An uncaught exception is the "crashed the React tree" case; it does not
-        # always surface as a console error.
-        self._page.on("pageerror", lambda e: self._console_errors.append(f"pageerror: {e}"))
+        self.cdp = CDPSession(ws_url, headers)
+        self.cdp.attach_to_page()
 
     def close(self) -> None:
-        for closer in (self._browser, self._pw):
-            try:
-                if closer is not None:
-                    closer.close() if closer is self._browser else closer.stop()
-            except Exception:  # noqa: BLE001 -- teardown must never mask a real error
-                logger.warning("browser teardown raised", exc_info=True)
+        if self.cdp is not None:
+            self.cdp.close()
 
-    def _on_console(self, msg) -> None:
-        if msg.type in ("error", "warning"):
-            self._console_errors.append(f"{msg.type}: {msg.text}"[:500])
-
-    def _on_request_failed(self, request) -> None:
-        self._failed_requests.append(f"{request.method} {request.url}"[:500])
-
-    def _drain(self) -> dict:
-        errors, failed = self._console_errors, self._failed_requests
-        self._console_errors, self._failed_requests = [], []
-        return {"console_errors": errors[:20], "failed_requests": failed[:20]}
-
-    def _state(self, status: int | None = None) -> dict:
-        text = self._page.inner_text("body")
-        truncated = len(text) > MAX_TEXT_CHARS
-        state = {
-            "url": self._page.url,
+    def _state(self) -> dict:
+        text = self.cdp.evaluate("document.body ? document.body.innerText : ''") or ""
+        return {
+            "url": self.cdp.evaluate("location.href"),
             "text": text[:MAX_TEXT_CHARS],
-            "text_truncated": truncated,
-            **self._drain(),
+            "text_truncated": len(text) > MAX_TEXT_CHARS,
+            **self.cdp.drain_events(),
         }
-        if status is not None:
-            state["status"] = status
-        return state
 
     # --- tool implementations ---
 
     def navigate(self, path: str) -> dict:
         if not path.startswith("/"):
             return {"error": f"path must start with '/', got {path!r}"}
-        response = self._page.goto(f"{self.base_url}{path}", wait_until="networkidle")
-        return self._state(status=response.status if response else None)
+        self.cdp.send("Page.navigate", {"url": f"{self.base_url}{path}"})
+        self.cdp.wait_for_network_idle()
+        return self._state()
 
     def read_page(self) -> dict:
         return self._state()
 
     def click(self, selector: str) -> dict:
         try:
-            self._page.click(selector, timeout=10_000)
-        except Exception as e:  # noqa: BLE001 -- a failed click is data, not a crash
+            result = self.cdp.evaluate(_CLICK % json.dumps(selector))
+        except CDPError as e:
             return {"error": str(e)[:300], **self._state()}
-        self._page.wait_for_load_state("networkidle", timeout=10_000)
+        if not result.get("ok"):
+            return {"error": result.get("error", "click failed"), **self._state()}
+        self.cdp.wait_for_network_idle()
         return self._state()
 
     def type_text(self, selector: str, text: str) -> dict:
         try:
-            self._page.fill(selector, text, timeout=10_000)
-        except Exception as e:  # noqa: BLE001
-            return {"error": str(e)[:300], **self._state()}
-        return {"ok": True, "url": self._page.url}
+            result = self.cdp.evaluate(_REACT_SET_VALUE % (json.dumps(selector), json.dumps(text)))
+        except CDPError as e:
+            return {"error": str(e)[:300]}
+        if not result.get("ok"):
+            return {"error": result.get("error", "type failed")}
+        return {"ok": True}
 
     def screenshot(self, label: str) -> dict:
-        png = self._page.screenshot(full_page=False)
+        import base64
+
+        result = self.cdp.send("Page.captureScreenshot", {"format": "png"})
+        png = base64.b64decode(result["data"])
         key = self._sink(label, png)
-        record = {"key": key, "label": label, "url": self._page.url}
-        self.screenshots.append(record)
+        self.screenshots.append({"key": key, "label": label})
         # The image is NOT returned to the model. It already knows what it just
         # looked at; sending the bytes back would double the cost of the most
         # expensive tool for no added information.
         return {"saved": True, "key": key, "bytes": len(png)}
 
     def dispatch(self, name: str, args: dict) -> dict:
-        handler = {
+        handlers = {
             "navigate": lambda: self.navigate(args["path"]),
             "read_page": self.read_page,
             "click": lambda: self.click(args["selector"]),
             "type_text": lambda: self.type_text(args["selector"], args["text"]),
             "screenshot": lambda: self.screenshot(args["label"]),
-        }.get(name)
+        }
+        handler = handlers.get(name)
         if handler is None:
             return {"error": f"unknown tool {name!r}"}
-        return handler()
-
-
-def encode_png(png: bytes) -> str:
-    return base64.b64encode(png).decode("ascii")
+        try:
+            return handler()
+        except KeyError as e:
+            return {"error": f"tool {name} missing argument {e}"}
+        except CDPError as e:
+            # A browser-level failure is data for the model, not a crash for the
+            # run -- it may itself be the finding.
+            return {"error": f"browser error: {e}"[:300]}

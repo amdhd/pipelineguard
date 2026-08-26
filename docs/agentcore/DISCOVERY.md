@@ -585,3 +585,94 @@ failure mode by construction rather than documenting a workaround for it.
 
 `PUBLIC` is also correct on the merits: the agent's targets are a public tunnel
 URL and public AWS APIs. It needs no VPC reachability.
+
+---
+
+## 13. What a real apply settled — AgentCore runtime, verified 2026-08-26
+
+`module.qa_agent` was applied and the runtime invoked for real. Four things were
+guesses before this; all four are now facts, and two of them were **wrong**.
+
+### Confirmed
+
+| Question | Answer |
+|---|---|
+| Managed code runtime architecture | **aarch64** — an `manylinux2014_aarch64` / `cp312` zip loaded and ran |
+| `entry_point` contract | **Command array** `["agent.py"]`, module exposing `app` — as read from the toolkit, not the docs |
+| Runtime Python | `3.12.12`, at `/opt/aws/agentcore-runtime/python/versions/3.12.12/` |
+| Code unpack location | `/var/task/` — Lambda-like, as the packaging model implies |
+| Browser tool end-to-end | Session start → SigV4 websocket → CDP → clean stop |
+
+### Wrong #1 — the log group name, and worse, its retention
+
+The module guessed `/aws/bedrock-agentcore/<name_prefix>`. **Nothing ever wrote
+to it.** AgentCore writes to a group it names itself:
+
+```
+/aws/bedrock-agentcore/runtimes/<agent_runtime_id>-DEFAULT
+```
+
+The name was the smaller problem. The group AgentCore creates has
+**`retentionInDays: null` — logs never expire**, on a project where every other
+log group is capped at 7 days with a written justification. An unnoticed
+unbounded-growth cost.
+
+**The fix, and the part worth knowing:** deleting AgentCore's group and letting
+Terraform create one with the same name works — AgentCore writes into a
+pre-existing group rather than insisting on making its own. Verified by invoking
+afterwards and reading the traceback out of the Terraform-managed group. The
+name depends on the runtime's server-generated id, so the resource is gated on
+the same `count` as the runtime and derives its name from that attribute.
+
+### Wrong #2 — the IAM runtime ARN pattern
+
+A real runtime ARN is:
+
+```
+arn:aws:bedrock-agentcore:ap-southeast-1:149751500899:runtime/pipelineguard_qa_dev_runtime-W2kNEGDSFW
+```
+
+**Underscores**, because `agentRuntimeName` must match
+`[a-zA-Z][a-zA-Z0-9_]{0,47}` — the only resource in this repo that rejects its
+hyphenated naming convention. The name was transformed correctly; the OIDC
+role's `InvokeAgentRuntime` resource pattern was **not**, and still read
+`runtime/pipelineguard-qa-dev-*`. It would never have matched, and the QA
+workflow would have failed its first invoke with AccessDenied pointing at the
+runtime rather than at the policy. Both now derive from one `local.runtime_name`.
+
+### Missing — the browser tool permission
+
+The execution role granted Bedrock, S3, KMS, Secrets, logs and CloudWatch, and
+**never granted access to the tool the agent exists to drive**. Found only by
+invoking:
+
+```
+AccessDeniedException ... bedrock-agentcore:StartBrowserSession on
+arn:aws:bedrock-agentcore:ap-southeast-1:aws:browser/aws.browser.v1
+```
+
+Note the account field is literally `aws` — a service-owned resource, the same
+shape as the foundation-model ARNs in §11. Four actions are needed:
+`StartBrowserSession`, `StopBrowserSession`, `GetBrowserSession`, and
+`ConnectBrowserAutomationStream` for the SigV4-signed websocket at
+`/browser-streams/<id>/sessions/<sid>/automation`.
+
+**Code Interpreter is deliberately not granted.** PLAN.md 1b lists it as
+available, but this agent never calls it, and an unused grant is one to justify
+in review for no benefit.
+
+### Still unresolved
+
+`ReadAgentCode` (`s3:GetObject` on the code bucket) is still unproven. The
+runtime started successfully with it present, which does not distinguish "needed"
+from "harmless". Removing it and re-applying would settle it; not worth a
+deliberate breakage right now.
+
+### What is running, and what it costs
+
+Applied: 2 S3 buckets, 1 secret, 2 IAM roles, 1 log group, 1 runtime, and the
+shared CMK pulled in as a dependency. Ongoing ≈ **$1.40/month** — KMS $1,
+Secrets Manager $0.40, everything else effectively zero. An idle AgentCore
+runtime bills per session, not for existing. No NAT, ALB, or Fargate.
+
+Tear down with `terraform destroy -target=module.qa_agent`.

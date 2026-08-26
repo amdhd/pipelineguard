@@ -24,8 +24,8 @@ output "runtime_role_arn" {
 }
 
 output "log_group_name" {
-  description = "CloudWatch log group for the QA agent runtime"
-  value       = aws_cloudwatch_log_group.agent.name
+  description = "CloudWatch log group AgentCore writes to. Null until the runtime exists — the name contains the runtime's server-generated id."
+  value       = try(aws_cloudwatch_log_group.agent[0].name, null)
 }
 
 output "github_role_arn" {

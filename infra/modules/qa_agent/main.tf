@@ -20,6 +20,12 @@ locals {
     ]
   ])
 
+  # AgentCore rejects hyphens in a runtime name: the API pattern is
+  # [a-zA-Z][a-zA-Z0-9_]{0,47}. Derived ONCE here because the name and the IAM
+  # resource pattern that references it must agree -- they did not on first
+  # apply, and the mismatch only shows up as AccessDenied at invoke time.
+  runtime_name = replace("${local.name_prefix}-runtime", "-", "_")
+
   # The agent writes only under these two prefixes. Scoping the role to them
   # rather than the whole bucket is what lets the bucket hold anything else
   # later without silently widening the agent's reach.
@@ -229,6 +235,37 @@ resource "aws_iam_role_policy" "agent_runtime" {
         Resource = [var.kms_key_arn]
       },
       {
+        # THE BROWSER TOOL. Missing from the first version of this policy, which
+        # granted Bedrock, S3, KMS, Secrets and logs but never the tool the agent
+        # exists to drive. It failed only at invoke time, with
+        #   AccessDeniedException ... StartBrowserSession on
+        #   arn:aws:bedrock-agentcore:ap-southeast-1:aws:browser/aws.browser.v1
+        #
+        # Note the account field is literally "aws" -- a service-owned resource,
+        # the same shape as the foundation-model ARNs above.
+        #
+        # ConnectBrowserAutomationStream covers the SigV4-signed websocket the
+        # SDK opens at /browser-streams/<id>/sessions/<sid>/automation; without
+        # it the session starts and then the CDP connection is refused.
+        #
+        # Code Interpreter is deliberately NOT granted. PLAN.md 1b lists it as an
+        # available tool, but this agent does not use it, and an unused grant is
+        # a grant to justify in a review for no benefit. Add it with its own
+        # statement if and when the agent actually calls it.
+        Sid    = "UseBrowserTool"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:StartBrowserSession",
+          "bedrock-agentcore:StopBrowserSession",
+          "bedrock-agentcore:GetBrowserSession",
+          "bedrock-agentcore:ConnectBrowserAutomationStream",
+        ]
+        Resource = [
+          "arn:aws:bedrock-agentcore:${var.aws_region}:aws:browser/aws.browser.v1",
+          "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:browser/*",
+        ]
+      },
+      {
         # AgentCore fetches the deployment zip under this role at cold start.
         # UNVERIFIED until the runtime exists: if the service reads the artifact
         # with its own service principal instead, this statement is unnecessary
@@ -246,10 +283,16 @@ resource "aws_iam_role_policy" "agent_runtime" {
         Resource = [aws_secretsmanager_secret.qa_target.arn]
       },
       {
-        Sid      = "WriteLogs"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = ["${aws_cloudwatch_log_group.agent.arn}:*"]
+        # Scoped by NAME PATTERN, not by referencing the log group resource.
+        # That reference would close a cycle: the role is consumed by the
+        # runtime, the runtime's id names the log group, and the log group would
+        # then name the role's policy.
+        Sid    = "WriteLogs"
+        Effect = "Allow"
+        Action = ["logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [
+          "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/runtimes/${local.runtime_name}-*",
+        ]
       },
       {
         # CreateLogGroup cannot be scoped to a group that does not exist yet.
@@ -278,9 +321,26 @@ resource "aws_iam_role_policy" "agent_runtime" {
   })
 }
 
+# AgentCore writes to a log group IT names, derived from the runtime id:
+#
+#   /aws/bedrock-agentcore/runtimes/<agent_runtime_id>-DEFAULT
+#
+# An earlier version of this module guessed "/aws/bedrock-agentcore/<prefix>"
+# and created a group that nothing ever wrote to -- dead weight carrying a
+# retention setting that protected nothing.
+#
+# The reason to own it here is NOT the name. It is that the group AgentCore
+# creates for itself has **no retention at all**: logs never expire, growing
+# forever, on a project where every other log group is capped at 7 days with an
+# explicit justification. Declaring it here puts it back under that discipline.
+#
+# The id is only knowable after the runtime exists, so this is gated on the same
+# count and depends on it implicitly through the reference.
 resource "aws_cloudwatch_log_group" "agent" {
   # checkov:skip=CKV_AWS_338:Short dev retention is intentional (cost); matches the gate log groups.
-  name              = "/aws/bedrock-agentcore/${local.name_prefix}"
+  count = var.qa_agent_code_key == "" ? 0 : 1
+
+  name              = "/aws/bedrock-agentcore/runtimes/${aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id}-DEFAULT"
   retention_in_days = var.log_retention
   kms_key_id        = var.kms_key_arn
 }
@@ -355,8 +415,13 @@ resource "aws_iam_role_policy" "github_qa" {
           "bedrock-agentcore:InvokeAgentRuntime",
           "bedrock-agentcore:GetAgentRuntime",
         ]
+        # local.runtime_name, NOT name_prefix. A real runtime ARN is
+        # .../runtime/pipelineguard_qa_dev_runtime-W2kNEGDSFW -- underscores,
+        # plus a server-generated suffix that is why this is a prefix match
+        # rather than one exact ARN. The first apply used the hyphenated prefix
+        # and would have failed every invoke with AccessDenied.
         Resource = [
-          "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:runtime/${local.name_prefix}-*",
+          "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:runtime/${local.runtime_name}-*",
         ]
       },
       {
@@ -394,11 +459,9 @@ resource "aws_iam_role_policy" "github_qa" {
 resource "aws_bedrockagentcore_agent_runtime" "qa" {
   count = var.qa_agent_code_key == "" ? 0 : 1
 
-  # UNDERSCORES, not hyphens. The API pattern is [a-zA-Z][a-zA-Z0-9_]{0,47} --
-  # this is the one resource in the repo that rejects the hyphenated convention
-  # used everywhere else, and it fails at apply, not at plan. Also capped at 48
-  # characters starting with a letter; "pipelineguard_qa_dev_runtime" is 28.
-  agent_runtime_name = replace("${local.name_prefix}-runtime", "-", "_")
+  # See local.runtime_name: underscores, not hyphens. Capped at 48 chars
+  # starting with a letter; "pipelineguard_qa_dev_runtime" is 28.
+  agent_runtime_name = local.runtime_name
   description        = "UI-QA agent: drives a browser against a deployed app and returns findings JSON"
   role_arn           = aws_iam_role.agent_runtime.arn
 

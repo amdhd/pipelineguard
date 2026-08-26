@@ -3,14 +3,17 @@
 Phase 0 of [PLAN.md](PLAN.md). A map of what actually exists across both
 repositories, so later phases build on real names rather than assumed ones.
 
-**Compiled:** 2026-08-26. Everything below was read out of the repositories, the
-Terraform source, and the local AWS config. **No live AWS API call succeeded** —
-the `vesselmind` SSO session is expired (`aws sts get-caller-identity` returns
-"Your session has expired"), and nothing here required calling AWS. Resource
-*names* are therefore derived from Terraform source, which is authoritative for
-what an apply will create; where a value is interpolated the `dev` expansion is
-shown. Anything that needs live confirmation is listed in
-[§10 Open items](#10-open-items).
+**Compiled:** 2026-08-26, and amended as Phase 0.5 executed.
+
+**Evidence basis.** §§2–9 were read out of the repositories and Terraform source
+rather than a live account, so resource *names* there are what an apply **will**
+create; where a value is interpolated, the `dev` expansion is shown. §§1, 11 and
+parts of §2 are backed by live calls under the `pipelineguard` profile, which
+works. The `vesselmind` profile's SSO session is **expired**, so nothing was
+verified against vesselAI's side of the account.
+
+Remaining unknowns are in [§10 Open items](#10-open-items); Bedrock detail is in
+[§11](#11-bedrock--models-and-the-arns-iam-must-scope-to).
 
 ---
 
@@ -64,7 +67,7 @@ Flat root module in `infra/` with five child modules under `infra/modules/`.
 | `infra/variables.tf` | 13 variables; `aws_region` defaults `ap-southeast-1`, `environment` defaults `dev` |
 | `infra/outputs.tf` | 9 outputs incl. `alb_dns_name`, `github_connection_arn` |
 | `infra/kms.tf` | One shared CMK, passed to every module as `kms_key_arn` |
-| `infra/versions.tf` | `required_version >= 1.7`; `aws ~> 5.0`, `archive ~> 2.4`; S3 backend |
+| `infra/versions.tf` | `required_version >= 1.7`; `aws >= 6.18, < 7.0`, `archive ~> 2.4`; S3 backend |
 | `infra/environments/dev.tfvars` | Non-secret values only, with a comment explaining why |
 | `infra/backend.conf` | Backend config, git-ignored |
 
@@ -99,7 +102,8 @@ now **no DynamoDB tables in `ap-southeast-1`**. Note that the old `bootstrap.sh`
 in git history recreates the table if run, so a checkout of an earlier commit
 still works.
 
-**Provider lock.** `.terraform.lock.hcl` pins `aws 5.100.0`, `archive 2.8.0`.
+**Provider lock.** `.terraform.lock.hcl` pins `aws 6.61.0`, `archive 2.8.0` —
+upgraded from `5.100.0` during Phase 0.5 #2.
 
 **Naming convention.** `pipelineguard-<thing>-<environment>` almost everywhere;
 the `pipeline` module instead uses `local.name_prefix = "pipelineguard-${var.environment}"`
@@ -371,12 +375,20 @@ Lambda rejects. Same tool, same silent-rejection class.
 
 Things that could not be settled from source alone.
 
-1. **Bedrock model access in `149751500899` / `ap-southeast-1`** — not
-   verifiable without a live call. There is **zero Bedrock usage in this repo
-   today**; `gates/security_gate/claude_summariser.py:29` calls
-   `anthropic.Anthropic(api_key=...)` directly. Model access must be requested
-   and the **model ARN recorded**, because the IAM policy scopes to it.
-   *(PLAN.md Phase 0.5 #3.)*
+1. ~~**Bedrock model access**~~ — **already enabled; nothing to request.**
+   `get-foundation-model-availability` reports `authorizationStatus: AUTHORIZED`
+   and `entitlementAvailability: AVAILABLE`, and — the check that actually
+   settles it — a live `bedrock-runtime converse` call **succeeded** on both
+   candidate models from the `pipelineguard` profile. See §11 for the ARNs.
+
+   Still true, and still worth saying in an interview: this repo had **zero
+   Bedrock usage** before the QA agent.
+   `gates/security_gate/claude_summariser.py:29` calls
+   `anthropic.Anthropic(api_key=...)` directly against the Anthropic API with a
+   key from Secrets Manager. The two AI paths in this project now use different
+   providers for different reasons — the gate wants a plain API call, the QA
+   agent needs a hosted agent runtime — and that is a deliberate split, not
+   drift.
 2. **The existing OIDC provider's ARN** — needs a live read (or vesselAI's
    Terraform output) before PipelineGuard's role can reference it. §1.
 3. **Whether `vessel-k8` vs the `pipelineguard` principal differ in
@@ -413,3 +425,70 @@ Things that could not be settled from source alone.
    PR and skip only the publish. Confirmed against real PR #91. Requiring a
    check that never reports on PRs would block every merge permanently, so this
    is worth re-checking whenever that workflow changes.
+
+---
+
+## 11. Bedrock — models and the ARNs IAM must scope to
+
+Verified live on 2026-08-26 from the `pipelineguard` profile, `ap-southeast-1`.
+
+**Access is already enabled.** No agreement to accept, no console request. Both
+candidate models answered a real `converse` call (16 tokens each).
+
+### Current-generation Anthropic models are inference-profile only
+
+`list-foundation-models` reports `inferenceTypesSupported: INFERENCE_PROFILE`
+for every current model — Opus 5, Sonnet 5, Sonnet 4.5, Haiku 4.5 and the rest.
+Only the legacy Claude 3.x models still carry `ON_DEMAND`. **The bare model ID is
+not invocable**; calls must go through an inference profile.
+
+There are no `apac.` profiles for the current generation either — those exist
+only for Claude 3.x and Sonnet 4. The current models are reachable via `global.`
+profiles, which is what the two rungs below use.
+
+### The two benchmark rungs (PLAN.md §1d)
+
+| Rung | Profile ID |
+|---|---|
+| Cheap | `global.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| Quality | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+
+### IAM — three ARNs per model, and why `*` is still avoidable
+
+This is the part that would have been discovered the hard way. Granting
+`bedrock:InvokeModel` on the profile ARN **alone** is not sufficient: the caller
+also needs it on each foundation-model ARN the profile routes to. Each of these
+profiles routes to two, one region-agnostic and one region-scoped:
+
+```
+# Haiku 4.5 (cheap rung)
+arn:aws:bedrock:ap-southeast-1:149751500899:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0
+arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
+arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
+
+# Sonnet 4.5 (quality rung)
+arn:aws:bedrock:ap-southeast-1:149751500899:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0
+arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
+arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
+```
+
+Note the empty account field on the foundation-model ARNs — they are AWS-owned,
+not account-owned, which is why they read `:::` and `ap-southeast-1::`.
+
+**The plan's "scope to the specific model ARN, not `*`" survives this**, which
+was not guaranteed: a `global.` profile *could* have fanned out to a dozen
+regional model ARNs and made an explicit list impractical. These two fan out to
+two each. Enumerate all six; do not reach for a wildcard.
+
+**Consequence for the benchmark.** Listing both rungs means the execution role
+can invoke either. If that is uncomfortable, split it — grant the cheap rung
+permanently and the quality rung only while benchmarking — but the simpler
+honest answer is that both are named, both are scoped, and neither is `*`.
+
+### Not yet verified
+
+The invoke above was made by the `terraform-pipelineguard` IAM user, which
+proves **account-level** access — no SCP or entitlement blocks these models. It
+does *not* prove the AgentCore execution role will work, since that role does not
+exist yet. Re-run the same `converse` call from the execution role once Phase 1a
+applies.

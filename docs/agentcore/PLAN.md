@@ -486,41 +486,75 @@ shared CMK from `infra/kms.tf` like every other module.
   **Confirm in Phase 0 whether the two repos share an account**; if they do,
   extend the existing provider rather than creating a second one (an account may
   hold only one provider per issuer URL).
-- **ECR repository for the agent image** *(new — see 1b's "Two programs")*.
-  `pipelineguard-qa-agent-<env>`, mutable like the security-gate repo, since the
-  agent image is re-pushed as the rubric changes. Reuse `infra/modules/ecr/`
-  rather than writing a third ECR block.
+- **Code bucket for the agent zip** *(new — replaces the ECR repo, see below)*.
+  `pipelineguard-qa-<env>-code-<account>`. Versioned, SSE-KMS on the shared CMK,
+  public access blocked, and — the point — **no expiry lifecycle rule**.
 
-  **Build it `linux/arm64`. AgentCore Runtime is ARM64-only, and an amd64 image
-  is rejected silently** — you get import errors at invoke time, not a clear
-  failure at deploy. This repo has already been bitten by the adjacent version of
-  this trap: `scripts/deploy-gates.sh` builds the security gate with
-  `docker buildx --provenance=false` because plain `buildx` produces an OCI index
-  that Lambda rejects. Same tool, same class of silent-rejection bug, and the
-  same fix — pin the platform explicitly in a build script rather than trusting
-  the developer's laptop:
+  > **This must not be the reports bucket.** That bucket expires *everything*
+  > after 7 days (`filter {}`), so agent code parked there would be deleted a
+  > week after it started working, breaking the runtime with no recent change to
+  > blame. A separate bucket makes that impossible by construction; sharing one
+  > and excluding a prefix leaves the rule one careless edit from doing it.
 
-  ```
-  docker buildx build --platform linux/arm64 --provenance=false ...
-  ```
+  > ### No container image. **[corrected — verified against the API]**
+  >
+  > This bullet used to specify an ECR repo, an `arm64` build script, and a
+  > 3-phase cold apply, on the assumption that AgentCore Runtime takes a
+  > container. It takes either. `agent_runtime_artifact` is a **tagged union**:
+  > `container_configuration` (an ECR URI) **or** `code_configuration` — an S3
+  > bucket and prefix, a `runtime` enum, and an `entry_point`. Supported runtimes
+  > include `PYTHON_3_10`…`PYTHON_3_14` and `NODE_22`.
+  >
+  > **Take `code_configuration`.** It deletes, in one decision: the ECR
+  > repository, `scripts/deploy-qa-agent.sh`, the `--platform linux/arm64`
+  > requirement, the silent-amd64-rejection trap this plan was about to write
+  > guards against, and the 3-phase cold apply ordering.
+  >
+  > It also matches a split this repo already makes and can justify: the **cost
+  > gate is a zip Lambda**, the **security gate is a container**, and the
+  > deciding factor is size — Trivy plus Checkov are ~320 MB. A Python agent
+  > using the Claude Agent SDK is small. It belongs on the zip side, exactly like
+  > the cost gate.
 
-  Add `scripts/deploy-qa-agent.sh` alongside `deploy-gates.sh`, matching its
-  structure. This also inherits the repo's documented **3-phase cold apply**:
-  create the ECR repo first (`-target`), push the image, then apply the runtime
-  that references it. A runtime cannot be created pointing at an image that does
-  not exist yet.
-
-- **AgentCore runtime** via `aws_bedrockagentcore_agent_runtime`, taking that
-  image as its `agent_runtime_artifact` (`container_uri`), with an
-  **explicit `lifecycle_configuration`** — the missing enforcement point for
-  directive 2, and the single most direct lever in the design:
+- **AgentCore runtime** via `aws_bedrockagentcore_agent_runtime`. Schema below is
+  read from `terraform providers schema -json` on the pinned provider, not from
+  documentation:
 
   ```hcl
-  lifecycle_configuration {
-    idle_runtime_session_timeout = 300   # default is 900
-    max_lifetime                 = 1800
+  agent_runtime_artifact {
+    code_configuration {
+      runtime     = "PYTHON_3_12"
+      entry_point = ["handler.invoke"]
+      code {
+        s3 {
+          bucket = <code bucket>
+          prefix = <key of the uploaded zip>
+        }
+      }
+    }
   }
+
+  # Required. PUBLIC, deliberately -- see below.
+  network_configuration {
+    network_mode = "PUBLIC"
+  }
+
+  # NOTE: an ATTRIBUTE (list of object), not a block. A `lifecycle_configuration
+  # { ... }` block -- which an earlier draft of this plan showed -- does not
+  # parse. The schema is ["list", ["object", {...}]].
+  lifecycle_configuration = [{
+    idle_runtime_session_timeout = 300 # default is 900
+    max_lifetime                 = 1800
+  }]
   ```
+
+  **`network_mode = "PUBLIC"`, and not only for simplicity.** The provider bug
+  where `aws_bedrockagentcore_agent_runtime` leaves undeletable ENIs and hangs
+  `destroy` on a dependency cycle is a **VPC-mode** problem — ENIs exist only
+  there. This project destroys and rebuilds as a matter of routine, so `PUBLIC`
+  removes that failure mode by construction instead of documenting a workaround
+  for it. It is also correct on the merits: the agent reaches a public tunnel URL
+  and public AWS APIs, and needs no VPC reachability.
 
   The default idle timeout is **900s**, and an idle session keeps accruing
   memory charges until it is reclaimed — exactly the idle-billing trap directive
@@ -576,8 +610,10 @@ deploy it, and invoke it. It is not a model endpoint you call with a prompt.
 | **The agent** | Inside AgentCore Runtime, in AWS | Claude Agent SDK agent, Browser + Code Interpreter tools, the rubric as its system prompt. Packaged as a container image. |
 | **The harness** | The GitHub runner | Client-side orchestrator: calls `InvokeAgentRuntime`, enforces budgets between turns, validates the JSON, posts the comment. Holds no rubric. |
 
-- **Agent package:** `agents/qa/agent/` — the code that is built into the runtime
-  image. This is where the rubric prompt and the tool configuration live.
+- **Agent package:** `agents/qa/agent/` — zipped and uploaded to the code bucket,
+  and pointed at by the runtime's `code_configuration`. This is where the rubric
+  prompt and the tool configuration live. Python, to match the runtime enum and
+  the rest of this repo's non-app code.
 - **Harness:** `agents/qa/harness/` — Python, mirroring the existing gate layout
   (`handler.py` + focused modules + `tests/`). Add its test directory to
   `testpaths` in `pytest.ini` so the existing `pytest -q` CI job picks it up with
@@ -586,15 +622,16 @@ deploy it, and invoke it. It is not a model endpoint you call with a prompt.
 **How the rubric reaches the runtime.** Decide deliberately and record it,
 because it determines what a rubric change costs:
 
-- **Baked into the image** (system prompt in the agent code) — one artifact, one
-  version, but *every rubric tweak is an image rebuild and a runtime update*.
+- **Baked into the package** (system prompt in the agent code) — one artifact,
+  one version, but *every rubric tweak is a re-zip, re-upload and runtime
+  update*. Cheaper than the image rebuild this once said, though still not free.
   Phase 1's exit criteria involve iterating on the rubric until the
-  false-positive rate is acceptable, so this makes the tuning loop slow.
+  false-positive rate is acceptable, so the tuning loop still matters.
 - **Passed per-invoke** — the harness sends the rubric with each call. Fast to
   iterate, but the rubric is then client-supplied, so the agent's behaviour is no
   longer pinned by the deployed artifact.
 
-**Recommended: baked in, with a per-invoke override behind a
+**Recommended: baked into the package, with a per-invoke override behind a
 `workflow_dispatch` input.** Tune fast by hand, and let the committed image be
 the source of truth for scheduled and PR runs. Same shape as the AI-key decision
 in Phase 0.5 #4 — attended runs get the loose setting, automated ones get the
@@ -1093,8 +1130,10 @@ Phase 1's.
 **Reliability**
 - The agent and the harness are separate programs — agent in the runtime image,
   budgets and validation client-side; never conflate them
-- Agent image built `linux/arm64` in a script, never on a laptop's default
-  platform — AgentCore rejects amd64 silently
+- Agent shipped as an S3 code artifact, not a container — no image, no
+  architecture to get wrong
+- Agent code in its own bucket, never one carrying an expiry rule
+- Runtime `network_mode = "PUBLIC"` — the destroy-hang provider bug is VPC-only
 - Provider lower-bounded at the version that actually has the resource
 - Agent PRs opened with an identity whose events trigger CI, not `GITHUB_TOKEN`
 - Health-assert the target *through the tunnel* — 200, JSON-not-HTML, a real
@@ -1136,18 +1175,25 @@ now receives exactly one new file.
 4. `feat(infra): S3 + Secrets + IAM execution role for QA agent` *(PipelineGuard)*
 5. `feat(infra): GitHub OIDC role scoped to the vesselAI workflow` *(PipelineGuard)*
 6. `feat(agent): QA agent package — rubric prompt, Browser + Code Interpreter` *(PipelineGuard)*
-7. `feat(infra): ECR repo + arm64 build script for the agent image` *(PipelineGuard)*
-8. `feat(infra): AgentCore runtime with lifecycle_configuration` *(PipelineGuard)*
+7. `feat(infra): code bucket + packaging script for the agent zip` *(PipelineGuard)*
+8. `feat(infra): AgentCore runtime — code artifact, PUBLIC, lifecycle caps` *(PipelineGuard)*
 9. `feat(agent): QA harness — invoke, budget enforcement, schema validation` *(PipelineGuard)*
 10. `feat(ci): ui-qa workflow — compose target, tunnel, health gate` *(vesselAI)*
 11. `feat(obs): per-meter cost reporting` *(both)*
 12. — *ship, run on real PRs and the seeded-bug corpus, tune the rubric* —
 
+**[revised]** Commit 7 was `ECR repo + arm64 build script`. With
+`code_configuration` there is no image, so it becomes a bucket and a zip-and-
+upload script — smaller, and it drops the ordering constraint that made the old
+version awkward (a runtime cannot reference an image that does not exist, so the
+ECR path forced a `-target`ed 3-phase apply; an S3 object has the same
+requirement but uploading a zip is one command, not a Docker build).
+
 **[revised]** Commits 6–9 were previously one commit, "QA harness with rubric
 prompt, JSON schema, and budgets." That was the A1 conflation in schedule form:
 the agent and the harness are separate programs in separate places, and the
-image must exist in ECR before the runtime that references it can be created.
-The ordering here follows the repo's documented 3-phase cold apply.
+agent artifact must exist in S3 before the runtime that references it can be
+created — so the ordering is package, upload, then apply the runtime.
 
 **Phase 2 — bug-fix agent**
 13. — *set up the GitHub App (or fine-grained PAT) for vesselAI* —

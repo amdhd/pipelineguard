@@ -209,3 +209,95 @@ resource "aws_cloudwatch_log_group" "agent" {
   retention_in_days = var.log_retention
   kms_key_id        = var.kms_key_arn
 }
+
+# --- GitHub Actions OIDC role for the vesselAI QA workflow ---
+#
+# The provider is an ACCOUNT-LEVEL SINGLETON created by scripts/bootstrap.sh,
+# not by any Terraform stack. IAM allows one per issuer URL per account, and two
+# stacks here want one (this and vesselAI's terraform/github-oidc.tf), so
+# whichever applied second would fail EntityAlreadyExists and whichever
+# destroyed first would silently break the other's role trust. Bootstrap owns
+# it; stacks look it up and never manage it. See DISCOVERY.md 1.
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_role" "github_qa" {
+  name = "${local.name_prefix}-github"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+
+          # ENUMERATED SUBJECTS, StringEquals, never StringLike with a wildcard
+          # -- the same discipline vesselAI's own github-oidc.tf argues for.
+          # The workflow has three triggers presenting two subjects:
+          #   pull_request              -> ...:pull_request
+          #   schedule/workflow_dispatch -> ...:ref:refs/heads/main
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.qa_workflow_repo}:pull_request",
+            "repo:${var.qa_workflow_repo}:ref:${var.qa_workflow_ref}",
+          ]
+        }
+      }
+    }]
+  })
+}
+
+# CRITICAL, and not enforceable here: the "pull_request" subject above is
+# IDENTICAL for a fork PR and a same-repo PR. This trust policy cannot tell them
+# apart and does not try to. What keeps a fork out is
+#
+#   (a) GitHub capping fork-PR permissions at read on a public repo, so
+#       id-token: write is never granted -- a platform default, not our control,
+#       and one that an admin setting can lift on a private repo; and
+#   (b) the explicit fork guard on the credentialed job in ui-qa-agent.yml:
+#         github.event.pull_request.head.repo.fork == false
+#
+# (b) is the control we own. If that guard is ever removed from the workflow,
+# this role is reachable by any fork PR that GitHub grants a token to.
+resource "aws_iam_role_policy" "github_qa" {
+  name = "${local.name_prefix}-github-policy"
+  role = aws_iam_role.github_qa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Invoke the QA runtime -- and nothing else. Name-prefixed rather than a
+        # single ARN because an AgentCore runtime ARN carries a
+        # server-generated id suffix that is not knowable until creation. This
+        # is scoped to this project's runtimes, not to "*".
+        Sid    = "InvokeQaRuntime"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:InvokeAgentRuntime",
+          "bedrock-agentcore:GetAgentRuntime",
+        ]
+        Resource = [
+          "arn:aws:bedrock-agentcore:${var.aws_region}:${data.aws_caller_identity.current.account_id}:runtime/${local.name_prefix}-*",
+        ]
+      },
+      {
+        # The workflow reads the QA target's credentials to build the health
+        # gate's login assertion before the agent is ever invoked.
+        Sid      = "ReadQaCredentials"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.qa_target.arn]
+      },
+      {
+        Sid      = "DecryptQaSecret"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = [var.kms_key_arn]
+      },
+    ]
+  })
+}

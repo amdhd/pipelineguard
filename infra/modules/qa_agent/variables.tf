@@ -36,3 +36,15 @@ variable "model_profile_ids" {
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
   ]
 }
+
+variable "qa_workflow_repo" {
+  description = "owner/repo whose GitHub Actions workflow may assume the QA role"
+  type        = string
+  default     = "amdhd/vesselAI"
+}
+
+variable "qa_workflow_ref" {
+  description = "Git ref the schedule/workflow_dispatch triggers run on. PR runs present a different subject and are enumerated separately."
+  type        = string
+  default     = "refs/heads/main"
+}

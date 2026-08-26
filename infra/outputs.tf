@@ -57,3 +57,8 @@ output "qa_runtime_role_arn" {
   description = "Execution role ARN for the AgentCore QA runtime"
   value       = module.qa_agent.runtime_role_arn
 }
+
+output "qa_github_role_arn" {
+  description = "Role ARN for the vesselAI QA workflow's aws-actions/configure-aws-credentials step"
+  value       = module.qa_agent.github_role_arn
+}

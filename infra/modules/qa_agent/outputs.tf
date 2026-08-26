@@ -27,3 +27,8 @@ output "log_group_name" {
   description = "CloudWatch log group for the QA agent runtime"
   value       = aws_cloudwatch_log_group.agent.name
 }
+
+output "github_role_arn" {
+  description = "Role the vesselAI QA workflow assumes via OIDC"
+  value       = aws_iam_role.github_qa.arn
+}

@@ -275,9 +275,18 @@ account:
 2. **Upgrade PipelineGuard to `aws ~> 6.0`.** Required for the AgentCore
    resources. Do it as its own commit against the existing stack, before any
    agent work: `terraform plan` must come back clean, `terraform fmt -check` and
-   `tflint` must pass, and Checkov must still report **172 passed / 0 failed /
-   31 skipped**. Any drift in that number is a v6 behaviour change to understand,
-   not to re-baseline.
+   `tflint` must pass, and Checkov's **failed and skipped counts must not move**.
+
+   **[corrected during execution]** This previously read "Checkov must still
+   report 172 passed / 0 failed / 31 skipped." The current Checkov (3.2.459)
+   reports **166 / 0 / 31**, and it reports 166 on the *unmodified* pre-upgrade
+   tree too — so the 172 in the memory of this project is a stale figure from an
+   older Checkov, not drift introduced here. Checkov parses HCL directly and
+   never loads the provider, so a provider version bump **cannot** change its
+   results by construction; pinning an expected *passed* count is pinning
+   Checkov's release cadence, not this repo's posture. Assert on **failed = 0 and
+   skipped = 31** instead, which are the numbers that actually describe the
+   configuration.
 
    **Pin deliberately, and lower-bound it.** `aws_bedrockagentcore_agent_runtime`
    landed in **6.18.0** and is under active churn — `agent_runtime_artifact` is

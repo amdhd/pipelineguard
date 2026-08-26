@@ -92,10 +92,12 @@ The lock object name was verified empirically rather than assumed: it is
 `pipelineguard/dev/terraform.tfstate.tflock`, caught in the bucket mid-plan and
 observed to be deleted on release.
 
-**Left in place deliberately:** the existing `pipelineguard-tflock-dev` DynamoDB
-table still exists in the account. Nothing references it any more. It is
-PAY_PER_REQUEST with no traffic, so it bills ~$0 — deleting it is a live
-destructive action and is left as an explicit call for a human to make.
+**The `pipelineguard-tflock-dev` table has been deleted** (2026-08-26, on
+explicit instruction). Its only content was the backend's state-digest record
+(`...terraform.tfstate-md5`) — not a held lock, so nothing was stuck. There are
+now **no DynamoDB tables in `ap-southeast-1`**. Note that the old `bootstrap.sh`
+in git history recreates the table if run, so a checkout of an earlier commit
+still works.
 
 **Provider lock.** `.terraform.lock.hcl` pins `aws 5.100.0`, `archive 2.8.0`.
 
@@ -389,6 +391,25 @@ Things that could not be settled from source alone.
 5. **`job_workflow_ref` claim value for `pull_request` runs** — PLAN.md §1a
    requires verifying the actual claim before pinning, since PR runs present a
    merge ref rather than `main`.
-6. **Branch protection** — absent on both repos as of this writing
-   (`gh api .../branches/main/protection` → 404, "Branch not protected"). Both
-   repos are **public**.
+6. ~~**Branch protection** — absent on both repos~~ — **done.** Both `main`
+   branches are now protected: PR required, force-push and deletion blocked,
+   and all PR-reporting CI checks required (4 on PipelineGuard, 11 on vesselAI).
+
+   Two settings chosen deliberately, both trivially reversible:
+   - **`required_approving_review_count: 0`.** GitHub does not let you approve
+     your own PR, so requiring 1 approval on a solo repo would make every
+     human-authored PR unmergeable. Zero still forces the PR; the human still
+     reviews and clicks merge. Raise it to 1 if a second person ever joins —
+     agent-authored PRs would satisfy it, human-authored ones would not.
+   - **`enforce_admins: false`.** Keeps a human escape hatch if CI wedges. It
+     does *not* weaken the control that matters here: the fix agent
+     authenticates with a fine-grained PAT or App installation token scoped to
+     `contents` + `pull-requests`, which is **not** admin, so protection binds
+     the agent regardless.
+
+   **All 11 vesselAI checks were verified to run on `pull_request` before being
+   required** — the `if: github.event_name == 'push'` guards in its `ci.yml` are
+   at *step* level, not job level, so the image jobs still build and scan on a
+   PR and skip only the publish. Confirmed against real PR #91. Requiring a
+   check that never reports on PRs would block every merge permanently, so this
+   is worth re-checking whenever that workflow changes.

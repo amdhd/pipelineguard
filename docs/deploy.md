@@ -67,7 +67,8 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 
 ### 0c. Run the Bootstrap Script
 
-This creates the S3 backend for Terraform state + DynamoDB table for state locking.
+This creates the S3 bucket backing the Terraform state. Locking is S3-native
+(`use_lockfile = true`), so there is no separate lock table.
 Must be done before `terraform init`.
 
 ```bash
@@ -82,7 +83,6 @@ set -e
 REGION="ap-southeast-1"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUCKET_NAME="pipelineguard-tf-state-${ACCOUNT_ID}"
-TABLE_NAME="pipelineguard-tf-lock"
 
 echo "Creating Terraform state bucket: $BUCKET_NAME"
 aws s3api create-bucket \
@@ -107,26 +107,17 @@ aws s3api put-public-access-block \
   --public-access-block-configuration \
   "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
-echo "Creating DynamoDB lock table: $TABLE_NAME"
-aws dynamodb create-table \
-  --table-name "$TABLE_NAME" \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region "$REGION"
 
 # Write backend config file
 cat > infra/backend.conf << EOF
 bucket         = "${BUCKET_NAME}"
 key            = "pipelineguard/terraform.tfstate"
 region         = "${REGION}"
-dynamodb_table = "${TABLE_NAME}"
 encrypt        = true
 EOF
 
 echo "Bootstrap complete."
 echo "State bucket: s3://${BUCKET_NAME}"
-echo "Lock table:   ${TABLE_NAME}"
 echo "Backend config written to infra/backend.conf"
 ```
 
@@ -468,7 +459,6 @@ AWS Account (ap-southeast-1)
 ├── Secrets Manager: pipelineguard/gates/dev
 │   └── {INFRACOST_API_KEY, ANTHROPIC_API_KEY, SLACK_WEBHOOK_URL}
 │
-├── DynamoDB: pipelineguard-tf-lock (Terraform state lock)
 │
 ├── CloudWatch
 │   ├── Log Groups: /ecs/pipelineguard-dev, /aws/lambda/pipelineguard-*
@@ -494,7 +484,6 @@ AWS Account (ap-southeast-1)
 | **Secrets Manager** | 1 secret, 5 API calls/day | **~$0.40** |
 | **CloudWatch Logs** | ~1 GB/month ingestion | **~$0.50** |
 | **S3** | ~500 MB artifacts + state | **~$0.02** |
-| **DynamoDB** | State lock table, on-demand | **~$0.00** |
 | **ECR** | ~500 MB storage | **~$0.05** |
 | **SNS** | <1000 notifications | **~$0.00** |
 | **SUBTOTAL (fixed)** | | **~$65/month** |
@@ -549,7 +538,6 @@ For a portfolio project, you can eliminate this by:
 |---|---|---|
 | Lambda | 1M requests, 400K GB-seconds | ✅ Fully covered |
 | S3 | 5 GB storage, 20K GET requests | ✅ Fully covered |
-| DynamoDB | 25 GB storage, 25 WCU/RCU | ✅ Fully covered |
 | CloudWatch | 10 custom metrics, 5 GB logs | ✅ Mostly covered |
 | ECR | 500 MB/month | ✅ Mostly covered |
 | CodeBuild | 100 build-minutes/month | ⚠️ Partial (5 runs/day exceeds this) |

@@ -71,12 +71,31 @@ Flat root module in `infra/` with five child modules under `infra/modules/`.
 **State.** S3 bucket `pipelineguard-tfstate-149751500899-ap-southeast-1`, key
 `pipelineguard/dev/terraform.tfstate`, region `ap-southeast-1`.
 
-Note a **redundancy worth knowing about before the provider upgrade**:
-`versions.tf` sets `use_lockfile = true` (S3-native locking) while
-`backend.conf` also sets `dynamodb_table = "pipelineguard-tflock-dev"`. Both
-mechanisms are configured. This is harmless today but is exactly the kind of
-thing a provider major can start warning or erroring on — check it during
-Phase 0.5 #2 rather than being surprised by it.
+**Locking — resolved during Phase 0.5 #2.** This section originally flagged a
+redundancy: `versions.tf` set `use_lockfile = true` while `backend.conf` also set
+`dynamodb_table`, so both mechanisms were configured to protect one state.
+Terraform already deprecated the parameter on v5, and v6 did not escalate it.
+
+It is now **S3-native locking only**. The DynamoDB table is gone from
+`scripts/bootstrap.sh`, both buildspecs, and the docs.
+
+Investigating it surfaced a **latent bug that had not yet fired**: S3 locking
+releases by *deleting* the `<key>.tflock` object, and the CodeBuild role's
+`TerraformStateBackend` statement granted only `GetObject`/`PutObject`/
+`ListBucket`. The first CI run under S3 locking would have taken a lock it could
+never release, and every run after it would have failed to acquire one.
+`use_lockfile` was added in `8035a4e` — the most recent commit, *after* the last
+green pipeline run — so this path had never executed. A `TerraformStateLock`
+statement now grants `s3:DeleteObject` scoped to the single lock object.
+
+The lock object name was verified empirically rather than assumed: it is
+`pipelineguard/dev/terraform.tfstate.tflock`, caught in the bucket mid-plan and
+observed to be deleted on release.
+
+**Left in place deliberately:** the existing `pipelineguard-tflock-dev` DynamoDB
+table still exists in the account. Nothing references it any more. It is
+PAY_PER_REQUEST with no traffic, so it bills ~$0 — deleting it is a live
+destructive action and is left as an explicit call for a human to make.
 
 **Provider lock.** `.terraform.lock.hcl` pins `aws 5.100.0`, `archive 2.8.0`.
 
@@ -361,7 +380,12 @@ Things that could not be settled from source alone.
 3. **Whether `vessel-k8` vs the `pipelineguard` principal differ in
    permissions** — both are in one account, but they are different IAM
    identities and the QA role will be created by the `pipelineguard` principal.
-4. **`use_lockfile` + `dynamodb_table` interaction** under AWS provider v6 — §2.
+4. ~~**`use_lockfile` + `dynamodb_table` interaction** under AWS provider v6~~ —
+   **resolved.** Now S3-native locking only; see §2. The one thing still
+   unverified is that it works *from the CodeBuild role* specifically — the
+   release was confirmed under the local `terraform-pipelineguard` principal,
+   and the new IAM statement is a plan-time construct until the stack is
+   applied and a pipeline runs.
 5. **`job_workflow_ref` claim value for `pull_request` runs** — PLAN.md §1a
    requires verifying the actual claim before pinning, since PR runs present a
    merge ref rather than `main`.

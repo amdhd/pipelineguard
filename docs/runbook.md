@@ -3,7 +3,7 @@
 ## First-time deploy
 
 ```bash
-# 1. Bootstrap remote state (creates S3 bucket + DynamoDB lock, writes backend.conf)
+# 1. Bootstrap remote state (creates S3 bucket, writes backend.conf)
 AWS_PROFILE=your-profile ./scripts/bootstrap.sh dev ap-southeast-1
 
 # 2. Build Lambda layers (infracost, trivy, checkov). Needs docker + curl + zip.

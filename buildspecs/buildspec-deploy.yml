@@ -20,7 +20,6 @@ phases:
         bucket         = "pipelineguard-tfstate-${ACCOUNT_ID}-${AWS_DEFAULT_REGION}"
         key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
         region         = "${AWS_DEFAULT_REGION}"
-        dynamodb_table = "pipelineguard-tflock-${ENVIRONMENT}"
         encrypt        = true
         EOF
       # No secrets are passed to Terraform: `terraform show -json` writes sensitive

@@ -12,7 +12,7 @@ one: GitHub mints the token with `sub = repo:amdhd/vesselAI:pull_request` for
 both. The enumerated subject list is doing less work than it looks like it is.
 The guard is in the workflow file, so this file records that it was checked.
 
-**Reviewed against `main`, 2026-08-27.**
+**Reviewed against `main`, 2026-08-27.** Fixes for all seven are in vesselAI PR #96.
 
 ---
 
@@ -49,8 +49,9 @@ it as one you enforce is how this becomes a real finding later.
 
 ## Defects found
 
-Six, none of them the critical control. Ordered by what I would fix first.
-Defect 6 was found by actually running the workflow rather than by reading it.
+Seven, none of them the critical control. Ordered by what I would fix first.
+Defects 6 and 7 were found by running the workflow, not by reading it — 6 by
+opening a labelled PR, 7 by the criterion-3 negative test.
 
 ### 1. Script injection via `workflow_dispatch` input — MEDIUM
 
@@ -196,6 +197,25 @@ never ran.
 `labeled` fires on *any* label, so the existing `contains(...'agent-qa')` guard
 is what keeps unrelated labels from starting a paid run — it is already there
 and already correct.
+
+### 7. A skipped agent is reported as a failed agent — LOW *(found by the criterion-3 test)*
+
+The fallback that guarantees a comment exists assumes the only reason for a
+missing report is that the harness died:
+
+> The harness exited without writing `comment.md` … The cause is in this job's
+> **Run the QA agent** step, and — if the runtime was reached at all — in its
+> CloudWatch log group.
+
+When the **health gate** refuses, the agent step is *skipped*, so that advice
+points at a step which never executed and a log group with nothing in it. On the
+criterion-3 negative test the gate worked perfectly and the comment reported it
+as an agent failure — sending the reader to the wrong place at the exact moment
+the system was behaving correctly.
+
+**Fix:** branch on `steps.qa.outcome`. The skipped case should say what is
+actually worth saying — that no agent session was paid for, which is the gate
+working rather than anything being broken.
 
 ---
 

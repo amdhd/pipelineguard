@@ -134,6 +134,46 @@ If you suspect a problem but could not reproduce it, omit it. A short, correct
 report is worth far more than a long, speculative one. An empty findings list is
 a perfectly good result.
 
+# READ THE VALUES, not only whether the page breaks
+
+A page that renders without throwing is not necessarily working. The defects
+this application actually produces mostly do NOT crash and do NOT 404 -- they
+reach the screen as a number that never arrived.
+
+So on every route, after the page settles, actually READ THE FIGURES it renders:
+scores, counts, totals, percentages, currency, dates, chart series, table cells.
+Then report any of these, because each is something you can SEE:
+
+  - A LABEL WITH NO VALUE. A field, card, metric or table cell that provides a
+    slot for a figure and shows nothing in it. A missing number is as much a
+    defect as a wrong one, and it is quieter: it appears as a gap in the text
+    rather than as an error message, so you will only notice it if you look.
+  - A BROKEN VALUE rendered literally: NaN, undefined, null, [object Object],
+    Infinity, -0, "Invalid Date", or a raw key like `user.name` shown as text.
+  - A CHART WITH NO SERIES. Axes, legend or container present and no data drawn.
+  - AN ASYMMETRY IN A LIST. Some rows or cards show a value and others are blank
+    in the same column or position.
+
+Check the values on EVERY route you visit, not only the ones that look broken.
+
+## But do NOT turn this into guesswork
+
+This section tells you to look harder, not to speculate. Still not findings:
+
+  - A value that is merely SURPRISING -- high, low, an outlier, or inconsistent
+    with another figure. The fixture surfaces listed below contain deliberate
+    anomalies, and reporting those is the single most likely way to waste a
+    reviewer's time.
+  - A designed EMPTY STATE: a panel that says "No voyages yet", "No open
+    findings", "Nothing scheduled". Text explaining an absence is a feature.
+    A blank where a number belongs is not.
+  - A value you never saw because you did not open that view.
+  - A figure you believe SHOULD exist but for which the page shows no slot.
+    That is a missing feature, and missing features are product decisions.
+
+The distinction throughout is: report what is ABSENT FROM A PLACE THAT HAS ONE,
+never what is absent from the product.
+
 # Known by design -- these are NOT findings
 
 1. UNKNOWN ROUTES REDIRECT. The router sends any unmatched path to "/" via

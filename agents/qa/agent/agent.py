@@ -49,6 +49,51 @@ DEFAULT_MAX_ROUTES = len(rubric.PRIVATE_ROUTES)
 # after the loop stops. See Budget.reserve().
 REPORT_RESERVE_SECONDS = 60
 
+# BEDROCK'S REQUEST QUOTA IS THE BINDING ONE, NOT ITS TOKEN QUOTA.
+#
+# In this account, both rungs are capped at 10 "Global cross-region model
+# inference requests per minute" against 5,000,000 tokens per minute. A
+# browser-driving agent sends one Converse call per turn and its turns are fast
+# -- the first successful run did 11 turns in 39s, about 17 RPM -- so it breaches
+# the REQUEST quota while using a fraction of a percent of the token quota.
+#
+# Adaptive retries hide that until a longer run tips over, and then the failure
+# is disproportionate: a throttled call's backoff stretches the run until the
+# harness's own timeout fires, and the report is lost along with everything the
+# run had already paid for. Two runs were lost that way before this existed.
+#
+# Pacing to a known quota is strictly better than discovering it. Adaptive mode
+# stays on underneath as a backstop for the case where the real limit is lower
+# than configured.
+DEFAULT_REQUESTS_PER_MINUTE = 10
+
+
+class Pacer:
+    """Spaces model calls so the request-per-minute quota is not breached."""
+
+    def __init__(self, requests_per_minute: int, sleep=time.sleep):
+        # Zero or negative disables pacing, which is what a caller who has had
+        # their quota raised should set rather than editing this file.
+        self.interval = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
+        self._sleep = sleep
+        self._last: float | None = None
+        self.total_waited = 0.0
+
+    def wait(self) -> float:
+        """Block until the next call may be made. Returns seconds slept."""
+        if not self.interval:
+            return 0.0
+        now = time.monotonic()
+        if self._last is not None:
+            remaining = self.interval - (now - self._last)
+            if remaining > 0:
+                self._sleep(remaining)
+                self.total_waited += remaining
+                self._last = time.monotonic()
+                return remaining
+        self._last = now
+        return 0.0
+
 # Prompt caching. Verified against the Bedrock prompt-caching documentation, not
 # assumed -- three of its rules shape the implementation below:
 #
@@ -416,7 +461,7 @@ def _extract_json(text: str) -> dict:
         ) from e
 
 
-def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_reason):
+def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_reason, pacer=None):
     """
     Ask for the report AFTER the budget stops the loop. Returns a validated
     findings object, or None if nothing usable came back.
@@ -450,6 +495,8 @@ def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_rea
     else:
         messages.append({"role": "user", "content": [nudge]})
 
+    if pacer is not None:
+        pacer.wait()
     try:
         response = bedrock.converse(
             modelId=model,
@@ -497,6 +544,7 @@ def run_qa(payload: dict) -> dict:
     # check rather than guessing.
     auth_token_key = payload.get("auth_token_key", "vm_token")
     max_tokens_per_call = int(payload.get("max_tokens_per_call", DEFAULT_MAX_TOKENS_PER_CALL))
+    pacer = Pacer(int(payload.get("requests_per_minute", DEFAULT_REQUESTS_PER_MINUTE)))
 
     # Both caps default to a value DERIVED from max_routes, so asking for fewer
     # routes lowers the budget with them and the two can never disagree.
@@ -508,8 +556,9 @@ def run_qa(payload: dict) -> dict:
         report_seconds=REPORT_RESERVE_SECONDS,
     )
     logger.info(
-        "budget: %d routes -> %d turns, %d tokens (reserving one call for the report)",
-        max_routes, budget.max_turns, budget.token_budget,
+        "budget: %d routes -> %d turns, %d tokens, pacing %.1fs/call "
+        "(reserving one call for the report)",
+        max_routes, budget.max_turns, budget.token_budget, pacer.interval,
     )
 
     system = rubric.build_system_prompt(ai_fallback_mode=ai_fallback, max_routes=max_routes)
@@ -562,6 +611,7 @@ def run_qa(payload: dict) -> dict:
                     logger.warning("stopping: %s", reason)
                     break
 
+                pacer.wait()
                 try:
                     response = bedrock.converse(
                         modelId=model,
@@ -643,7 +693,8 @@ def run_qa(payload: dict) -> dict:
         salvaged = None
         if authenticated is not False and not stop_reason.startswith("model call failed"):
             salvaged = _final_report(
-                bedrock, model, system, messages, budget, max_tokens_per_call, stop_reason
+                bedrock, model, system, messages, budget, max_tokens_per_call,
+                stop_reason, pacer,
             )
         findings = salvaged or {"overall": "FAIL", "pages_tested": 0, "findings": []}
         findings["incomplete"] = True
@@ -681,6 +732,10 @@ def run_qa(payload: dict) -> dict:
     }
     findings["screenshots"] = [{**s, "url": urls.get(s["key"])} for s in session.screenshots]
     findings["routes_visited"] = list(session.visited)
+    # Time spent waiting on the request quota rather than on the model. Reported
+    # because it is otherwise indistinguishable from a slow agent, and the two
+    # want opposite responses: raise the quota, or shorten the run.
+    findings["paced_seconds"] = round(pacer.total_waited, 1)
     findings["authenticated"] = authenticated
 
     # pages_tested is the model's own count and it has been wrong: a real run

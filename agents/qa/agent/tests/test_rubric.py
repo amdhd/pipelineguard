@@ -129,3 +129,64 @@ def test_prompt_prefers_null_over_a_guessed_source():
 def test_empty_findings_is_described_as_a_valid_result():
     prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
     assert "valid, good result" in prompt
+
+
+class TestReadTheValues:
+    """
+    The rubric change the first real measurement earned.
+
+    Against a three-bug seeded corpus the agent caught the LOUD failure -- a
+    thrown TypeError behind an error boundary -- and missed the QUIET one, a
+    number silently absent from every card. That is backwards for this project:
+    the target's own audit found most of its breakage does not 404, it renders
+    NaN or a blank where a figure belongs.
+    """
+
+    def test_the_prompt_asks_the_agent_to_read_rendered_values(self):
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "READ THE VALUES" in prompt
+        assert "A page that renders without throwing is not necessarily working" in prompt
+
+    def test_a_label_with_no_value_is_named_as_reportable(self):
+        """The exact shape of the miss: a slot for a figure, and nothing in it."""
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "LABEL WITH NO VALUE" in prompt
+        assert "A missing number is as much a" in prompt  # wraps across lines
+
+    def test_broken_value_literals_are_enumerated(self):
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        for literal in ("NaN", "undefined", "[object Object]", "Invalid Date"):
+            assert literal in prompt, literal
+
+    def test_every_route_is_checked_not_only_broken_looking_ones(self):
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "EVERY route you visit" in prompt
+
+    def test_looking_harder_is_fenced_against_speculation(self):
+        """
+        The risk of this change is a false-positive spike. The guard has to be
+        in the prompt, not just in the reviewer's hopes.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "do NOT turn this into guesswork" in prompt
+        assert "merely SURPRISING" in prompt
+        assert "designed EMPTY STATE" in prompt
+
+    def test_the_absent_from_a_slot_distinction_is_stated(self):
+        """
+        The line that keeps 'read the values' from colliding with 'missing
+        features are product decisions'.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "ABSENT FROM A PLACE THAT HAS ONE" in prompt
+
+    def test_it_does_not_name_the_seeded_bugs(self):
+        """
+        Teaching to the test would make the next measurement meaningless. The
+        instruction must be general -- no route names, no field names from the
+        corpus.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        lowered = prompt.lower()
+        for leak in ("healthscore", "health score", "actualfuel", "actual_fuel", "tofixed"):
+            assert leak not in lowered, f"rubric leaks the corpus: {leak}"

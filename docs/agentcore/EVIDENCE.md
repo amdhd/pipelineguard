@@ -29,7 +29,7 @@ the CDP idle-socket fix).
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **1 false positive in 5 runs** on healthy code — and its cause is now fixed |
-| 5 | False-negative rate against seeded bugs | ❌ **67%** — unmoved by a rubric fix *and* a structural read; see Results |
+| 5 | False-negative rate against seeded bugs | ❌ **0/3 at v13** — the repeated-empty-slot relaxation did not move it; see Results |
 | 6 | Two rungs benchmarked | ⛔ **NOT MEASURED** |
 
 **The headline is criterion 5, and it is not good news.** See below — it is also
@@ -391,4 +391,107 @@ and the plan currently assumes neither.
 It also means every rate in this document should be read as N=1 per
 configuration unless stated otherwise. The corpus is cheap (~$0.10) and
 repeatable; rates worth quoting need three runs each, not one.
+
+---
+
+### 2026-08-28 (fourth pass) — repeated-empty-slot relaxation, three runs at v13
+
+The third pass ended on a hypothesis about my own prompt: `empty_slots` is "a
+HINT, not a finding on its own — confirm what the slot is for", and the agent
+cannot confirm what a blank is *for* without the source, so it declines. The
+relaxation: an empty slot that repeats across every item in a list is evidence
+in itself and may be reported without the confirmation. This was the last
+rubric idea before Phase 2. It is now falsified.
+
+Three runs at runtime **v13** (structural read + relaxation), against
+`qa-corpus-1`:
+
+| Run | Turns | S-1 | S-2 | S-3 |
+|---|---|---|---|---|
+| 33091966725 | 13 | ❌ | ❌ | ❌ |
+| 33092691895 | 14 | ❌ | ❌ | ❌ |
+| 33093035488 | 21 | ❌ | ❌ | ❌ |
+
+All three authenticated and all three visited `/maintenance` and `/sire` — these
+are perception misses, not coverage misses. The relaxation did not move the
+number: **S-2 0/3, S-3 0/3, and S-1 0/3.** Even the loud bug — a thrown
+`TypeError` behind an error boundary, caught 5-of-6 across the earlier batches —
+was missed in all three runs here. That is the run-to-run variance from the
+previous section doing what it said it would, and it is exactly why the
+three-run protocol mattered.
+
+One true positive fell out anyway: run 33093035488 reported the "Captain
+Captain" greeting duplicate (LOW, `/`) — the real defect in unmodified code,
+still there.
+
+**The guard was not the blocker.** The agent now *may* report a repeated empty
+slot and still does not, on pages it demonstrably reads. Two plausible causes
+remain, and the cheapest discriminator between them is one run on the quality
+rung (which criterion 6 needs anyway):
+
+1. **The cheap rung cannot connect the input to the finding.** Haiku may read
+   `empty_slots: [{"context": "...", "count": N}]` and not infer "a dropped
+   field." Run the corpus once on `global.anthropic.claude-sonnet-4-6`. If it
+   catches S-2, the fix is model choice, not another prompt edit — and the
+   model-decision exit criterion gets its measurement.
+2. **The harvest still does not surface S-2's shape.** The blank may be present
+   in the DOM but produce no entry, or an entry whose context reads as
+   decorative. This needs the agent's tool results, which the runtime does not
+   log; a stopgap is to have the harness log `_state` for one manual run.
+
+**Consequence for Phase 2.** A detector that misses every seed 0/3 on its own
+corpus should not drive auto-fix yet. Phase 2 inherits whatever Phase 1 reports,
+and a false negative at Phase 1 is invisible at Phase 2 — the fix agent never
+sees a finding it could have patched. Before Phase 2, criterion 5 needs to
+move, or the honest claim to carry in is: the QA agent catches thrown
+exceptions and cosmetic defects, and is blind to absent values — which is
+exactly the class the target's own audit says dominates.
+
+**The quality-rung discriminator ran, and it answered — but not cleanly.**
+Two `workflow_dispatch` runs on `qa-corpus-1` with `--model
+global.anthropic.claude-sonnet-4-6` (the second had to be fired because the
+first degenerated before the browser loaded any page — 4 turns, `auth: null`,
+empty PASS, a `SecurityError` reading `localStorage` on an opaque-origin
+document; a second run is required to distinguish a flake from a signature):
+
+| Run | Model | Auth | Pages | Turns | S-1 | S-2 | S-3 | Findings |
+|---|---|---|---|---|---|---|---|---|
+| 33094308107 | sonnet | ❌ null | 0 | 4 | ❌ | ❌ | ❌ | 0 (degenerate) |
+| 33094961054 | sonnet | ✅ | 7 | 17 | ❌ | ❌ | ❌ | 2 (neither is a seed) |
+
+The valid sonnet run **did** do what no Haiku run did: it read the values. It
+reported two systematic-value anomalies, both on the exact "repeated blank
+across a list" shape the relaxation targeted:
+
+- **F-002 (`/maintenance`, MEDIUM):** "9 of 12 equipment items display '0 hrs'."
+  The reading is *accurate* — vessel-002's fixture genuinely lacks `runningHours`
+  on 9 of 12 units and the route defaults them to 0. But it is **pre-existing
+  fixture design**, not the S-2 seed (`healthScore: undefined` → blank score in
+  the SVG circle). The agent read the numbers precisely and still did not name
+  the blank health score.
+- **F-001 (`/sire`, HIGH):** "0 GREEN chapters despite 4 chapters having 0
+  findings." This is a **false positive**. The readiness API maps
+  `good→green / attention→amber / critical→red`, so GREEN counts *status*; the
+  demo vessel has no `good` chapter, so `GREEN=0` is correct. The agent inferred
+  "should be at least 4" from the findings counts — the rubric's "what you infer
+  must be broken without seeing it fail" guard — and it was wrong.
+
+**Both hypotheses were partly right, and the sharper conclusion is the harvest
+one.** The model clearly matters: sonnet engaged with the values (17 turns,
+precise reads, systematic-pattern reasoning) while Haiku produced 0/3. But the
+specific S-2 symptom — the blank score inside the health circle — was **still not
+reported by sonnet**, on a page it read accurately. That points at the blank
+score never reaching the model as a reportable shape: the span is empty, lives
+in `innerText`-invisible SVG-adjacent markup, and the empty-slot harvest caps
+at 20 leaves per page. Model choice is necessary but not sufficient; the
+harvest is the remaining blocker for S-2's exact shape.
+
+**Next step (criterion 5, still open):** instrument the harness to log `_state`
+(the `values` + `empty_slots` a page read actually produced) for one run, and
+confirm whether the `/maintenance` health-circle blank appears in it. If it
+does not, fix the harvest to surface SVG-embedded value slots; if it does, the
+fix is in how the rubric asks the agent to weigh `empty_slots`. Also: F-001
+shows the relaxation now produces confident *false* positives on inferred
+semantics, so any further rubric work should tighten the "systematic blank is
+evidence" line against inferred expectations, not just loosen reporting.
 

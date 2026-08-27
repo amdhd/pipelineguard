@@ -42,3 +42,33 @@ output "security_gate_ecr_url" {
   description = "ECR repository URL for the security gate container image"
   value       = module.gates.security_gate_ecr_url
 }
+
+output "qa_reports_bucket" {
+  description = "S3 bucket for QA agent screenshots and findings JSON"
+  value       = module.qa_agent.reports_bucket_name
+}
+
+output "qa_secret_name" {
+  description = "QA target credentials secret — seed with scripts/seed-qa-secret.sh"
+  value       = module.qa_agent.qa_secret_name
+}
+
+output "qa_runtime_role_arn" {
+  description = "Execution role ARN for the AgentCore QA runtime"
+  value       = module.qa_agent.runtime_role_arn
+}
+
+output "qa_github_role_arn" {
+  description = "Role ARN for the vesselAI QA workflow's aws-actions/configure-aws-credentials step"
+  value       = module.qa_agent.github_role_arn
+}
+
+output "qa_runtime_arn" {
+  description = "AgentCore QA runtime ARN — null until the agent zip is packaged and passed in"
+  value       = module.qa_agent.runtime_arn
+}
+
+output "qa_code_bucket" {
+  description = "S3 bucket for the QA agent deployment zip"
+  value       = module.qa_agent.code_bucket_name
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tears down the dev stack. Empties the ECR repos first (Terraform can't delete
 # non-empty repos), then destroys everything. The Terraform state backend
-# (S3 bucket + DynamoDB lock table from bootstrap.sh) is intentionally left in place.
+# (S3 state bucket from bootstrap.sh) is intentionally left in place.
 #
 # Usage: ./scripts/destroy-dev.sh            (asks for confirmation)
 #        ./scripts/destroy-dev.sh -auto-approve

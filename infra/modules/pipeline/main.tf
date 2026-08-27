@@ -170,10 +170,18 @@ resource "aws_iam_role_policy" "codebuild" {
         ]
       },
       {
+        # S3-native state locking (backend `use_lockfile = true`) releases a lock
+        # by DELETING the "<key>.tflock" object. Get/Put above is not enough: the
+        # first run would take a lock it could never release, and every run after
+        # it would fail to acquire one.
+        #
+        # Scoped to the single lock object rather than the bucket prefix -- this
+        # grants deletion of exactly one key, and notably NOT the state file
+        # itself, which the statement above can write but nothing can delete.
         Sid      = "TerraformStateLock"
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-        Resource = ["arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/pipelineguard-tflock-${var.environment}"]
+        Action   = ["s3:DeleteObject"]
+        Resource = ["arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/pipelineguard/${var.environment}/terraform.tfstate.tflock"]
       },
       {
         # `terraform plan -refresh=false` still evaluates data sources; the only

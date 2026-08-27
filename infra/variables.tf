@@ -74,3 +74,22 @@ variable "enable_manual_approval" {
   type        = bool
   default     = false
 }
+
+# --- QA agent code artifact (printed by scripts/package-qa-agent.sh) ---
+#
+# Empty by default so a cold apply works before any zip exists. The runtime
+# resource is created only once these are supplied:
+#
+#   ./scripts/package-qa-agent.sh dev ap-southeast-1
+#   ./scripts/apply-dev.sh -var="qa_agent_code_key=..." -var="qa_agent_code_version_id=..."
+variable "qa_agent_code_key" {
+  description = "S3 key of the QA agent deployment zip. Empty disables the AgentCore runtime."
+  type        = string
+  default     = ""
+}
+
+variable "qa_agent_code_version_id" {
+  description = "S3 object version of the QA agent zip"
+  type        = string
+  default     = ""
+}

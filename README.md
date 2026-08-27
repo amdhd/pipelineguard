@@ -97,7 +97,7 @@ an Anthropic API key, and a Slack webhook.
 export AWS_PROFILE=<your-profile>          # account/region target
 export AWS_DEFAULT_REGION=ap-southeast-1
 
-# 0. One-time backend bootstrap (S3 state bucket + DynamoDB lock table)
+# 0. One-time backend bootstrap (S3 state bucket; locking is S3-native)
 ./scripts/bootstrap.sh dev ap-southeast-1
 
 # 1. Two-phase: create the security-gate ECR repo first, then build gate artifacts
@@ -190,7 +190,7 @@ The choices that took real thought — and double as interview talking points:
 | NAT Gateway (1) | ~$32 |
 | ALB | ~$18 |
 | Fargate task (256 CPU / 512 MB, 1×) | ~$11 |
-| ECR · S3 · Secrets · CloudWatch · DynamoDB | ~$3 |
+| ECR · S3 · Secrets · CloudWatch | ~$3 |
 | CodePipeline + CodeBuild | ~$1 + build minutes |
 | **Total (running)** | **~$65/mo · ~$0.10/hr** |
 

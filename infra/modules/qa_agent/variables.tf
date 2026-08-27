@@ -1,0 +1,86 @@
+variable "environment" {
+  description = "Deployment environment"
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region (used to build the Bedrock inference-profile ARNs)"
+  type        = string
+}
+
+variable "kms_key_arn" {
+  description = "CMK ARN for encrypting the reports bucket, the QA secret, and logs"
+  type        = string
+}
+
+variable "log_retention" {
+  description = "CloudWatch log retention in days"
+  type        = number
+  default     = 7
+}
+
+variable "report_retention_days" {
+  description = "Days before QA screenshots and findings JSON expire. Screenshots are large and worthless once the PR is merged."
+  type        = number
+  default     = 7
+}
+
+# Both rungs of the model benchmark (PLAN.md 1d). Current-generation Anthropic
+# models on Bedrock are INFERENCE_PROFILE only -- the bare model id is not
+# invocable -- so these are profile ids, not model ids. See DISCOVERY.md 11.
+variable "model_profile_ids" {
+  description = "Bedrock inference profile IDs the agent may invoke (cheap and quality rungs)"
+  type        = list(string)
+  default = [
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  ]
+}
+
+variable "qa_workflow_repo" {
+  description = "owner/repo whose GitHub Actions workflow may assume the QA role"
+  type        = string
+  default     = "amdhd/vesselAI"
+}
+
+variable "qa_workflow_ref" {
+  description = "Git ref the schedule/workflow_dispatch triggers run on. PR runs present a different subject and are enumerated separately."
+  type        = string
+  default     = "refs/heads/main"
+}
+
+# --- Runtime code artifact ---
+#
+# Empty by default, which is what makes the cold-start ordering work: the
+# runtime cannot reference a zip that does not exist yet, so it is created only
+# once scripts/package-qa-agent.sh has uploaded one and printed these values.
+# Same shape as the repo's existing phased apply for the gate container image.
+variable "qa_agent_code_key" {
+  description = "S3 key of the agent deployment zip. Empty disables the runtime resource entirely."
+  type        = string
+  default     = ""
+}
+
+variable "qa_agent_code_version_id" {
+  description = "S3 object version of the agent zip. Pinning it makes a deploy immutable and a rollback a variable change."
+  type        = string
+  default     = ""
+}
+
+variable "agent_runtime_python" {
+  description = "Runtime enum for the code artifact. MUST match PY_VERSION in scripts/package-qa-agent.sh -- vendored .so files are tagged cpython-3XX and will not load on another minor."
+  type        = string
+  default     = "PYTHON_3_12"
+}
+
+variable "idle_session_timeout" {
+  description = "Seconds an idle session survives before reclamation. AWS defaults to 900; memory bills for every second a session is alive, including idle."
+  type        = number
+  default     = 300
+}
+
+variable "max_session_lifetime" {
+  description = "Hard ceiling on a single session, in seconds."
+  type        = number
+  default     = 1800
+}

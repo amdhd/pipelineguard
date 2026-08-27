@@ -1,0 +1,18 @@
+# Vendored into the deployment zip, Lambda-style, by scripts/package-qa-agent.sh.
+#
+# Native code is UNAVOIDABLE here -- bedrock-agentcore requires pydantic (Rust
+# core) and pulls in websockets (C speedups). That is fine, because both publish
+# honestly-tagged manylinux wheels, so the packaging script installs them FOR THE
+# TARGET runtime rather than for the build machine.
+#
+# The rule that matters is therefore not "pure Python" but "a real manylinux
+# wheel must exist". Playwright is excluded for failing exactly that test: its
+# wheel claims py3-none-any and Root-Is-Purelib while bundling a `node` driver
+# selected at install time, so pip has nothing to select and --platform cannot
+# correct it. agents/qa/agent/cdp.py speaks CDP directly instead -- 134 MB and an
+# uncorrectable binary replaced by 82 KB of pure Python.
+bedrock-agentcore>=1.22.0
+websocket-client>=1.9.0
+
+# boto3 is NOT listed: bedrock-agentcore already depends on it, and the managed
+# runtime provides it. Pinning a third copy only invites a version skew.

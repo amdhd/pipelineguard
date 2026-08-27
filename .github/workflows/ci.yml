@@ -79,10 +79,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The unit tests stub boto3, the anthropic SDK, and shell out to
-      # checkov/trivy, so only these two deps are needed to run them.
+      # The gate tests stub boto3, the anthropic SDK, and shell out to
+      # checkov/trivy. The QA agent tests additionally import agents/qa/agent/cdp.py,
+      # which needs websocket-client at import time -- the agent's other deps
+      # (bedrock-agentcore, and pydantic beneath it) are deliberately NOT
+      # installed here, because the tests that would need them exercise the
+      # browser and are covered against a fake instead.
       - name: Install test deps
-        run: pip install boto3 pytest
+        run: pip install boto3 pytest websocket-client
 
       - name: pytest
         run: pytest -q

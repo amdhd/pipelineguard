@@ -205,8 +205,12 @@ class BrowserSession:
             return None
         try:
             return bool(self.cdp.evaluate(f"!!window.localStorage.getItem({json.dumps(token_key)})"))
-        except CDPError:
-            logger.warning("auth probe failed", exc_info=True)
+        except Exception:  # noqa: BLE001
+            # Deliberately broad. This probe is a CHECK, and a check that can
+            # crash the run it is checking is worse than no check. The first
+            # version caught only CDPError and a closed websocket raised
+            # straight through it, failing runs that had otherwise succeeded.
+            logger.warning("auth probe failed; reporting unknown", exc_info=True)
             return None
 
     def _state(self) -> dict:

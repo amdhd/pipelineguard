@@ -1,0 +1,26 @@
+{
+  "corpus": "vesselAI seeded contract-drift bugs — see docs/agentcore/EVIDENCE.md",
+  "seeded": [
+    {
+      "id": "S-1",
+      "page": "/voyage",
+      "description": "Voyage response field renamed without updating the client",
+      "keywords": ["fuel", "blank", "empty", "no data", "zero"]
+    },
+    {
+      "id": "S-2",
+      "page": "/maintenance",
+      "description": "Telemetry numeric field returned as a string or dropped",
+      "keywords": ["NaN", "undefined", "[object Object]"]
+    },
+    {
+      "id": "S-3",
+      "page": "/sire",
+      "description": "Findings enum case changed so the client comparison misses",
+      "keywords": ["status", "empty", "grouping", "uncategorised", "unknown"]
+    }
+  ],
+  "labels": {
+    "_comment": "fingerprint -> true-positive | false-positive | by-design | <seed id>. Fingerprints are printed by score.py under 'awaiting review'."
+  }
+}

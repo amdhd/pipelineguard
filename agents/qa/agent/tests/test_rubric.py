@@ -95,10 +95,18 @@ def test_prompt_forbids_reporting_the_unobserved():
     assert "Missing features" in prompt
 
 
-def test_prompt_demands_bare_json_and_says_prose_fails_the_run():
+def test_prompt_asks_for_a_fenced_block_last_and_warns_about_narrating():
+    """
+    Changed from "bare JSON, no fence". A real run showed the model narrating
+    for a paragraph and THEN emitting a correct fenced object -- so the parser
+    now reads the last fence, and the prompt asks for the shape that actually
+    occurs rather than one models keep failing to produce.
+    """
     prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
-    assert "exactly one JSON object" in prompt
-    assert "FAILED RUN" in prompt
+    assert "```json" in prompt
+    assert "LAST thing" in prompt
+    assert "discarded, never read" in prompt
+    assert "FAILED" in prompt
 
 
 def test_prompt_limits_screenshots_to_findings():

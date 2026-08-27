@@ -121,16 +121,41 @@ class TestExtractJson:
         with pytest.raises(schema.SchemaError, match="not valid JSON"):
             agent._extract_json("Let me verify this further before reporting.")
 
-    def test_json_buried_in_prose_is_also_rejected(self, agent):
+    def test_fenced_json_after_narration_is_now_ACCEPTED(self, agent):
         """
-        Deliberately NOT salvaged. A model that narrated around its JSON did not
-        follow the prompt, and quietly extracting it hides a prompt bug that will
-        produce worse output elsewhere in the same run.
+        REVERSED, by a real run. This previously asserted rejection, on the
+        principle that salvaging JSON from prose hides a prompt bug.
+
+        The model narrated for a paragraph and then emitted a complete,
+        schema-valid findings object in a ```json fence. The findings were
+        correct; the parser threw them away.
+
+        A fence is an explicit self-delimiting payload, not prose, so reading it
+        is not the "inference" the directive guards against. Narration is still
+        discarded and can still never become a finding -- only a schema-valid
+        object survives.
         """
+        real = (
+            "I'm being redirected again. This is expected behavior and not a "
+            "finding.\n\nLet me compile the results.\n\n"
+            '```json\n{"overall": "PASS", "pages_tested": 3, "findings": []}\n```'
+        )
+        assert agent._extract_json(real)["pages_tested"] == 3
+
+    def test_the_last_fence_wins(self, agent):
+        """An earlier fence may be the model quoting the schema back to itself."""
+        text = (
+            'Here is the shape:\n```json\n{"overall": "EXAMPLE"}\n```\n'
+            'And my report:\n```json\n{"overall": "PASS", "pages_tested": 1, "findings": []}\n```'
+        )
+        assert agent._extract_json(text)["overall"] == "PASS"
+
+    def test_unfenced_prose_is_still_rejected(self, agent):
+        """No fence, no salvage. This half of the directive stands."""
         import schema
 
-        with pytest.raises(schema.SchemaError):
-            agent._extract_json('Here is my report:\n{"overall": "PASS"}\nHope that helps.')
+        with pytest.raises(schema.SchemaError, match="not valid JSON"):
+            agent._extract_json("Let me verify this further before reporting.")
 
 
 class TestScreenshotSink:
@@ -213,3 +238,42 @@ def test_token_budget_is_cumulative_not_per_call(agent):
     per-call max_tokens, so a 4096 "budget" halted every run after one turn.
     """
     assert agent.DEFAULT_TOKEN_BUDGET > agent.DEFAULT_MAX_TOKENS_PER_CALL * 10
+
+
+class TestSchemaViolationDiagnostics:
+    """
+    The second real run failed with "Expecting value: line 1 column 1 (char 0)"
+    and nothing else. That message is identical whether the model narrated,
+    returned nothing, or was cut off mid-JSON -- and those need three different
+    fixes. A failure you cannot diagnose is a failure you cannot tune the rubric
+    against, which is the whole Phase 1 exit criterion.
+    """
+
+    def test_empty_output_says_so_explicitly(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="NO TEXT"):
+            agent._extract_json("")
+
+    def test_whitespace_only_counts_as_empty(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="NO TEXT"):
+            agent._extract_json("   \n  ")
+
+    def test_prose_carries_a_snippet_of_what_arrived(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="Let me verify"):
+            agent._extract_json("Let me verify this further before reporting.")
+
+    def test_snippet_is_bounded(self, agent):
+        """A whole essay in an error message helps nobody."""
+        import schema
+
+        try:
+            agent._extract_json("x" * 5000)
+        except schema.SchemaError as e:
+            assert len(str(e)) < 600
+        else:
+            raise AssertionError("should have raised")

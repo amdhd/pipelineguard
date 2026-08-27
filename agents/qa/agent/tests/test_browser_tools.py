@@ -230,3 +230,57 @@ def test_requirements_exclude_playwright():
     ]
     assert "playwright" not in packages
     assert set(packages) == {"bedrock-agentcore", "websocket-client"}
+
+
+class TestRouteBudget:
+    """
+    The explore-cap is listed as a COST CONTROL. Stated only in the prompt it was
+    not one: a local run with max_routes=3 visited seven distinct routes -- the
+    model read the limit, agreed with it, and kept going. Enforced here it cannot
+    be declined.
+    """
+
+    def _capped(self, n):
+        fake = FakeCDP()
+        s = browser_tools.BrowserSession("https://x.test", lambda l, p: f"k/{l}", max_routes=n)
+        s.cdp = fake
+        return s, fake
+
+    def test_navigation_is_refused_past_the_cap(self):
+        s, fake = self._capped(2)
+        assert "error" not in s.navigate("/voyage")
+        assert "error" not in s.navigate("/ports")
+        blocked = s.navigate("/sire")
+        assert blocked.get("budget_exhausted") is True
+        assert "route budget exhausted" in blocked["error"]
+        # And it never actually navigated.
+        assert ("Page.navigate", {"url": "https://x.test/sire"}) not in fake.sent
+
+    def test_the_refusal_tells_the_model_what_to_do_next(self):
+        """A refusal the model cannot act on just burns turns."""
+        s, _ = self._capped(1)
+        s.navigate("/voyage")
+        assert "Emit your findings report now" in s.navigate("/ports")["error"]
+
+    def test_revisiting_a_route_is_free(self):
+        """Re-reading a page already counted must not consume budget."""
+        s, _ = self._capped(2)
+        s.navigate("/voyage")
+        s.navigate("/voyage")
+        assert "error" not in s.navigate("/ports")
+        assert s.visited == ["/voyage", "/ports"]
+
+    def test_login_does_not_consume_budget(self):
+        """
+        Reaching the app requires /login. Charging it would silently cost one of
+        the routes the caller asked for.
+        """
+        s, _ = self._capped(1)
+        s.navigate("/login")
+        assert "error" not in s.navigate("/voyage")
+        assert s.visited == ["/voyage"]
+
+    def test_no_cap_means_no_enforcement(self):
+        s, _ = self._capped(None)
+        for r in ("/a", "/b", "/c", "/d", "/e"):
+            assert "error" not in s.navigate(r)

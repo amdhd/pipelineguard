@@ -111,10 +111,14 @@ def render(findings: dict, *, target_url: str | None = None, runner_minutes: int
 
     if findings.get("incomplete"):
         headline = f"## ⚠️ QA agent — partial run ({findings.get('stop_reason', 'budget exhausted')})"
-    elif findings["overall"] == "PASS":
-        headline = "## ✅ QA agent — PASS"
-    else:
+    elif blocking:
         headline = f"## ❌ QA agent — FAIL ({len(blocking)} blocking)"
+    else:
+        # Derived from SEVERITIES, not from the model's own "overall". A real run
+        # returned overall=FAIL while reporting a single MEDIUM, contradicting
+        # the rubric it had just been given. exit_code already ignores that field
+        # for the same reason; the headline should agree with the exit code.
+        headline = "## ✅ QA agent — PASS"
 
     parts = [MARKER, headline, ""]
 

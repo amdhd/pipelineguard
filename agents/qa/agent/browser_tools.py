@@ -166,11 +166,17 @@ class BrowserSession:
     the class of bug this project exists to catch.
     """
 
-    def __init__(self, base_url: str, screenshot_sink):
+    def __init__(self, base_url: str, screenshot_sink, max_routes: int | None = None):
         self.base_url = base_url.rstrip("/")
         self._sink = screenshot_sink
         self.cdp: CDPSession | None = None
         self.screenshots: list[dict] = []
+        # The explore-cap is a COST CONTROL, so it is enforced here rather than
+        # only stated in the prompt. A local run with max_routes=3 visited seven
+        # distinct routes: the model read "visit at most 3", agreed, and kept
+        # going. A budget the model can decline is not a budget.
+        self.max_routes = max_routes
+        self.visited: list[str] = []
 
     def attach(self, ws_url: str, headers: dict) -> None:
         self.cdp = CDPSession(ws_url, headers)
@@ -194,6 +200,28 @@ class BrowserSession:
     def navigate(self, path: str) -> dict:
         if not path.startswith("/"):
             return {"error": f"path must start with '/', got {path!r}"}
+
+        # /login and /register do not count -- reaching the app requires them,
+        # and charging them to the budget would silently cost two of the routes
+        # the caller asked for.
+        counts = path not in ("/login", "/register")
+        new_route = counts and path not in self.visited
+
+        if new_route and self.max_routes is not None and len(self.visited) >= self.max_routes:
+            return {
+                "error": (
+                    f"route budget exhausted: {len(self.visited)} of "
+                    f"{self.max_routes} routes already visited "
+                    f"({', '.join(self.visited)}). Do not navigate anywhere new. "
+                    "Emit your findings report now."
+                ),
+                "routes_visited": list(self.visited),
+                "budget_exhausted": True,
+            }
+
+        if new_route:
+            self.visited.append(path)
+
         self.cdp.send("Page.navigate", {"url": f"{self.base_url}{path}"})
         self.cdp.wait_for_network_idle()
         return self._state()

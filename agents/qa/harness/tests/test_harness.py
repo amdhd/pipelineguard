@@ -323,3 +323,92 @@ class TestUnauthenticatedRun:
 
     def test_it_is_a_pipeline_failure_not_a_findings_failure(self):
         assert report.exit_code({"error": "unauthenticated", "findings": []}) == 2
+
+def _agent_default(name: str):
+    """
+    Read a constant out of agent.py without importing it.
+
+    agent.py pulls in bedrock_agentcore (and pydantic and starlette beneath it),
+    which CI deliberately does not install for the harness tests. Reading the
+    literal keeps the cross-file check without the dependency -- and reading it,
+    rather than copying it here, is the point: a duplicated constant drifts, and
+    catching drift is what the check is for.
+    """
+    import ast
+
+    source = _HARNESS.parent / "agent/agent.py"
+    for node in ast.parse(source.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {source}")
+
+
+class TestShippedPriceTable:
+    """
+    The SHIPPED prices.json, not a fixture.
+
+    An empty `models` table is a defensible degraded state -- and it was the
+    state this shipped in, which meant every run reported "unpriced" and no
+    total. Phase 1's exit criterion is a PR comment carrying the cost of the
+    run, so a table that prices nothing does not meet it. These tests make the
+    table's completeness a property of the build rather than of somebody
+    remembering.
+    """
+
+    @staticmethod
+    def _table():
+        return json.loads((_HARNESS / "prices.json").read_text())
+
+    def test_the_default_model_is_priced(self):
+        """
+        The rung that runs unless someone overrides it. If only the expensive
+        rung were priced, every scheduled run would still report "unpriced".
+        """
+        table = self._table()
+        assert _agent_default("DEFAULT_MODEL") in table["models"]
+
+    def test_every_entry_is_dated_and_sourced(self):
+        """
+        A price with no date cannot be audited and cannot be known to be stale,
+        which is the failure mode PRICING.md exists to prevent.
+        """
+        for model, entry in self._table()["models"].items():
+            assert entry["input_usd_per_mtok"] > 0, model
+            assert entry["output_usd_per_mtok"] > 0, model
+            assert entry.get("read_on"), f"{model} has no read_on date"
+            assert entry.get("source"), f"{model} does not say where the price came from"
+
+    def test_every_granted_rung_is_priced(self):
+        """
+        Cross-file invariant. Terraform enumerates the inference profiles the
+        agent's IAM policy allows it to invoke; a rung that can be invoked but
+        not priced reports "unpriced" the first time anyone uses it, which is
+        discovered on a PR rather than here.
+        """
+        import re
+
+        tf = (_HARNESS.parents[2] / "infra/modules/qa_agent/variables.tf").read_text()
+        block = re.search(
+            r'variable "model_profile_ids".*?default\s*=\s*\[(.*?)\]', tf, re.DOTALL
+        )
+        assert block, "could not find model_profile_ids in variables.tf"
+        granted = set(re.findall(r'"([^"]+)"', block.group(1)))
+        assert granted, "no model profile ids parsed"
+        assert granted <= set(self._table()["models"]), (
+            f"granted but unpriced: {granted - set(self._table()['models'])}"
+        )
+
+    def test_a_priced_run_reports_a_total_and_says_nothing_is_unpriced(self):
+        """The end state B2 was blocking: a comment with real money in it."""
+        findings = _findings()
+        findings["cost"]["model"] = _agent_default("DEFAULT_MODEL")
+        cost = pricing.summarise(findings, self._table())
+
+        assert cost["unpriced"] is False
+        assert cost["estimated_total_usd"] is not None
+        comment = report.render(findings)
+        assert "unpriced" not in comment
+        assert "$" in comment
+

@@ -1,8 +1,23 @@
 {
-  "source": "compute: AgentCore public pricing (see PRICING.md, dated). models: EMPTY — fill in from the Bedrock pricing page.",
+  "source": "models: AWS Marketplace listings per model (see PRICING.md), read 2026-08-27. compute: AgentCore public pricing (see PRICING.md, dated).",
   "compute": {
     "vcpu_hour_usd": 0.0895,
     "gb_hour_usd": 0.00945
   },
-  "models": {}
+  "models": {
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "input_usd_per_mtok": 1.0,
+      "output_usd_per_mtok": 5.0,
+      "read_on": "2026-08-27",
+      "tier": "global cross-region inference, standard service tier",
+      "source": "AWS Marketplace listing for Claude Haiku 4.5 (Bedrock Edition), Marketplace product ID prod-xdkflymybwmvi per the Bedrock model card. Quoted as $0.00100/1K in, $0.00500/1K out for global cross-region inference."
+    },
+    "global.anthropic.claude-sonnet-4-6": {
+      "input_usd_per_mtok": 3.0,
+      "output_usd_per_mtok": 15.0,
+      "read_on": "2026-08-27",
+      "tier": "global cross-region inference, standard service tier",
+      "source": "https://aws.amazon.com/marketplace/pp/prodview-o6w4hyizv7g64 -- Claude Sonnet 4.6 (Amazon Bedrock Edition), Standard Context: $3.00/M in, $15.00/M out, scope Global."
+    }
+  }
 }

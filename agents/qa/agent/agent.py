@@ -108,6 +108,37 @@ def _screenshot_sink(session_id: str):
     return sink
 
 
+def _archive(session_id: str, findings: dict) -> str | None:
+    """
+    Archive the findings JSON to S3.
+
+    PLAN.md Observability: "Findings JSON archived to S3 per PR." Without it a
+    completed run is unrecoverable -- the report goes to a GitHub step summary
+    and nowhere else, so a green run three days ago cannot tell you what it
+    actually found. That also makes the Phase 3 convergence check impossible,
+    since it compares finding sets ACROSS rounds.
+
+    Written from the RUNTIME's execution role, not the workflow's. That is what
+    keeps the CI-reachable role at invoke-one-runtime, read-one-secret.
+    """
+    if not REPORTS_BUCKET:
+        logger.warning("REPORTS_BUCKET unset; findings not archived")
+        return None
+    key = f"reports/{session_id}/findings.json"
+    try:
+        boto3.client("s3", region_name=REGION).put_object(
+            Bucket=REPORTS_BUCKET,
+            Key=key,
+            Body=json.dumps(findings, indent=2).encode(),
+            ContentType="application/json",
+        )
+        logger.info("archived findings to s3://%s/%s", REPORTS_BUCKET, key)
+        return key
+    except Exception:  # noqa: BLE001 -- archiving must never fail a good run
+        logger.warning("could not archive findings", exc_info=True)
+        return None
+
+
 def _presign(keys: list[str], expires: int) -> dict[str, str]:
     """
     Presigned GETs so a reviewer can actually open the evidence.
@@ -376,6 +407,12 @@ def run_qa(payload: dict) -> dict:
         "excludes": ["S3 storage", "CloudWatch Logs", "GitHub runner minutes"],
     }
     findings["screenshots"] = [{**s, "url": urls.get(s["key"])} for s in session.screenshots]
+    findings["routes_visited"] = list(session.visited)
+
+    # Archive LAST, so the stored copy is the complete one the harness receives.
+    archived = _archive(session_id, findings)
+    if archived:
+        findings["archive_key"] = archived
     return findings
 
 

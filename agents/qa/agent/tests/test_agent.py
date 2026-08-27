@@ -277,3 +277,37 @@ class TestSchemaViolationDiagnostics:
             assert len(str(e)) < 600
         else:
             raise AssertionError("should have raised")
+
+
+class TestArchiving:
+    """
+    A completed run whose findings cannot be retrieved is barely a run. The third
+    real run passed, and the results existed only in a GitHub step summary --
+    nothing in S3, no artifact. It also blocks Phase 3, whose convergence check
+    compares finding sets across rounds.
+    """
+
+    def test_findings_are_written_under_the_reports_prefix(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+
+        key = agent._archive("run-7", {"overall": "PASS", "findings": []})
+        assert key == "reports/run-7/findings.json"
+        kwargs = client.put_object.call_args.kwargs
+        assert kwargs["Bucket"] == "bucket"
+        # Must match the execution role's s3:PutObject scope, which is limited to
+        # screenshots/* and reports/*.
+        assert kwargs["Key"].startswith("reports/")
+        assert kwargs["ContentType"] == "application/json"
+
+    def test_archiving_failure_never_fails_the_run(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        client.put_object.side_effect = RuntimeError("denied")
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+        assert agent._archive("run-7", {}) is None
+
+    def test_no_bucket_configured_is_not_an_error(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
+        assert agent._archive("run-7", {}) is None

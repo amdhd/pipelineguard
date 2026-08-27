@@ -661,12 +661,33 @@ shape as the foundation-model ARNs in §11. Four actions are needed:
 available, but this agent never calls it, and an unused grant is one to justify
 in review for no benefit.
 
-### Still unresolved
+### Resolved afterwards — `ReadAgentCode` was NOT needed
 
-`ReadAgentCode` (`s3:GetObject` on the code bucket) is still unproven. The
-runtime started successfully with it present, which does not distinguish "needed"
-from "harmless". Removing it and re-applying would settle it; not worth a
-deliberate breakage right now.
+Removed the statement, forced a runtime replacement so the artifact had to be
+fetched again, and both creation and invoke succeeded. **AgentCore reads the
+deployment zip under its own service principal, not the execution role.** The
+grant is gone.
+
+### Corrected afterwards — Terraform cannot own the log group at all
+
+The fix recorded above ("delete AgentCore's group, let Terraform create one")
+was a **misleading half-success**. It works only when the runtime already
+exists. On a fresh runtime, AgentCore creates the group before Terraform can,
+and the apply fails:
+
+```
+ResourceAlreadyExistsException: The specified log group already exists
+```
+
+This is structural, not a race worth retrying: the group name contains the
+runtime's server-generated id, so the Terraform resource cannot exist until the
+runtime does — by which point AgentCore has already made the group.
+
+Terraform therefore sets the **retention** rather than owning the group, via a
+`terraform_data` + `local-exec` calling `put-retention-policy`. It is idempotent,
+and its trigger includes the runtime id so a replacement re-applies retention —
+which matters, because a replacement means a brand-new group defaulting to
+"never expire" again.
 
 ### What is running, and what it costs
 

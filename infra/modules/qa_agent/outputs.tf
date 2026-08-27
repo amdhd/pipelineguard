@@ -24,8 +24,8 @@ output "runtime_role_arn" {
 }
 
 output "log_group_name" {
-  description = "CloudWatch log group AgentCore writes to. Null until the runtime exists — the name contains the runtime's server-generated id."
-  value       = try(aws_cloudwatch_log_group.agent[0].name, null)
+  description = "CloudWatch log group AgentCore writes to. Created by AgentCore, not Terraform — Terraform only sets its retention. Null until the runtime exists."
+  value       = try("/aws/bedrock-agentcore/runtimes/${aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id}-DEFAULT", null)
 }
 
 output "github_role_arn" {

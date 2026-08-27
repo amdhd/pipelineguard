@@ -164,7 +164,20 @@ def _extract_json(text: str) -> dict:
     try:
         return json.loads(stripped.strip())
     except json.JSONDecodeError as e:
-        raise schema.SchemaError(f"model output is not valid JSON: {e}") from e
+        # Carry a snippet of what was ACTUALLY received. Without it a schema
+        # violation is undiagnosable: "Expecting value: line 1 column 1" is the
+        # same message whether the model narrated, returned nothing, or was cut
+        # off mid-JSON -- and those need three different fixes. The rubric is
+        # meant to be tuned against real failures, which is impossible blind.
+        if not text.strip():
+            raise schema.SchemaError(
+                "model returned NO TEXT at all (empty content). Usually the loop "
+                "ended on a stop reason that carried no final message."
+            ) from e
+        raise schema.SchemaError(
+            f"model output is not valid JSON: {e}. Received {len(text)} chars "
+            f"starting: {text.strip()[:300]!r}"
+        ) from e
 
 
 def run_qa(payload: dict) -> dict:
@@ -254,6 +267,22 @@ def run_qa(payload: dict) -> dict:
 
                 if response.get("stopReason") != "tool_use":
                     text = "".join(b.get("text", "") for b in out["content"])
+                    logger.info(
+                        "loop ended: stopReason=%s turns=%d blocks=%s text_chars=%d",
+                        response.get("stopReason"),
+                        budget.turns,
+                        [next(iter(b), "?") for b in out["content"]],
+                        len(text),
+                    )
+                    if response.get("stopReason") == "max_tokens":
+                        # Truncated mid-generation: the JSON is real but cut off.
+                        # Reporting it as "invalid JSON" would send the reader to
+                        # the rubric when the fix is max_tokens_per_call.
+                        raise schema.SchemaError(
+                            "model hit max_tokens before finishing its JSON "
+                            f"({max_tokens_per_call} per call). Raise "
+                            "max_tokens_per_call or reduce max_routes."
+                        )
                     findings = schema.validate(_extract_json(text))
                     break
 

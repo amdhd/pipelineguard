@@ -213,3 +213,42 @@ def test_token_budget_is_cumulative_not_per_call(agent):
     per-call max_tokens, so a 4096 "budget" halted every run after one turn.
     """
     assert agent.DEFAULT_TOKEN_BUDGET > agent.DEFAULT_MAX_TOKENS_PER_CALL * 10
+
+
+class TestSchemaViolationDiagnostics:
+    """
+    The second real run failed with "Expecting value: line 1 column 1 (char 0)"
+    and nothing else. That message is identical whether the model narrated,
+    returned nothing, or was cut off mid-JSON -- and those need three different
+    fixes. A failure you cannot diagnose is a failure you cannot tune the rubric
+    against, which is the whole Phase 1 exit criterion.
+    """
+
+    def test_empty_output_says_so_explicitly(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="NO TEXT"):
+            agent._extract_json("")
+
+    def test_whitespace_only_counts_as_empty(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="NO TEXT"):
+            agent._extract_json("   \n  ")
+
+    def test_prose_carries_a_snippet_of_what_arrived(self, agent):
+        import schema
+
+        with pytest.raises(schema.SchemaError, match="Let me verify"):
+            agent._extract_json("Let me verify this further before reporting.")
+
+    def test_snippet_is_bounded(self, agent):
+        """A whole essay in an error message helps nobody."""
+        import schema
+
+        try:
+            agent._extract_json("x" * 5000)
+        except schema.SchemaError as e:
+            assert len(str(e)) < 600
+        else:
+            raise AssertionError("should have raised")

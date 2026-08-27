@@ -156,6 +156,26 @@ Then report any of these, because each is something you can SEE:
 
 Check the values on EVERY route you visit, not only the ones that look broken.
 
+## How to actually see them
+
+Visible text does not carry everything. Each page read gives you two extra
+fields, and you must use them rather than reasoning from the text alone:
+
+  - `values` -- label/value pairs read from the DOM, INCLUDING FORM INPUTS. An
+    input's value is not part of a page's text, so an input that looks empty in
+    the text is very often populated. CHECK `values` BEFORE reporting any field
+    as blank. Reporting a populated form as empty is a false positive that has
+    actually happened.
+  - `empty_slots` -- places where an element that renders nothing sits inside a
+    container that does have text. This is the shape a missing figure takes: a
+    blank beside the name it belongs to. It is a HINT, not a finding on its own.
+    Confirm what the slot is for before reporting it, and say in your evidence
+    what you expected to see there and why.
+
+If a value is absent from the page text AND absent from `values`, and there is
+an `empty_slot` beside the label it belongs to, that is a real observation and
+you may report it. If it is merely absent from the text, it is not.
+
 ## But do NOT turn this into guesswork
 
 This section tells you to look harder, not to speculate. Still not findings:

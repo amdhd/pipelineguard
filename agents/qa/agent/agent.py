@@ -165,7 +165,7 @@ def _place_cache_point(messages: list[dict]) -> list[dict]:
 # schedule trigger's reduced route set wants.
 _BASE_TOKENS = 2_000  # system prompt + tool specs, re-sent every turn
 _TOKENS_PER_TURN = 1_700  # one tool result (6k chars) + the assistant message
-_TURNS_PER_ROUTE = 2.5  # navigate, then read/click to judge the page
+_TURNS_PER_ROUTE = 3.5  # measured: navigate, read, and usually a click to reach a tab
 _LOGIN_TURNS = 6  # navigate, type, type, click, verify, and one to spare
 _HEADROOM = 1.25  # models are not perfectly efficient; do not cap them exactly
 

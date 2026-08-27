@@ -331,3 +331,71 @@ def test_auth_probe_never_crashes_the_run():
     s = browser_tools.BrowserSession("https://x.test", lambda l, p: "k")
     s.cdp = DeadSocket()
     assert s.is_authenticated("vm_token") is None
+
+
+class TestStructuralRead:
+    """
+    innerText is lossy in one specific way, and it cost an error in BOTH
+    directions: a dropped field renders as an empty element and never reaches
+    the agent (false negative), while a populated <input> also never reaches it,
+    because a value is a DOM property rather than text (false positive -- the
+    agent reported a working form as empty).
+    """
+
+    def test_state_carries_values_and_empty_slots(self):
+        fake = FakeCDP(eval_results={
+            "values": {"values": [{"label": "Fuel Price ($/MT)", "value": "650", "kind": "input"}],
+                       "empty_slots": [{"context": "Main Engine Wartsila", "count": 8}]},
+        })
+        session, _ = _session(fake)
+        state = session.read_page()
+        assert state["values"][0]["value"] == "650"
+        assert state["empty_slots"] == [{"context": "Main Engine Wartsila", "count": 8}]
+
+    def test_a_populated_input_is_visible_even_though_text_is_not(self):
+        """The false positive this exists to stop."""
+        fake = FakeCDP(eval_results={
+            "values": {"values": [{"label": "Voyage Distance (nm)", "value": "1500", "kind": "input"}],
+                       "empty_slots": []},
+        })
+        session, _ = _session(fake)
+        values = session.read_page()["values"]
+        assert any(v["value"] == "1500" for v in values)
+
+    def test_a_failed_harvest_does_not_lose_the_page(self):
+        """
+        A page that breaks the harvester is exactly the kind worth reporting on,
+        so losing the text with it would be the wrong trade.
+        """
+        class Broken(FakeCDP):
+            def evaluate(self, expression, timeout=None):
+                if "empty_slots" in expression or "labelFor" in expression:
+                    raise CDPError("harvest blew up")
+                return super().evaluate(expression, timeout)
+
+        session, _ = _session(Broken())
+        state = session.read_page()
+        assert state["text"] == "Fleet Overview"
+        assert "values" not in state or state.get("values") == []
+
+    def test_context_is_found_by_climbing_not_by_reading_the_parent(self):
+        """
+        The regression that made the first version useless: the slot it exists
+        to catch sits inside a container whose own innerText is empty, so a
+        parent-only lookup dropped it.
+        """
+        assert "hops < 4" in browser_tools._HARVEST
+        assert "node = node.parentElement" in browser_tools._HARVEST
+
+    def test_repeated_slots_are_counted_not_repeated(self):
+        """"Every card" is a stronger signal than one card, and cheaper."""
+        assert "e.context === key" in browser_tools._HARVEST
+
+    def test_the_harvest_is_capped(self):
+        """It rides on every read; page content is the dominant input cost."""
+        assert browser_tools.MAX_VALUES <= 50
+        assert browser_tools.MAX_EMPTY_SLOTS <= 20
+        assert f"{browser_tools.MAX_VALUES}" in browser_tools._HARVEST
+
+    def test_passwords_are_never_harvested(self):
+        assert "el.type === 'password'" in browser_tools._HARVEST

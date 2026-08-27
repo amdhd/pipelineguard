@@ -28,8 +28,8 @@ the CDP idle-socket fix).
 | 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
-| 4 | False-positive rate | ✅ **0%** — 1 of 1 labelled finding was a real defect |
-| 5 | False-negative rate against seeded bugs | ❌ **67%** — unchanged after a rubric fix; cause now understood, see Results |
+| 4 | False-positive rate | ✅ **1 false positive in 5 runs** on healthy code — and its cause is now fixed |
+| 5 | False-negative rate against seeded bugs | ❌ **67%** — unmoved by a rubric fix *and* a structural read; see Results |
 | 6 | Two rungs benchmarked | ⛔ **NOT MEASURED** |
 
 **The headline is criterion 5, and it is not good news.** See below — it is also
@@ -311,4 +311,84 @@ Two, both of which cost runs before they were understood:
   `sessionId`, each opening its own browser session, all competing for that same
   10 RPM quota and throttling each other. Retries are now disabled and the read
   timeout is sized to the agent.
+
+---
+
+### 2026-08-27 (third pass) — the structural read, and what eleven runs showed
+
+**The false-positive side worked. The false-negative side did not.**
+
+#### False positives — criterion 4
+
+Five runs against healthy `main`:
+
+| Run | Agent | Findings | Verdict |
+|---|---|---|---|
+| 33075312063 | v7 | 0 | — |
+| 33084265061 | v9 | 0 | — |
+| 33084694776 | v9 | 0 | — |
+| 33085124374 | v9 | 1 — "Speed Optimizer shows empty input fields" | **FALSE POSITIVE** |
+| 33087787184 | v12 | 0 | — |
+
+Plus one finding from the v12 corpus run, on the dashboard route:
+
+- **"Good afternoon, Captain Captain"** — a **TRUE POSITIVE** in unmodified code.
+  `firstName = user.name.split(' ')[0]` where the seeded name is
+  *"Captain Ahmad Fauzi"*, rendered as `{greeting}, Captain {firstName}`.
+  Cosmetic, correctly rated LOW, and genuinely there. The agent finds real bugs.
+
+**One false positive in five runs, and it had the same root cause as the false
+negatives.** `<input value={650}>` contributes nothing to `innerText`, because a
+value is a DOM property rather than text — so the agent saw two labels with no
+adjacent text and reported a working form as empty. One blind spot, both
+directions. After the structural read exposed input values, it did not recur.
+
+#### False negatives — criterion 5, still failing
+
+| Run | Agent | S-1 | S-2 | S-3 |
+|---|---|---|---|---|
+| 33076107421 | v7 | ✅ | ❌ | ❌ |
+| 33082234580 | v9 | ✅ | ❌ | ❌ |
+| 33083682588 | v9 | ✅ | ❌ | ❌ |
+| 33085953383 | v10 | ✅ | ❌ | ❌ |
+| 33086619846 | v11 | ✅ | ❌ | ❌ |
+| 33087220606 | v12 | ❌ | ❌ | ❌ |
+
+Two confounds were removed along the way, and neither was the cause:
+
+- **The turn cap was binding.** Runs were truncating at 32 turns. Measurement
+  said 3.4 turns per route against a formula assuming 2.5, so the cap was raised
+  to a measured 3.5 (42 turns for 8 routes). Runs now complete without
+  truncating, and the number did not move.
+- **My own harvester had the bug it was built to find.** The empty score renders
+  as `<span/>` inside a `<div>` holding an `<svg>` and nothing else, so the
+  PARENT's `innerText` is empty too — and the parent-only context filter dropped
+  exactly the slot it existed to surface. Fixed to climb up to four ancestors,
+  with duplicate slots counted rather than repeated. The number still did not
+  move.
+
+**The most likely remaining cause is a rubric instruction I wrote.** Guarding
+against a false-positive spike, the prompt says `empty_slots` "is a HINT, not a
+finding on its own. Confirm what the slot is for before reporting it." That is
+probably suppressing the very report it was meant to enable — the agent cannot
+confirm what a blank slot is *for* without the source, so it declines. Next
+thing to try: allow a reported empty slot when it repeats across every item in a
+list, which is evidence in itself and is exactly S-2's shape.
+
+#### The methodological finding, which matters more than either rate
+
+**Run-to-run variance is large enough that a single run is not a measurement.**
+S-1 was caught in five runs and missed in the sixth. Route coverage varied
+between seven and eight, and `/` was skipped in most runs — which is why the
+"Captain Captain" bug went unseen for ten runs and then appeared.
+
+This has a direct consequence for **Phase 3**, whose convergence check compares
+finding sets between rounds and stops when the set stops shrinking. At this
+variance, a set that shrinks between two rounds may be noise rather than
+progress. Convergence needs either repeated runs per round or a tolerance band,
+and the plan currently assumes neither.
+
+It also means every rate in this document should be read as N=1 per
+configuration unless stated otherwise. The corpus is cheap (~$0.10) and
+repeatable; rates worth quoting need three runs each, not one.
 

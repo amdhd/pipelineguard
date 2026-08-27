@@ -22,6 +22,116 @@ logger = logging.getLogger(__name__)
 # tokens, and the model needs enough to judge the page, not all of it.
 MAX_TEXT_CHARS = 6000
 
+# WHY A STRUCTURAL READ EXISTS, AND WHAT IT COST NOT TO HAVE ONE
+#
+# The agent's whole model of a page was `document.body.innerText`, and that
+# representation is lossy in one specific, expensive way: IT DOES NOT CARRY
+# VALUES THAT ARE NOT TEXT NODES.
+#
+# Both of the agent's measured error modes trace to exactly that:
+#
+#   * A FALSE NEGATIVE. A field dropped from an API response renders as
+#     `<span></span>`, which contributes nothing to innerText. There is no gap to
+#     notice -- the number is simply absent from the agent's input -- so telling
+#     the rubric to "read the values" asked it to read something it cannot see.
+#   * A FALSE POSITIVE, from the same hole. `<input value={650}>` also
+#     contributes nothing to innerText, because an input's value is a DOM
+#     PROPERTY, not text content. The agent saw two labels with no adjacent text
+#     and reported "empty input fields" on a form that was working correctly.
+#
+# One blind spot, both directions. So this harvests what innerText drops:
+# form-control values, labelled values, and empty leaf elements that sit inside
+# a container that does have text -- the shape a missing figure actually takes.
+#
+# Output is capped hard. This rides on every navigate and read_page, and the
+# whole point of MAX_TEXT_CHARS is that page content is the dominant input cost.
+MAX_VALUES = 50
+MAX_EMPTY_SLOTS = 20
+
+_HARVEST = r"""
+(function () {
+  const MAX = %d, MAX_EMPTY = %d;
+  const values = [], empty = [];
+
+  function labelFor(el) {
+    const aria = el.getAttribute('aria-label');
+    if (aria) return aria;
+    if (el.id) {
+      try {
+        const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (l && l.innerText.trim()) return l.innerText.trim();
+      } catch (e) {}
+    }
+    const wrap = el.closest('label');
+    if (wrap && wrap.innerText.trim()) return wrap.innerText.trim();
+    let prev = el.previousElementSibling;
+    while (prev) {
+      const t = (prev.innerText || '').trim();
+      if (t && t.length < 60) return t;
+      prev = prev.previousElementSibling;
+    }
+    if (el.placeholder) return '(placeholder) ' + el.placeholder;
+    return '(unlabelled)';
+  }
+
+  // 1. Form controls. Their values are invisible to innerText -- this is the
+  //    half that stops a populated form being reported as empty.
+  for (const el of document.querySelectorAll('input, select, textarea')) {
+    if (values.length >= MAX) break;
+    if (el.type === 'hidden' || el.type === 'password') continue;
+    values.push({
+      label: labelFor(el).slice(0, 60),
+      value: String(el.value == null ? '' : el.value).slice(0, 60),
+      kind: el.tagName.toLowerCase()
+    });
+  }
+
+  // 2. Anything carrying an explicit accessible name, value included when the
+  //    element renders no text at all.
+  for (const el of document.querySelectorAll('[aria-label]')) {
+    if (values.length >= MAX) break;
+    if (el.matches('input, select, textarea')) continue;
+    values.push({
+      label: el.getAttribute('aria-label').slice(0, 60),
+      value: (el.innerText || '').trim().slice(0, 60),
+      kind: 'labelled'
+    });
+  }
+
+  // 3. Empty leaves inside a container that DOES have text. This is the shape a
+  //    missing figure takes: a slot with nothing in it, sitting beside the name
+  //    it belongs to. Decorative empties are excluded by requiring surrounding
+  //    text, and svg/img/icon nodes are skipped outright.
+  for (const el of document.querySelectorAll('span, div, td, dd, p, h1, h2, h3, h4, strong, b')) {
+    if (empty.length >= MAX_EMPTY) break;
+    if (el.children.length) continue;
+    if ((el.textContent || '').trim()) continue;
+    if (el.getAttribute('aria-hidden') === 'true') continue;
+    if (el.closest('svg, img, button[disabled]')) continue;
+    // Climb for context rather than reading the immediate parent only. The
+    // shape this exists to catch defeated the parent-only version: a score
+    // rendered as <span/> inside a <div> holding an <svg> and nothing else, so
+    // the PARENT's innerText is empty too and the slot was dropped -- by the
+    // very filter meant to find it. Walk up until some ancestor has text.
+    let node = el.parentElement, ctx = '', hops = 0;
+    while (node && hops < 4) {
+      const t = (node.innerText || '').trim().replace(/\s+/g, ' ');
+      if (t) { ctx = t; break; }
+      node = node.parentElement;
+      hops++;
+    }
+    if (!ctx) continue;
+    const key = ctx.slice(0, 80);
+    // Deduplicated with a count: "every card" is a stronger signal than one
+    // card, and twenty copies of it would otherwise eat the whole cap.
+    const hit = empty.find(e => e.context === key);
+    if (hit) { hit.count++; } else { empty.push({ context: key, count: 1 }); }
+  }
+
+  return { values: values, empty_slots: empty };
+})()
+""" % (MAX_VALUES, MAX_EMPTY_SLOTS)
+
 
 def tool_specs() -> list[dict]:
     """Bedrock Converse toolConfig entries."""
@@ -213,12 +323,29 @@ class BrowserSession:
             logger.warning("auth probe failed; reporting unknown", exc_info=True)
             return None
 
+    def _harvest(self) -> dict:
+        """
+        Structured values innerText cannot carry. Never fails the read: a page
+        that breaks the harvester is exactly the kind of page worth reporting on,
+        so losing the text as well would be the wrong trade.
+        """
+        try:
+            got = self.cdp.evaluate(_HARVEST) or {}
+        except Exception:  # noqa: BLE001
+            logger.warning("value harvest failed; continuing with text only", exc_info=True)
+            return {}
+        return {
+            "values": got.get("values", []),
+            "empty_slots": got.get("empty_slots", []),
+        }
+
     def _state(self) -> dict:
         text = self.cdp.evaluate("document.body ? document.body.innerText : ''") or ""
         return {
             "url": self.cdp.evaluate("location.href"),
             "text": text[:MAX_TEXT_CHARS],
             "text_truncated": len(text) > MAX_TEXT_CHARS,
+            **self._harvest(),
             **self.cdp.drain_events(),
         }
 

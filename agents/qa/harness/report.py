@@ -72,16 +72,51 @@ def _finding_block(f: dict) -> str:
     return "\n".join(lines)
 
 
+def _cache_line(cost: dict) -> str | None:
+    """
+    Whether prompt caching actually worked, in one line.
+
+    Worth its own row because it is invisible otherwise and expensive when it
+    silently stops: the agent re-sends its whole history every turn, so a run
+    whose cache never matches pays full input price for the same tokens dozens
+    of times. The token counts say what happened; the hit rate says whether it
+    was supposed to.
+    """
+    rate = cost.get("cache_hit_rate")
+    if rate is None or not cost.get("total_input_tokens"):
+        return None
+    if not cost.get("cache_read_tokens") and not cost.get("cache_write_tokens"):
+        return "_Prompt cache: not used on this run._"
+    if not cost.get("cache_read_tokens"):
+        return (
+            f"_Prompt cache: **0% hit rate** — {cost['cache_write_tokens']:,} tokens were "
+            "written to cache and none read back. Something volatile is changing the "
+            "prompt prefix between turns; this run cost several times what it should._"
+        )
+    return (
+        f"_Prompt cache: {rate:.0%} of input served from cache "
+        f"({cost['cache_read_tokens']:,} read, {cost['cache_write_tokens']:,} written)._"
+    )
+
+
 def _cost_table(cost: dict) -> str:
+    # Uncached input only, matching how Bedrock reports it -- the cached tokens
+    # are on the line below, at their own rates.
+    tokens = f"{cost['input_tokens']:,} in / {cost['output_tokens']:,} out"
+    if cost.get("cache_read_tokens") or cost.get("cache_write_tokens"):
+        tokens += f" (+{cost['cache_read_tokens']:,} cached)"
     rows = [
         "| Meter | Units | Estimated |",
         "|---|---|---|",
-        f"| Model inference (`{cost['model']}`) | {cost['input_tokens']:,} in / {cost['output_tokens']:,} out | {fmt_usd(cost['model_usd'])} |",
+        f"| Model inference (`{cost['model']}`) | {tokens} | {fmt_usd(cost['model_usd'])} |",
         f"| AgentCore runtime session | {cost['session_seconds']}s | {fmt_usd(cost['runtime_usd'])} |",
         f"| Browser session | {cost['session_seconds']}s | {fmt_usd(cost['browser_usd'])} |",
         f"| **Total** | {cost['turns']} turns | **{fmt_usd(cost['estimated_total_usd'])}** |",
     ]
     notes = [f"_Excludes: {', '.join(cost['excludes'])}._"]
+    cache_line = _cache_line(cost)
+    if cache_line:
+        notes.append(cache_line)
     if cost["unpriced"]:
         notes.append(
             f"_`{cost['model']}` is not in the price table, so inference is unpriced and the "

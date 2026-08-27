@@ -412,3 +412,97 @@ class TestShippedPriceTable:
         assert "unpriced" not in comment
         assert "$" in comment
 
+class TestCachePricing:
+    """
+    Input arrives on three meters once caching is on, and they differ by more
+    than 10x. Pricing cache reads at the full input rate overstates a cached run
+    by roughly that much; treating them as free understates it. Either way the
+    number in the PR comment is wrong, which is the one thing this file exists
+    to prevent.
+    """
+
+    _WITH_CACHE = {
+        "source": "test",
+        "compute": {"vcpu_hour_usd": 0.0895, "gb_hour_usd": 0.00945},
+        "models": {
+            "m": {
+                "input_usd_per_mtok": 1.0,
+                "output_usd_per_mtok": 5.0,
+                "cache_read_usd_per_mtok": 0.10,
+                "cache_write_usd_per_mtok": 1.25,
+            }
+        },
+    }
+
+    def test_each_meter_is_charged_at_its_own_rate(self):
+        cost = pricing.model_cost_usd(
+            "m", 1_000_000, 1_000_000, self._WITH_CACHE,
+            cache_read=1_000_000, cache_write=1_000_000,
+        )
+        assert cost == pytest.approx(1.0 + 5.0 + 0.10 + 1.25)
+
+    def test_cache_reads_are_not_free(self):
+        """A silent zero is the failure mode this module is built against."""
+        priced = pricing.model_cost_usd("m", 0, 0, self._WITH_CACHE, cache_read=1_000_000)
+        assert priced > 0
+
+    def test_missing_cache_rates_fall_back_to_documented_multipliers(self):
+        """
+        An entry with base rates but no cache rates must not price cached tokens
+        at zero. 0.1x read / 1.25x write, the multipliers Sonnet 4.6's published
+        rates confirm.
+        """
+        table = {"models": {"m": {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 5.0}}}
+        cost = pricing.model_cost_usd(
+            "m", 0, 0, table, cache_read=1_000_000, cache_write=1_000_000
+        )
+        assert cost == pytest.approx(0.1 + 1.25)
+
+    def test_an_explicit_rate_beats_the_multiplier(self):
+        table = {"models": {"m": {
+            "input_usd_per_mtok": 1.0, "output_usd_per_mtok": 5.0,
+            "cache_read_usd_per_mtok": 0.42,
+        }}}
+        assert pricing.model_cost_usd("m", 0, 0, table, cache_read=1_000_000) == pytest.approx(0.42)
+
+    def test_caching_makes_a_run_materially_cheaper(self):
+        """
+        The point of the whole exercise, as arithmetic: the same tokens, cached,
+        against the same tokens uncached.
+        """
+        uncached = pricing.model_cost_usd("m", 900_000, 10_000, self._WITH_CACHE)
+        cached = pricing.model_cost_usd(
+            "m", 50_000, 10_000, self._WITH_CACHE, cache_read=800_000, cache_write=50_000
+        )
+        assert cached < uncached / 3
+
+    def test_the_hit_rate_is_reported(self):
+        findings = _findings()
+        findings["cost"]["model"] = "m"
+        findings["cost"]["model_tokens"] = {
+            "input": 100_000, "output": 5_000,
+            "cache_read": 800_000, "cache_write": 100_000,
+        }
+        cost = pricing.summarise(findings, self._WITH_CACHE)
+        assert cost["total_input_tokens"] == 1_000_000
+        assert cost["cache_hit_rate"] == pytest.approx(0.8)
+        assert "80%" in report.render(findings)
+
+    def test_a_cache_that_never_matched_is_called_out(self):
+        """
+        Writes with no reads across a multi-turn run means the prefix is being
+        invalidated every turn. It costs several times what it should and is
+        otherwise completely invisible.
+        """
+        findings = _findings()
+        findings["cost"]["model"] = "m"
+        findings["cost"]["model_tokens"] = {
+            "input": 500_000, "output": 5_000, "cache_read": 0, "cache_write": 500_000,
+        }
+        comment = report.render(findings)
+        assert "0% hit rate" in comment
+
+    def test_an_uncached_run_says_nothing_about_caching(self):
+        comment = report.render(_findings())
+        assert "Prompt cache: not used" in comment
+

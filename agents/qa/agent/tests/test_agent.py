@@ -499,4 +499,96 @@ class TestFinalReport:
         )
         assert out is None
 
+class TestPromptCaching:
+    """
+    This loop re-sends its entire history on every call, so without a cache
+    checkpoint the same tokens are bought again at full price up to thirty times
+    in one run. These pin the two things that make caching work: exactly one
+    rolling checkpoint, and accounting that knows a cached token is still a token.
+    """
 
+    def test_a_checkpoint_is_placed_at_the_end(self, agent):
+        messages = [{"role": "user", "content": [{"text": "go"}]}]
+        agent._place_cache_point(messages)
+        assert messages[-1]["content"][-1] == {"cachePoint": {"type": "default"}}
+
+    def test_only_one_checkpoint_survives(self, agent):
+        """
+        Bedrock allows four per request and looks back ~20 content blocks for the
+        longest match, so old markers buy nothing and spend the allowance.
+        """
+        messages = [
+            {"role": "user", "content": [{"text": "a"}]},
+            {"role": "assistant", "content": [{"text": "b"}]},
+        ]
+        for _ in range(5):
+            agent._place_cache_point(messages)
+            messages.append({"role": "user", "content": [{"text": "more"}]})
+        agent._place_cache_point(messages)
+
+        points = sum(
+            1 for m in messages for b in m["content"] if "cachePoint" in b
+        )
+        assert points == 1
+
+    def test_the_checkpoint_moves_to_the_new_tail(self, agent):
+        messages = [{"role": "user", "content": [{"text": "a"}]}]
+        agent._place_cache_point(messages)
+        messages.append({"role": "assistant", "content": [{"text": "b"}]})
+        messages.append({"role": "user", "content": [{"toolResult": {}}]})
+        agent._place_cache_point(messages)
+
+        assert "cachePoint" not in messages[0]["content"][-1]
+        assert "cachePoint" in messages[-1]["content"][-1]
+
+    def test_it_does_not_disturb_the_content_it_marks(self, agent):
+        """The prefix must stay byte-identical or every cache read misses."""
+        messages = [{"role": "user", "content": [{"text": "the prompt"}]}]
+        agent._place_cache_point(messages)
+        agent._place_cache_point(messages)
+        assert messages[0]["content"][0] == {"text": "the prompt"}
+
+    def test_empty_history_is_survivable(self, agent):
+        assert agent._place_cache_point([]) == []
+
+
+class TestCachedTokenAccounting:
+    """
+    With caching on, Bedrock reports `inputTokens` as the NON-cached portion
+    only. Summing it alone -- which is what the budget did before caching --
+    under-counts a cached turn by an order of magnitude, so the token cap stops
+    binding and the run drifts until the wall-clock deadline catches it, with
+    the browser meter collecting the difference.
+    """
+
+    def test_cached_tokens_count_towards_the_budget(self, agent):
+        b = agent.Budget(max_turns=100, token_budget=10_000, deadline_seconds=600)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert b.total_tokens == 10_000
+        assert "token budget" in b.exhausted()
+
+    def test_the_meters_stay_separate_for_pricing(self, agent):
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert (b.input_tokens, b.cache_read_tokens, b.cache_write_tokens) == (200, 9_000, 500)
+
+    def test_the_reserve_sizes_itself_on_total_input_not_billed_input(self, agent):
+        """
+        The next call re-sends the whole history whether or not it is cached, so
+        a reserve computed from the uncached slice alone would be far too small
+        and the salvage call would not fit.
+        """
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600,
+                         report_tokens=1_000)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert b.reserve() == 9_700 + 1_000
+
+    def test_a_run_without_caching_is_unaffected(self, agent):
+        """Absent cache fields must behave exactly as before."""
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600)
+        b.record({"inputTokens": 100, "outputTokens": 50})
+        assert b.total_tokens == 150
+        assert b.cache_read_tokens == 0 and b.cache_write_tokens == 0

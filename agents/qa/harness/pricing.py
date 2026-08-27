@@ -40,6 +40,15 @@ DEFAULT_COMPUTE = {
 DEFAULT_SESSION_VCPU = 1.0
 DEFAULT_SESSION_GB = 2.0
 
+# Fallbacks for a model whose entry carries base rates but no cache rates.
+# Anthropic-on-Bedrock prices a cache read at 0.1x the input rate and a 5-minute
+# cache write at 1.25x. Confirmed rather than assumed: Sonnet 4.6's published
+# cache rates ($0.30 / $3.75 against a $3.00 input rate) are exactly those
+# multipliers. Used only when an entry does not state its own -- an explicit
+# figure always wins.
+CACHE_READ_MULTIPLIER = 0.1
+CACHE_WRITE_MULTIPLIER = 1.25
+
 _PRICES_PATH = Path(__file__).with_name("prices.json")
 
 
@@ -59,14 +68,36 @@ def load_prices(path: Path | None = None) -> dict:
     return data
 
 
-def model_cost_usd(model: str, input_tokens: int, output_tokens: int, prices: dict) -> float | None:
-    """Dollars for model inference, or None when the model is not in the table."""
+def model_cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    prices: dict,
+    *,
+    cache_read: int = 0,
+    cache_write: int = 0,
+) -> float | None:
+    """
+    Dollars for model inference, or None when the model is not in the table.
+
+    FOUR RATES, NOT TWO. With prompt caching on, the input arrives on three
+    meters -- uncached, read-from-cache, written-to-cache -- and they differ by
+    more than an order of magnitude between the cheapest and dearest. Pricing
+    cache reads at the full input rate would overstate a cached run by roughly
+    10x; treating them as free would understate it. Both are worse than the
+    arithmetic below, and this is a FinOps repo.
+    """
     entry = prices.get("models", {}).get(model)
     if not entry:
         return None
+    base_in = entry["input_usd_per_mtok"]
+    read_rate = entry.get("cache_read_usd_per_mtok", base_in * CACHE_READ_MULTIPLIER)
+    write_rate = entry.get("cache_write_usd_per_mtok", base_in * CACHE_WRITE_MULTIPLIER)
     return (
-        input_tokens / 1_000_000 * entry["input_usd_per_mtok"]
+        input_tokens / 1_000_000 * base_in
         + output_tokens / 1_000_000 * entry["output_usd_per_mtok"]
+        + cache_read / 1_000_000 * read_rate
+        + cache_write / 1_000_000 * write_rate
     )
 
 
@@ -103,19 +134,34 @@ def summarise(findings: dict, prices: dict | None = None) -> dict:
 
     inp = int(tokens.get("input", 0))
     out = int(tokens.get("output", 0))
+    cache_read = int(tokens.get("cache_read", 0))
+    cache_write = int(tokens.get("cache_write", 0))
     seconds = int(findings.get("session_seconds", 0))
 
-    model_usd = model_cost_usd(model, inp, out, prices)
+    model_usd = model_cost_usd(
+        model, inp, out, prices, cache_read=cache_read, cache_write=cache_write
+    )
     runtime_usd = compute_cost_usd(seconds, prices)
     browser_usd = compute_cost_usd(seconds, prices)
 
     known = [v for v in (model_usd, runtime_usd, browser_usd) if v is not None]
     total = sum(known) if len(known) == 3 else None
 
+    # Share of the input served from cache. The single number that says whether
+    # caching is actually working: a multi-turn run sitting at 0% has a cache
+    # that never matched -- usually something volatile crept into the prefix --
+    # and it costs several times what the same run should.
+    total_input = inp + cache_read + cache_write
+    hit_rate = (cache_read / total_input) if total_input else None
+
     return {
         "model": model,
         "input_tokens": inp,
         "output_tokens": out,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "total_input_tokens": total_input,
+        "cache_hit_rate": hit_rate,
         "session_seconds": seconds,
         "turns": int(cost.get("turns", 0)),
         "model_usd": model_usd,

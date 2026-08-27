@@ -49,6 +49,54 @@ DEFAULT_MAX_ROUTES = len(rubric.PRIVATE_ROUTES)
 # after the loop stops. See Budget.reserve().
 REPORT_RESERVE_SECONDS = 60
 
+# Prompt caching. Verified against the Bedrock prompt-caching documentation, not
+# assumed -- three of its rules shape the implementation below:
+#
+#   1. Checkpoints chain tools -> system -> messages, and the model's MINIMUM is
+#      evaluated against the CUMULATIVE tokens across all three. This agent's
+#      system prompt plus tool specs is ~2k tokens, under Haiku 4.5's 4,096
+#      minimum, so a checkpoint sitting after the static content alone would
+#      silently never cache on the default rung. It caches once the conversation
+#      itself pushes the prefix past the minimum, which a rolling checkpoint at
+#      the end of the messages does automatically.
+#   2. For Claude models Bedrock offers SIMPLIFIED cache management: place ONE
+#      checkpoint at the end, and it looks back ~20 content blocks for the
+#      longest matching prefix. That removes the usual need to keep old
+#      breakpoints alive by hand -- so this moves a single checkpoint each turn
+#      rather than accumulating up to the 4 allowed.
+#   3. An under-minimum checkpoint is NOT an error. Inference still succeeds and
+#      the prefix simply is not cached, which is why the early turns of a run
+#      cost the same as they did before and only the later ones get cheaper.
+#
+# TTL is left at the default 5 minutes: turns are seconds apart, and a 5-minute
+# cache refreshed inside its window costs nothing extra to keep alive.
+CACHE_POINT = {"cachePoint": {"type": "default"}}
+
+
+def _place_cache_point(messages: list[dict]) -> list[dict]:
+    """
+    Move the single rolling cache checkpoint to the end of the history.
+
+    Everything before it -- tools, system, and every prior turn -- becomes the
+    cached prefix, so the next turn reads it back at the cache rate instead of
+    re-paying full input price for the whole conversation. That is the entire
+    saving: this loop re-sends its complete history on every single call, so
+    without a checkpoint the same tokens are bought again at full price up to
+    thirty times in one run.
+
+    The old checkpoint is REMOVED as the new one is placed. Bedrock's lookback
+    finds the previous boundary on its own, and leaving a trail of markers would
+    spend the four-checkpoint allowance on positions nothing reads from.
+    """
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            message["content"] = [b for b in content if "cachePoint" not in b]
+
+    if messages and isinstance(messages[-1].get("content"), list):
+        messages[-1]["content"].append(dict(CACHE_POINT))
+    return messages
+
 
 # --- Deriving the token budget from the route cap ---------------------------
 #
@@ -130,6 +178,8 @@ class Budget:
         self.turns = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
         # Held back so the run can still ASK FOR ITS REPORT after stopping.
         # Zero means no reserve, which is what the caps mean on their own.
         self.report_tokens = report_tokens
@@ -137,12 +187,33 @@ class Budget:
         self.last_input_tokens = 0
 
     def record(self, usage: dict) -> None:
+        """
+        WITH CACHING ON, `inputTokens` IS NOT THE INPUT.
+
+        Bedrock reports it as the NON-cached portion only; the documented
+        identity is
+
+            total input = inputTokens + cacheReadInputTokens + cacheWriteInputTokens
+
+        Summing `inputTokens` alone -- which is what this did before caching --
+        would under-count a cached turn by an order of magnitude, so the token
+        budget would stop binding, runs would grow until the wall-clock deadline
+        caught them, and the browser meter would quietly collect the difference.
+        A cheaper token is still a token, and the budget measures CONTEXT.
+        """
         self.turns += 1
-        self.input_tokens += usage.get("inputTokens", 0)
+        cache_read = usage.get("cacheReadInputTokens", 0) or 0
+        cache_write = usage.get("cacheWriteInputTokens", 0) or 0
+        uncached = usage.get("inputTokens", 0)
+
+        self.input_tokens += uncached
+        self.cache_read_tokens += cache_read
+        self.cache_write_tokens += cache_write
         self.output_tokens += usage.get("outputTokens", 0)
-        # The next call re-sends the whole history, so the last call's input is
-        # the best available estimate of what one more call will cost.
-        self.last_input_tokens = usage.get("inputTokens", self.last_input_tokens)
+
+        # The next call re-sends the whole history, so the last call's total
+        # input is the best available estimate of what one more call will cost.
+        self.last_input_tokens = uncached + cache_read + cache_write
 
     def reserve(self) -> int:
         """
@@ -168,7 +239,19 @@ class Budget:
 
     @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        """
+        Every token that crossed the wire, cached or not.
+
+        Deliberately NOT the billed-token count: this is what bounds the run,
+        and a cached token still occupies context, still takes time to process,
+        and still holds the browser session open while it does.
+        """
+        return (
+            self.input_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+            + self.output_tokens
+        )
 
     @property
     def elapsed_seconds(self) -> int:
@@ -254,6 +337,11 @@ def _emit_metrics(budget: Budget, model: str) -> None:
             MetricData=[
                 {"MetricName": "InputTokens", "Value": budget.input_tokens, "Unit": "Count"},
                 {"MetricName": "OutputTokens", "Value": budget.output_tokens, "Unit": "Count"},
+                # Worth a metric of their own: a run where CacheReadTokens stays
+                # flat at zero across turns is a cache that has silently stopped
+                # matching, which costs ~10x and shows up nowhere else.
+                {"MetricName": "CacheReadTokens", "Value": budget.cache_read_tokens, "Unit": "Count"},
+                {"MetricName": "CacheWriteTokens", "Value": budget.cache_write_tokens, "Unit": "Count"},
                 {"MetricName": "SessionSeconds", "Value": budget.elapsed_seconds, "Unit": "Seconds"},
                 {"MetricName": "Turns", "Value": budget.turns, "Unit": "Count"},
             ],
@@ -366,7 +454,7 @@ def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_rea
         response = bedrock.converse(
             modelId=model,
             system=[{"text": system}],
-            messages=messages,
+            messages=_place_cache_point(messages),
             inferenceConfig={"maxTokens": max_tokens},
             # toolConfig is still sent. Converse rejects a history containing
             # toolUse/toolResult blocks when no tool config is present, so
@@ -478,7 +566,7 @@ def run_qa(payload: dict) -> dict:
                     response = bedrock.converse(
                         modelId=model,
                         system=[{"text": system}],
-                        messages=messages,
+                        messages=_place_cache_point(messages),
                         inferenceConfig={"maxTokens": max_tokens_per_call},
                         toolConfig={"tools": browser_tools.tool_specs()},
                     )
@@ -574,8 +662,15 @@ def run_qa(payload: dict) -> dict:
     findings["session_seconds"] = budget.elapsed_seconds
     findings["cost"] = {
         "model_tokens": {
+            # `input` is the UNCACHED input only, matching how Bedrock reports
+            # it. The two cache counters are the rest of the input, billed at
+            # different rates -- keeping them apart is what lets the harness
+            # price them correctly instead of averaging three rates into one
+            # wrong number.
             "input": budget.input_tokens,
             "output": budget.output_tokens,
+            "cache_read": budget.cache_read_tokens,
+            "cache_write": budget.cache_write_tokens,
         },
         "turns": budget.turns,
         "model": model,

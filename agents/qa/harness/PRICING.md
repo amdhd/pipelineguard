@@ -68,17 +68,45 @@ each entry's `source` field rather than smoothed over:
 Re-read the Haiku figure from its Marketplace listing when you next have console
 access, and drop the qualifier here once you have.
 
-Two things that change the number and are **not** modelled:
+One thing that changes the number and is **not** modelled:
 
 - **Geo inference is not priced the same as global.** These entries are for the
   `global.` profiles, which is what `infra/modules/qa_agent/variables.tf` grants
   and what the agent invokes. A `jp.` profile, for one, bills about 10% more.
-- **Prompt caching is not modelled**, because the agent does not use it. Bedrock
-  supports it on both rungs (4 checkpoints; 4,096 minimum tokens per checkpoint
-  on Haiku 4.5, 1,024 on Sonnet 4.6). Since every turn re-sends the whole
-  history, a cache point is the single largest cost lever available here -- and
-  the moment it is added, cache-read and cache-write rates become two more
-  meters this table has to carry.
+
+## Prompt caching — four meters, not two
+
+The agent places one rolling cache checkpoint at the end of its history, so
+input now arrives on **three** meters: uncached, read-from-cache, and
+written-to-cache. Each entry therefore carries `cache_read_usd_per_mtok` and
+`cache_write_usd_per_mtok`, and `model_cost_usd` charges all four rates.
+
+Getting this wrong is not a rounding error. On a simulated 32-turn run (the
+8-route default) the same tokens price out at **$0.96 uncached and $0.21
+cached** — so charging cache reads at the full input rate overstates the bill
+by ~4.7x, and treating them as free understates it by about as much.
+
+An entry that carries base rates but no cache rates falls back to the documented
+multipliers — **0.1x input for a read, 1.25x for a 5-minute write** — rather
+than to zero. Those are not assumed: Sonnet 4.6's published cache rates
+($0.30 and $3.75 against a $3.00 input rate) are exactly 0.1x and 1.25x, which
+is what licenses using them for Haiku 4.5 until its own listing is readable.
+
+`cache_min_tokens_per_checkpoint` is recorded per entry because it changes
+behaviour rather than price: **Haiku 4.5 needs 4,096 tokens before a checkpoint
+caches at all** (Sonnet 4.6 needs 1,024). A checkpoint under the minimum is not
+an error — inference succeeds and simply does not cache — which is why the first
+turns of a Haiku run cost what they always did and only the later ones get cheap.
+
+The **1-hour TTL is not used.** It costs more to write ($6.00/M on Sonnet 4.6 vs
+$3.75) and buys nothing here: turns are seconds apart, and a 5-minute cache
+refreshed inside its own window is free to keep alive.
+
+Also worth knowing, because it is invisible when it breaks: `pricing.summarise`
+reports a **cache hit rate**, and the PR comment calls out a run that wrote to
+cache and never read back. That means something volatile is changing the prompt
+prefix between turns, and it costs several times what the run should.
+
 ## Compute meter
 
 `compute` covers the AgentCore vCPU/GB meter, which **both** the runtime session

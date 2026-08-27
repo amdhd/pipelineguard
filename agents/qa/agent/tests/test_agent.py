@@ -312,6 +312,7 @@ class TestArchiving:
         monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
         assert agent._archive("run-7", {}) is None
 
+
 class TestDerivedBudgets:
     """
     The defaults have to describe a run that can FINISH.
@@ -352,6 +353,7 @@ class TestDerivedBudgets:
     def test_defaults_are_derived_from_the_route_cap(self, agent):
         assert agent.DEFAULT_MAX_TURNS == agent.turns_for(agent.DEFAULT_MAX_ROUTES)
         assert agent.DEFAULT_TOKEN_BUDGET == agent.token_budget_for(agent.DEFAULT_MAX_ROUTES)
+
 
 class TestReportReserve:
     """
@@ -498,6 +500,7 @@ class TestFinalReport:
             self._bedrock(error=err), "m", "sys", self._messages(), b, 4096, "deadline"
         )
         assert out is None
+
 
 class TestPromptCaching:
     """

@@ -324,6 +324,7 @@ class TestUnauthenticatedRun:
     def test_it_is_a_pipeline_failure_not_a_findings_failure(self):
         assert report.exit_code({"error": "unauthenticated", "findings": []}) == 2
 
+
 def _agent_default(name: str):
     """
     Read a constant out of agent.py without importing it.
@@ -411,6 +412,7 @@ class TestShippedPriceTable:
         comment = report.render(findings)
         assert "unpriced" not in comment
         assert "$" in comment
+
 
 class TestCachePricing:
     """
@@ -505,6 +507,7 @@ class TestCachePricing:
     def test_an_uncached_run_says_nothing_about_caching(self):
         comment = report.render(_findings())
         assert "Prompt cache: not used" in comment
+
 
 class TestTargetUrlIsNotPublished:
     """

@@ -27,7 +27,7 @@ the CDP idle-socket fix).
 |---|---|---|
 | 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
-| 3 | Health gate refuses to invoke when `seed` is broken | ⛔ **NOT MEASURED** |
+| 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **0%** — 1 of 1 labelled finding was a real defect |
 | 5 | False-negative rate against seeded bugs | ❌ **67%** — 2 of 3 seeded bugs missed |
 | 6 | Two rungs benchmarked | ⛔ **NOT MEASURED** |
@@ -65,22 +65,40 @@ Both gaps are mechanical, and neither is the agent's fault:
 
 ---
 
-## Criterion 3 — the health gate must refuse
+## Criterion 3 — the health gate must refuse ✅
+
+**Measured 2026-08-27** — [run 33078550865](https://github.com/amdhd/vesselAI/actions/runs/33078550865), vesselAI PR #97.
 
 The gate is the guard against paying for a browser session to discover the
 pipeline's own bug, and a gate that has never been seen to fail is not known to
 work. It is also the cheapest criterion here: no agent is invoked, so it costs
 runner minutes and nothing else.
 
-On a scratch branch of the QA target, break the seed — comment out the seed
-step, or point it at an empty fixture — and run the workflow.
+**Method.** On a scratch branch, the demo account was seeded under a different
+address so the gate's login assertion could not succeed. The seed still **exits
+0** deliberately — otherwise `docker compose --wait` fails at *Start the stack*
+and the test proves the healthcheck works rather than the gate.
 
-**Expected:** the job fails at *Health gate* with `login returned no token — the
-database is probably not seeded`, and the *Run the QA agent* step never
-executes. Confirm the last part specifically: a gate that fails *and invokes
-anyway* is worse than no gate, and the two look identical in a red job.
+**Result — exactly as specified:**
 
----
+```
+success   Start the stack        <- --wait was satisfied; the stack is UP
+success   Open tunnel
+failure   Health gate            <- login returned no token — the database is
+                                    probably not seeded
+skipped   Run the QA agent       <- THE ASSERTION THAT MATTERS
+success   Tear down
+```
+
+The agent step was **skipped**, so no AgentCore session was paid for. Confirm
+that part specifically on any re-test: a gate that fails *and invokes anyway* is
+worse than no gate, and the two are indistinguishable in a red job.
+
+**One defect fell out of this test.** The run's PR comment read *"harness did
+not produce a report … the cause is in this job's Run the QA agent step, and its
+CloudWatch log group"* — a step that never executed and a log group with nothing
+in it. The gate did its job and the comment blamed the agent. Recorded as defect
+7 in the workflow review and fixed.
 
 ## Criteria 4 and 5 — the two rates
 

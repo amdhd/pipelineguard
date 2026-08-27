@@ -73,7 +73,6 @@ One thing that changes the number and is **not** modelled:
 - **Geo inference is not priced the same as global.** These entries are for the
   `global.` profiles, which is what `infra/modules/qa_agent/variables.tf` grants
   and what the agent invokes. A `jp.` profile, for one, bills about 10% more.
-
 ## Prompt caching — four meters, not two
 
 The agent places one rolling cache checkpoint at the end of its history, so
@@ -81,10 +80,24 @@ input now arrives on **three** meters: uncached, read-from-cache, and
 written-to-cache. Each entry therefore carries `cache_read_usd_per_mtok` and
 `cache_write_usd_per_mtok`, and `model_cost_usd` charges all four rates.
 
-Getting this wrong is not a rounding error. On a simulated 32-turn run (the
-8-route default) the same tokens price out at **$0.96 uncached and $0.21
-cached** — so charging cache reads at the full input rate overstates the bill
-by ~4.7x, and treating them as free understates it by about as much.
+Getting this wrong is not a rounding error, and this is now measured rather
+than modelled. Two real runs on 2026-08-27 (agent runtime v7, 8 routes each)
+served **74% and 82% of their input from cache**:
+
+| Run | Uncached in | Cache read | Cache write | Out | Total |
+|---|---|---|---|---|---|
+| clean `main` | 8,304 | 53,657 | 10,485 | 1,145 | **$0.03** |
+| seeded corpus | 8,301 | 90,647 | 12,213 | 1,754 | **$0.04** |
+
+Price those cache reads at the full input rate and the bill reads ~4x high;
+treat them as free and it reads low. Both are worse than the arithmetic here.
+
+Note also what the measurement corrected: an earlier *simulation* of the same
+8-route run assumed 32 turns and 390 seconds and put a run at $0.23. The real
+agent batches tool calls, finishes in 11–15 turns and under 50 seconds, and
+costs about a tenth of that. The token-growth model in `agent.py` is still the
+right shape for sizing a budget — it is deliberately an upper bound — but it is
+not a cost forecast.
 
 An entry that carries base rates but no cache rates falls back to the documented
 multipliers — **0.1x input for a read, 1.25x for a 5-minute write** — rather

@@ -493,7 +493,7 @@ profiles, which is what the two rungs below use.
 | Rung | Profile ID |
 |---|---|
 | Cheap | `global.anthropic.claude-haiku-4-5-20251001-v1:0` |
-| Quality | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| Quality | `global.anthropic.claude-sonnet-4-6` |
 
 ### IAM — three ARNs per model, and why `*` is still avoidable
 
@@ -508,10 +508,10 @@ arn:aws:bedrock:ap-southeast-1:149751500899:inference-profile/global.anthropic.c
 arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
 arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
 
-# Sonnet 4.5 (quality rung)
-arn:aws:bedrock:ap-southeast-1:149751500899:inference-profile/global.anthropic.claude-sonnet-4-5-20250929-v1:0
-arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
-arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0
+# Sonnet 4.6 (quality rung)
+arn:aws:bedrock:ap-southeast-1:149751500899:inference-profile/global.anthropic.claude-sonnet-4-6
+arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6
+arn:aws:bedrock:ap-southeast-1::foundation-model/anthropic.claude-sonnet-4-6
 ```
 
 Note the empty account field on the foundation-model ARNs — they are AWS-owned,

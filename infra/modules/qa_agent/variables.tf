@@ -31,9 +31,14 @@ variable "report_retention_days" {
 variable "model_profile_ids" {
   description = "Bedrock inference profile IDs the agent may invoke (cheap and quality rungs)"
   type        = list(string)
+  # Verified available and invocable in this account, not just listed.
+  # Sonnet 5 is NOT here on purpose: it lists in the region but returns
+  # AccessDeniedException ("not available for this account", contact AWS Sales).
+  # Granting an ARN we cannot call would be a statement to defend in review for
+  # a capability we do not have.
   default = [
     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "global.anthropic.claude-sonnet-4-6",
   ]
 }
 

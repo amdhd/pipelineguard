@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 
@@ -66,12 +67,26 @@ def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, ses
     the same distinction the agent's own entrypoint preserves.
     """
     client = boto3.client("bedrock-agentcore", region_name=region)
-    response = client.invoke_agent_runtime(
-        agentRuntimeArn=runtime_arn,
-        runtimeSessionId=session_id or new_session_id(),
-        payload=json.dumps(payload).encode(),
-        contentType="application/json",
-    )
+    try:
+        response = client.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            runtimeSessionId=session_id or new_session_id(),
+            payload=json.dumps(payload).encode(),
+            contentType="application/json",
+        )
+    except (ClientError, BotoCoreError) as e:
+        # The first real run died here. A 500 from the runtime surfaces as a
+        # botocore exception, which escaped and killed the harness before it
+        # could write a comment -- so the workflow had nothing to publish and
+        # failed on a missing file, three steps away from the actual cause.
+        #
+        # Every failure mode must leave a renderable result behind. That is the
+        # whole reason this returns a dict instead of raising.
+        return {
+            "error": "runtime_unavailable",
+            "detail": str(e)[:500],
+            "findings": [],
+        }
     body = response["response"].read()
     if isinstance(body, bytes):
         body = body.decode()

@@ -15,6 +15,7 @@ Lambda-style f(event, context).
 
 import json
 import logging
+import math
 import re
 import os
 import time
@@ -40,11 +41,60 @@ METRIC_NAMESPACE = "PipelineGuard/QAAgent"
 # Defaults. Every one is overridable per invoke so the workflow can dial cost
 # without redeploying the agent (PLAN.md 1d).
 DEFAULT_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-DEFAULT_MAX_TURNS = 40
 DEFAULT_MAX_TOKENS_PER_CALL = 4096  # per Converse call
-DEFAULT_TOKEN_BUDGET = 200_000  # cumulative across the run
 DEFAULT_DEADLINE_SECONDS = 600
 DEFAULT_MAX_ROUTES = len(rubric.PRIVATE_ROUTES)
+
+
+# --- Deriving the token budget from the route cap ---------------------------
+#
+# CONTEXT GROWS QUADRATICALLY, and a flat budget cannot know that.
+#
+# Every turn re-sends the entire history, and each tool result carries up to
+# browser_tools.MAX_TEXT_CHARS of page text (~1.5k tokens). So the CUMULATIVE
+# input across N turns is not PER_TURN*N, it is roughly
+#
+#     BASE*N + PER_TURN*N*(N-1)/2
+#
+# The old defaults were a flat 200_000 tokens, 40 turns and 8 routes, chosen
+# independently. Solving the above for 200k gives N ~= 15 turns -- while a login
+# plus eight routes needs 25 or more. So the token cap fired MID-SWEEP on a
+# default run, the turn cap at 40 was unreachable dead code, and the normal
+# outcome of a full sweep was a truncated run. Three numbers that each looked
+# reasonable alone described a run that could not finish.
+#
+# Deriving the budget from the route cap makes them unable to disagree: ask for
+# fewer routes and the budget falls with them, which is exactly what the
+# schedule trigger's reduced route set wants.
+_BASE_TOKENS = 2_000  # system prompt + tool specs, re-sent every turn
+_TOKENS_PER_TURN = 1_700  # one tool result (6k chars) + the assistant message
+_TURNS_PER_ROUTE = 2.5  # navigate, then read/click to judge the page
+_LOGIN_TURNS = 6  # navigate, type, type, click, verify, and one to spare
+_HEADROOM = 1.25  # models are not perfectly efficient; do not cap them exactly
+
+
+def turns_for(max_routes: int) -> int:
+    """Turns a run needs to log in and cover `max_routes` routes."""
+    return int((_LOGIN_TURNS + _TURNS_PER_ROUTE * max_routes) * _HEADROOM)
+
+
+def token_budget_for(max_routes: int) -> int:
+    """
+    Cumulative token budget that lets a run of `max_routes` routes actually
+    finish. Rounded UP to something a human can read in a log line.
+
+    Up, not to nearest: rounding a budget down re-creates the bug this function
+    exists to remove, just smaller. At four routes the model needs 363,000 and
+    round-to-nearest budgets 360,000 -- a cap 3,000 short of the run it was
+    derived from.
+    """
+    n = turns_for(max_routes)
+    total = _BASE_TOKENS * n + _TOKENS_PER_TURN * n * (n - 1) / 2
+    return int(math.ceil(total / 10_000) * 10_000)
+
+
+DEFAULT_MAX_TURNS = turns_for(DEFAULT_MAX_ROUTES)
+DEFAULT_TOKEN_BUDGET = token_budget_for(DEFAULT_MAX_ROUTES)
 
 
 class Budget:
@@ -262,9 +312,11 @@ def run_qa(payload: dict) -> dict:
     auth_token_key = payload.get("auth_token_key", "vm_token")
     max_tokens_per_call = int(payload.get("max_tokens_per_call", DEFAULT_MAX_TOKENS_PER_CALL))
 
+    # Both caps default to a value DERIVED from max_routes, so asking for fewer
+    # routes lowers the budget with them and the two can never disagree.
     budget = Budget(
-        max_turns=int(payload.get("max_turns", DEFAULT_MAX_TURNS)),
-        token_budget=int(payload.get("token_budget", DEFAULT_TOKEN_BUDGET)),
+        max_turns=int(payload.get("max_turns", turns_for(max_routes))),
+        token_budget=int(payload.get("token_budget", token_budget_for(max_routes))),
         deadline_seconds=int(payload.get("deadline_seconds", DEFAULT_DEADLINE_SECONDS)),
     )
 

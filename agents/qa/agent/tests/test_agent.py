@@ -311,3 +311,45 @@ class TestArchiving:
     def test_no_bucket_configured_is_not_an_error(self, agent, monkeypatch):
         monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
         assert agent._archive("run-7", {}) is None
+
+class TestDerivedBudgets:
+    """
+    The defaults have to describe a run that can FINISH.
+
+    They did not. A flat 200_000-token budget, 40 turns and 8 routes were chosen
+    independently, and context grows quadratically because every turn re-sends
+    the whole history. Solving for 200k gives ~15 turns against the ~25 a login
+    plus eight routes needs -- so the token cap fired mid-sweep on a default run
+    and the turn cap was unreachable. Deriving one from the other is what stops
+    three individually-reasonable numbers describing an impossible run.
+    """
+
+    def test_turns_and_budget_rise_with_routes(self, agent):
+        assert agent.turns_for(2) < agent.turns_for(4) < agent.turns_for(8)
+        assert agent.token_budget_for(2) < agent.token_budget_for(4) < agent.token_budget_for(8)
+
+    def test_budget_covers_the_quadratic_growth_it_models(self, agent):
+        """
+        Simulate the run the defaults describe and assert it does not run out.
+        This is the arithmetic the old defaults failed.
+        """
+        for routes in (2, 4, 8):
+            turns = agent.turns_for(routes)
+            budget = agent.token_budget_for(routes)
+            # Cumulative input across `turns` turns, at the model this file uses.
+            spent = sum(
+                agent._BASE_TOKENS + agent._TOKENS_PER_TURN * i for i in range(turns)
+            )
+            assert spent <= budget, f"{routes} routes: needs {spent}, budgeted {budget}"
+
+    def test_the_old_flat_budget_would_not_have_covered_the_default_sweep(self, agent):
+        """The regression, stated as arithmetic rather than as a story."""
+        turns = agent.turns_for(agent.DEFAULT_MAX_ROUTES)
+        spent = sum(agent._BASE_TOKENS + agent._TOKENS_PER_TURN * i for i in range(turns))
+        assert spent > 200_000
+        assert spent <= agent.DEFAULT_TOKEN_BUDGET
+
+    def test_defaults_are_derived_from_the_route_cap(self, agent):
+        assert agent.DEFAULT_MAX_TURNS == agent.turns_for(agent.DEFAULT_MAX_ROUTES)
+        assert agent.DEFAULT_TOKEN_BUDGET == agent.token_budget_for(agent.DEFAULT_MAX_ROUTES)
+

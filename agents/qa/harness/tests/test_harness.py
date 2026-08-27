@@ -143,8 +143,12 @@ class TestReport:
 
     def test_failed_run_is_not_rendered_as_a_pass(self):
         out = report.render({"error": "schema_violation", "detail": "not JSON", "findings": []})
-        assert "run failed" in out
-        assert "PASS" not in out
+        # Assert on the HEADLINE, not the whole body -- the explanatory hint
+        # legitimately contains the word PASS while arguing against it.
+        headline = [l for l in out.splitlines() if l.startswith("## ")][0]
+        assert "run failed" in headline
+        assert "PASS" not in headline
+        assert "✅" not in out
         assert "not a passing run" in out
 
     def test_partial_run_is_labelled(self):
@@ -292,3 +296,30 @@ class TestRuntimeFailures:
         """A run that failed and explains nothing costs as much as one that points somewhere."""
         for code in ("runtime_unavailable", "schema_violation", "invalid_runtime_response", "bad_payload"):
             assert report._ERROR_HINTS.get(code)
+
+
+class TestUnauthenticatedRun:
+    """
+    An unauthenticated run must never render as a pass. It is the one output
+    where "no findings" actively misleads: the agent was looking at the login
+    page and reporting the application healthy.
+    """
+
+    def test_it_renders_as_a_failure(self):
+        out = report.render(
+            {"error": "unauthenticated", "detail": "no session token", "findings": []}
+        )
+        # Assert on the HEADLINE, not the whole body -- the explanatory hint
+        # legitimately contains the word PASS while arguing against it.
+        headline = [l for l in out.splitlines() if l.startswith("## ")][0]
+        assert "run failed" in headline
+        assert "PASS" not in headline
+        assert "✅" not in out
+
+    def test_it_explains_why_the_findings_were_discarded(self):
+        out = report.render({"error": "unauthenticated", "detail": "x", "findings": []})
+        assert "login page" in out
+        assert "indistinguishable from a healthy app" in out
+
+    def test_it_is_a_pipeline_failure_not_a_findings_failure(self):
+        assert report.exit_code({"error": "unauthenticated", "findings": []}) == 2

@@ -186,6 +186,29 @@ class BrowserSession:
         if self.cdp is not None:
             self.cdp.close()
 
+    def is_authenticated(self, token_key: str) -> bool | None:
+        """
+        Did the app actually authenticate? MEASURED, not asked.
+
+        A QA agent that never got past the login page and a QA agent that
+        explored a healthy app both produce "no findings". Those are opposite
+        outcomes and a false PASS is the worst failure this system can have, so
+        the answer has to come from something observable rather than from the
+        model's account of itself.
+
+        The frontend writes its JWT to localStorage on a successful login
+        (AuthContext.tsx). Presence of that key is the signal. Returns None when
+        no key is configured -- a different target may authenticate differently,
+        and guessing would be worse than declining to answer.
+        """
+        if not token_key:
+            return None
+        try:
+            return bool(self.cdp.evaluate(f"!!window.localStorage.getItem({json.dumps(token_key)})"))
+        except CDPError:
+            logger.warning("auth probe failed", exc_info=True)
+            return None
+
     def _state(self) -> dict:
         text = self.cdp.evaluate("document.body ? document.body.innerText : ''") or ""
         return {

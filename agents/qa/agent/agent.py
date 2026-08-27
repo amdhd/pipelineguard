@@ -256,6 +256,10 @@ def run_qa(payload: dict) -> dict:
     max_routes = int(payload.get("max_routes", DEFAULT_MAX_ROUTES))
     ai_fallback = bool(payload.get("ai_fallback_mode", True))
     presign_expires = int(payload.get("presign_expires", 7 * 24 * 3600))
+    # localStorage key the target writes its session token to. Configurable
+    # because a different app authenticates differently; empty disables the
+    # check rather than guessing.
+    auth_token_key = payload.get("auth_token_key", "vm_token")
     max_tokens_per_call = int(payload.get("max_tokens_per_call", DEFAULT_MAX_TOKENS_PER_CALL))
 
     budget = Budget(
@@ -384,6 +388,9 @@ def run_qa(payload: dict) -> dict:
         finally:
             session.close()
 
+    # Probe BEFORE tearing the session down -- localStorage dies with the browser.
+    authenticated = session.is_authenticated(auth_token_key)
+
     keys = [s["key"] for s in session.screenshots]
     urls = _presign(keys, presign_expires)
     for finding in findings.get("findings", []):
@@ -408,6 +415,35 @@ def run_qa(payload: dict) -> dict:
     }
     findings["screenshots"] = [{**s, "url": urls.get(s["key"])} for s in session.screenshots]
     findings["routes_visited"] = list(session.visited)
+    findings["authenticated"] = authenticated
+
+    # pages_tested is the model's own count and it has been wrong: a real run
+    # reported 4 while the enforced counter recorded 3. Prefer the measured
+    # value, and keep the claim beside it rather than silently overwriting.
+    if authenticated is not None and session.visited:
+        findings["pages_tested_reported_by_model"] = findings.get("pages_tested")
+        findings["pages_tested"] = len(session.visited)
+
+    if authenticated is False:
+        # Every private-route observation in this run is worthless: PrivateRoute
+        # redirects an unauthenticated visitor, so the agent was looking at the
+        # login page while believing it was testing the app. Reporting that as a
+        # clean PASS would be the worst possible output.
+        logger.error("agent never authenticated; discarding findings")
+        return {
+            "error": "unauthenticated",
+            "detail": (
+                "The agent never authenticated -- no session token was present "
+                f"under localStorage[{auth_token_key!r}] at the end of the run. "
+                "Every private route redirects when unauthenticated, so any "
+                "finding (or absence of findings) describes the login page, not "
+                "the application."
+            ),
+            "findings": [],
+            "routes_visited": list(session.visited),
+            "session_seconds": budget.elapsed_seconds,
+            "archive_key": _archive(session_id, {"error": "unauthenticated", "routes_visited": list(session.visited)}),
+        }
 
     # Archive LAST, so the stored copy is the complete one the harness receives.
     archived = _archive(session_id, findings)

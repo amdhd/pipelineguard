@@ -35,6 +35,12 @@ _ERROR_HINTS = {
         "inside the agent; its CloudWatch logs will have the traceback."
     ),
     "bad_payload": "The harness was invoked without a field the agent requires.",
+    "unauthenticated": (
+        "The agent never logged in, so it was looking at the login page rather "
+        "than the application. Findings were discarded — an unauthenticated "
+        "run that reports nothing is indistinguishable from a healthy app, and "
+        "publishing it as a PASS would be worse than publishing nothing."
+    ),
 }
 
 

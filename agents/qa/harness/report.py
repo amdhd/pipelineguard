@@ -131,7 +131,16 @@ def render(findings: dict, *, target_url: str | None = None, runner_minutes: int
     if target_url:
         parts += [f"Target: `{target_url}` · {findings.get('pages_tested', 0)} routes tested", ""]
 
-    if not items:
+    if not items and findings.get("incomplete") and not findings.get("report_salvaged"):
+        # An empty list on a truncated run is not the same claim as an empty
+        # list on a complete one, and must not read like it.
+        parts += [
+            "**No findings could be salvaged.** The run stopped before the agent "
+            "produced a report, so this is not evidence that the application is "
+            "healthy -- it is an absence of evidence either way.",
+            "",
+        ]
+    elif not items:
         parts += ["No findings. The agent explored the route list and observed nothing reportable.", ""]
     else:
         counts = {s: sum(1 for f in items if f["severity"] == s) for s in SEVERITY_ORDER}

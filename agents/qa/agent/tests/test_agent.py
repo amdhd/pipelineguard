@@ -353,3 +353,150 @@ class TestDerivedBudgets:
         assert agent.DEFAULT_MAX_TURNS == agent.turns_for(agent.DEFAULT_MAX_ROUTES)
         assert agent.DEFAULT_TOKEN_BUDGET == agent.token_budget_for(agent.DEFAULT_MAX_ROUTES)
 
+class TestReportReserve:
+    """
+    Stopping EARLY is what makes reporting possible: the findings exist only in
+    the model's final message, so a budget with nothing left cannot ask for one.
+    """
+
+    def test_no_reserve_requested_means_no_reserve_held(self, agent):
+        """The caps keep their plain meaning when nothing asked for a reserve."""
+        b = agent.Budget(max_turns=100, token_budget=100, deadline_seconds=600)
+        b.record({"inputTokens": 60, "outputTokens": 0})
+        assert b.reserve() == 0
+        assert b.exhausted() is None
+
+    def test_reserve_stops_the_loop_with_room_for_one_more_call(self, agent):
+        b = agent.Budget(
+            max_turns=100, token_budget=10_000, deadline_seconds=600, report_tokens=1_000
+        )
+        b.record({"inputTokens": 4_000, "outputTokens": 500})
+        # 4_500 spent, and one more call would cost ~4_000 + 1_000. That lands
+        # under 10_000, so there is still room to continue.
+        assert b.exhausted() is None
+        b.record({"inputTokens": 4_500, "outputTokens": 500})
+        # 9_500 spent; another call cannot fit. Stop now, while the reserve is
+        # still unspent.
+        assert "token budget" in b.exhausted()
+        assert b.total_tokens < b.token_budget
+
+    def test_reserve_tracks_the_growing_context(self, agent):
+        b = agent.Budget(
+            max_turns=100, token_budget=10**9, deadline_seconds=600, report_tokens=1_000
+        )
+        b.record({"inputTokens": 2_000, "outputTokens": 10})
+        assert b.reserve() == 3_000
+        b.record({"inputTokens": 9_000, "outputTokens": 10})
+        assert b.reserve() == 10_000
+
+    def test_deadline_reserves_seconds_too(self, agent):
+        """
+        The salvage call needs wall-clock as well as tokens. A deadline with no
+        slack leaves no time to make it.
+        """
+        b = agent.Budget(
+            max_turns=100, token_budget=10**9, deadline_seconds=30, report_seconds=60
+        )
+        assert "wall-clock" in b.exhausted()
+
+
+class TestFinalReport:
+    """
+    A truncated run must report WHAT IT FOUND.
+
+    It used to return `"findings": []` with a label, so a run that stopped after
+    finding four defects reported none of them -- and since the token budget was
+    the cap most likely to bind, that was the common path, not the rare one.
+    """
+
+    @staticmethod
+    def _bedrock(text=None, stop_reason="end_turn", error=None):
+        client = MagicMock()
+        if error is not None:
+            client.converse.side_effect = error
+            return client
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": text or ""}]}},
+            "stopReason": stop_reason,
+            "usage": {"inputTokens": 500, "outputTokens": 100},
+        }
+        return client
+
+    @staticmethod
+    def _messages():
+        """A history that ends the way the loop always ends: on tool results."""
+        return [
+            {"role": "user", "content": [{"text": "go"}]},
+            {"role": "assistant", "content": [{"toolUse": {"toolUseId": "1", "name": "navigate", "input": {}}}]},
+            {"role": "user", "content": [{"toolResult": {"toolUseId": "1", "content": [{"json": {}}]}}]},
+        ]
+
+    _REPORT = (
+        "I have run out of budget. Here is what I found.\n\n"
+        '```json\n{"overall": "FAIL", "pages_tested": 3, "findings": ['
+        '{"id": "F-001", "severity": "HIGH", "page": "/voyage", "summary": "blank chart",'
+        ' "evidence": "no data points", "steps_to_reproduce": ["log in"],'
+        ' "expected": "a curve", "actual": "empty", "suspected_source": null}]}\n```'
+    )
+
+    def test_findings_survive_budget_exhaustion(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock(self._REPORT), "m", "sys", self._messages(), b, 4096, "token budget reached"
+        )
+        assert out is not None
+        assert len(out["findings"]) == 1
+        assert out["findings"][0]["id"] == "F-001"
+
+    def test_the_nudge_does_not_create_two_user_turns_in_a_row(self, agent):
+        """
+        Converse requires alternating roles, and the loop always stops on a user
+        message of tool results. Appending a second user message would be
+        rejected outright -- turning the salvage into another way to lose the run.
+        """
+        messages = self._messages()
+        client = self._bedrock(self._REPORT)
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        agent._final_report(client, "m", "sys", messages, b, 4096, "deadline")
+
+        roles = [m["role"] for m in messages]
+        assert not any(a == b_ == "user" for a, b_ in zip(roles, roles[1:]))
+        assert any("STOP" in blk.get("text", "") for blk in messages[-1]["content"])
+
+    def test_the_salvage_call_is_charged_to_the_budget(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        agent._final_report(
+            self._bedrock(self._REPORT), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert b.input_tokens == 500 and b.output_tokens == 100
+
+    def test_another_tool_call_salvages_nothing(self, agent):
+        """
+        If the model keeps exploring rather than reporting, say so. Presenting an
+        empty findings list as a result would be the same lie in a new place.
+        """
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock("...", stop_reason="tool_use"), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert out is None
+
+    def test_narration_without_json_salvages_nothing(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock("Let me check a few more things first."),
+            "m", "sys", self._messages(), b, 4096, "deadline",
+        )
+        assert out is None
+
+    def test_a_failing_model_call_salvages_nothing_rather_than_raising(self, agent):
+        from botocore.exceptions import ClientError
+
+        err = ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse")
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock(error=err), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert out is None
+
+

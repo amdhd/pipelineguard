@@ -45,6 +45,10 @@ DEFAULT_MAX_TOKENS_PER_CALL = 4096  # per Converse call
 DEFAULT_DEADLINE_SECONDS = 600
 DEFAULT_MAX_ROUTES = len(rubric.PRIVATE_ROUTES)
 
+# Seconds held back from the deadline so the final report call can still be made
+# after the loop stops. See Budget.reserve().
+REPORT_RESERVE_SECONDS = 60
+
 
 # --- Deriving the token budget from the route cap ---------------------------
 #
@@ -110,7 +114,15 @@ class Budget:
     while producing no tokens.
     """
 
-    def __init__(self, max_turns: int, token_budget: int, deadline_seconds: int):
+    def __init__(
+        self,
+        max_turns: int,
+        token_budget: int,
+        deadline_seconds: int,
+        *,
+        report_tokens: int = 0,
+        report_seconds: int = 0,
+    ):
         self.max_turns = max_turns
         self.token_budget = token_budget
         self.deadline = time.monotonic() + deadline_seconds
@@ -118,19 +130,39 @@ class Budget:
         self.turns = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        # Held back so the run can still ASK FOR ITS REPORT after stopping.
+        # Zero means no reserve, which is what the caps mean on their own.
+        self.report_tokens = report_tokens
+        self.report_seconds = report_seconds
+        self.last_input_tokens = 0
 
     def record(self, usage: dict) -> None:
         self.turns += 1
         self.input_tokens += usage.get("inputTokens", 0)
         self.output_tokens += usage.get("outputTokens", 0)
+        # The next call re-sends the whole history, so the last call's input is
+        # the best available estimate of what one more call will cost.
+        self.last_input_tokens = usage.get("inputTokens", self.last_input_tokens)
+
+    def reserve(self) -> int:
+        """
+        Tokens to keep in hand for the final report call.
+
+        Self-adjusting rather than a constant: the cost of one more call is the
+        current context (~= the last call's input) plus whatever the report
+        itself is allowed to generate.
+        """
+        if not self.report_tokens:
+            return 0
+        return self.last_input_tokens + self.report_tokens
 
     def exhausted(self) -> str | None:
         """Returns a reason string when the loop must stop, else None."""
         if self.turns >= self.max_turns:
             return f"turn cap reached ({self.max_turns})"
-        if self.total_tokens >= self.token_budget:
+        if self.total_tokens + self.reserve() >= self.token_budget:
             return f"token budget reached ({self.token_budget})"
-        if time.monotonic() >= self.deadline:
+        if time.monotonic() + self.report_seconds >= self.deadline:
             return "wall-clock deadline reached"
         return None
 
@@ -296,6 +328,72 @@ def _extract_json(text: str) -> dict:
         ) from e
 
 
+def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_reason):
+    """
+    Ask for the report AFTER the budget stops the loop. Returns a validated
+    findings object, or None if nothing usable came back.
+
+    WHY THIS EXISTS. A truncated run used to return `"findings": []` with a
+    label -- so a run that stopped after finding four defects reported none of
+    them. The findings only ever exist in the model's FINAL message, and the old
+    code stopped the loop without ever asking for one, throwing away everything
+    the run had paid for. Budget.reserve() holds back exactly enough for this
+    call, which is why stopping early is what makes reporting possible.
+
+    Called with the browser session already closed: this is a text-only call, and
+    the browser meter bills on wall-clock including idle, so there is no reason
+    to hold the session open across it.
+    """
+    nudge = {
+        "text": (
+            f"STOP -- the run budget is exhausted ({stop_reason}). Do not call "
+            "any more tools; any further tool call is discarded and the run is "
+            "recorded as producing nothing. Emit your findings report NOW, as a "
+            "single JSON object in a ```json fenced block, covering only what "
+            "you have already observed. Set pages_tested to the number of routes "
+            "you actually visited, not the number you intended to."
+        )
+    }
+    # Converse requires alternating roles, and the loop always stops with a user
+    # message of tool results at the tail -- so this appends a text block to that
+    # message rather than adding a second user turn, which would be rejected.
+    if messages and messages[-1].get("role") == "user":
+        messages[-1]["content"].append(nudge)
+    else:
+        messages.append({"role": "user", "content": [nudge]})
+
+    try:
+        response = bedrock.converse(
+            modelId=model,
+            system=[{"text": system}],
+            messages=messages,
+            inferenceConfig={"maxTokens": max_tokens},
+            # toolConfig is still sent. Converse rejects a history containing
+            # toolUse/toolResult blocks when no tool config is present, so
+            # dropping it here would fail the call outright; the instruction
+            # above is what stops the model using them.
+            toolConfig={"tools": browser_tools.tool_specs()},
+        )
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "ClientError")
+        logger.error("final report call failed: %s", code)
+        return None
+
+    budget.record(response.get("usage", {}))
+    if response.get("stopReason") == "tool_use":
+        # It kept exploring instead of reporting. Nothing to salvage, and saying
+        # so beats presenting an empty findings list as a result.
+        logger.warning("model called a tool instead of reporting; nothing salvaged")
+        return None
+
+    try:
+        text = "".join(b.get("text", "") for b in response["output"]["message"]["content"])
+        return schema.validate(_extract_json(text))
+    except (schema.SchemaError, KeyError) as e:
+        logger.warning("final report was not usable: %s", e)
+        return None
+
+
 def run_qa(payload: dict) -> dict:
     session_id = payload.get("session_id") or f"run-{int(time.time())}"
     base_url = payload["target_url"]
@@ -318,6 +416,12 @@ def run_qa(payload: dict) -> dict:
         max_turns=int(payload.get("max_turns", turns_for(max_routes))),
         token_budget=int(payload.get("token_budget", token_budget_for(max_routes))),
         deadline_seconds=int(payload.get("deadline_seconds", DEFAULT_DEADLINE_SECONDS)),
+        report_tokens=max_tokens_per_call,
+        report_seconds=REPORT_RESERVE_SECONDS,
+    )
+    logger.info(
+        "budget: %d routes -> %d turns, %d tokens (reserving one call for the report)",
+        max_routes, budget.max_turns, budget.token_budget,
     )
 
     system = rubric.build_system_prompt(ai_fallback_mode=ai_fallback, max_routes=max_routes)
@@ -338,6 +442,8 @@ def run_qa(payload: dict) -> dict:
 
     stop_reason = None
     authenticated = None
+    findings: dict = {}
+    messages: list[dict] = []
     session = browser_tools.BrowserSession(
         base_url, _screenshot_sink(session_id), max_routes=max_routes
     )
@@ -346,7 +452,7 @@ def run_qa(payload: dict) -> dict:
         ws_url, headers = client.generate_ws_headers()
         session.attach(ws_url, headers)
         try:
-            messages = [
+            messages.append(
                 {
                     "role": "user",
                     "content": [
@@ -359,7 +465,7 @@ def run_qa(payload: dict) -> dict:
                         }
                     ],
                 }
-            ]
+            )
 
             while True:
                 reason = budget.exhausted()
@@ -427,17 +533,6 @@ def run_qa(payload: dict) -> dict:
                     )
                 messages.append({"role": "user", "content": results})
 
-            if stop_reason is not None:
-                # A truncated run reports what it has, labelled. Silently
-                # returning partial findings as if complete would be worse than
-                # failing: the PR comment would understate coverage.
-                findings = {
-                    "overall": "FAIL",
-                    "pages_tested": 0,
-                    "findings": [],
-                    "incomplete": True,
-                    "stop_reason": stop_reason,
-                }
         finally:
             # INSIDE the session, before close(). localStorage lives in the
             # browser, so the probe has to run while the socket is still open --
@@ -446,6 +541,26 @@ def run_qa(payload: dict) -> dict:
             # it ran before teardown.
             authenticated = session.is_authenticated(auth_token_key)
             session.close()
+
+    if stop_reason is not None:
+        # A truncated run reports WHAT IT FOUND, labelled -- not an empty list.
+        # Done here, outside the browser session, so the salvage call does not
+        # bill browser wall-clock.
+        # Two cases where asking is provably wasted spend:
+        #   * the model itself is what failed -- another call almost certainly
+        #     fails the same way, and each retry burns the deadline;
+        #   * the run never authenticated -- every finding is about the login
+        #     page and gets discarded below, so paying for a report is paying
+        #     for something already known to be worthless.
+        salvaged = None
+        if authenticated is not False and not stop_reason.startswith("model call failed"):
+            salvaged = _final_report(
+                bedrock, model, system, messages, budget, max_tokens_per_call, stop_reason
+            )
+        findings = salvaged or {"overall": "FAIL", "pages_tested": 0, "findings": []}
+        findings["incomplete"] = True
+        findings["stop_reason"] = stop_reason
+        findings["report_salvaged"] = salvaged is not None
 
     keys = [s["key"] for s in session.screenshots]
     urls = _presign(keys, presign_expires)

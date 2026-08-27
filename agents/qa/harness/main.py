@@ -111,8 +111,12 @@ def validate(findings: dict) -> dict:
     """
     if findings.get("error"):
         return findings
-    if findings.get("incomplete"):
-        return findings
+    # A partial run is validated like any other. It used to be waved through on
+    # the grounds that it carried nothing worth checking -- true only while a
+    # budget-exhausted run returned an empty findings list. It now salvages a
+    # real report before stopping, so the belt-and-braces check applies to it
+    # for exactly the same reason it applies to a complete run: this process is
+    # what posts to a PR.
     try:
         schema.validate(findings)
     except schema.SchemaError as e:

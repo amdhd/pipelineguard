@@ -27,6 +27,7 @@ import uuid
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
@@ -66,7 +67,27 @@ def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, ses
     caller can tell "the agent produced nonsense" from "the harness crashed" --
     the same distinction the agent's own entrypoint preserves.
     """
-    client = boto3.client("bedrock-agentcore", region_name=region)
+    # READ TIMEOUT SIZED TO THE AGENT, NOT TO BOTOCORE'S DEFAULT.
+    #
+    # InvokeAgentRuntime is synchronous and the agent may legitimately take
+    # minutes -- it drives a browser and paces itself against a 10 requests-per
+    # -minute quota. Botocore's default read timeout is far shorter, so a run
+    # that was working fine surfaced here as `runtime_unavailable`: "Read
+    # timeout on endpoint URL". That is the wrong diagnosis pointing at the
+    # wrong place, and it discards a report the agent had already produced.
+    #
+    # 900s is the ceiling for a synchronous invocation, so timing out past it
+    # tells the truth: nothing useful can arrive after that.
+    #
+    # retries are disabled deliberately. A retry would start a SECOND agent
+    # session -- a second browser, a second set of model calls, billed again --
+    # while the first is still running. Whatever went wrong, doing it twice
+    # concurrently is not the fix.
+    client = boto3.client(
+        "bedrock-agentcore",
+        region_name=region,
+        config=Config(read_timeout=900, connect_timeout=15, retries={"max_attempts": 0}),
+    )
     try:
         response = client.invoke_agent_runtime(
             agentRuntimeArn=runtime_arn,
@@ -143,6 +164,7 @@ def run(args) -> int:
         ("deadline_seconds", args.deadline_seconds),
         ("max_routes", args.max_routes),
         ("max_tokens_per_call", args.max_tokens_per_call),
+        ("requests_per_minute", args.requests_per_minute),
         ("presign_expires", args.presign_expires),
     ):
         if value is not None:
@@ -176,6 +198,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--token-budget", type=int)
     p.add_argument("--deadline-seconds", type=int)
     p.add_argument("--max-routes", type=int)
+    p.add_argument(
+        "--requests-per-minute",
+        type=int,
+        help="Model calls per minute the agent may make. Bedrock's request quota is "
+        "far tighter than its token quota (10/min per rung here); 0 disables pacing.",
+    )
     # The agent supports these and the harness could not reach them, which made
     # its own error message unactionable: a run that hit max_tokens told the
     # reader to "raise max_tokens_per_call" through a flag that did not exist.

@@ -595,3 +595,55 @@ class TestCachedTokenAccounting:
         b.record({"inputTokens": 100, "outputTokens": 50})
         assert b.total_tokens == 150
         assert b.cache_read_tokens == 0 and b.cache_write_tokens == 0
+
+
+class TestPacer:
+    """
+    Bedrock's REQUEST quota binds long before its token quota: 10 requests per
+    minute per rung here, against 5,000,000 tokens per minute. A browser-driving
+    agent emits one call per turn and its turns are fast, so it breaches the
+    request quota while using a fraction of a percent of the token quota. Two
+    runs were lost to that before the agent paced itself.
+    """
+
+    @staticmethod
+    def _pacer(agent, rpm):
+        slept = []
+        return agent.Pacer(rpm, sleep=slept.append), slept
+
+    def test_the_first_call_does_not_wait(self, agent):
+        pacer, slept = self._pacer(agent, 10)
+        assert pacer.wait() == 0.0
+        assert slept == []
+
+    def test_a_fast_second_call_is_held_back(self, agent):
+        pacer, slept = self._pacer(agent, 10)
+        pacer.wait()
+        waited = pacer.wait()
+        assert waited > 0
+        assert slept and slept[0] > 0
+        # 10 per minute is one every six seconds.
+        assert waited <= 6.0
+
+    def test_the_interval_follows_the_quota(self, agent):
+        assert agent.Pacer(10).interval == 6.0
+        assert agent.Pacer(60).interval == 1.0
+
+    def test_pacing_can_be_switched_off(self, agent):
+        """For an account whose quota has been raised -- not by editing source."""
+        pacer, slept = self._pacer(agent, 0)
+        assert pacer.interval == 0.0
+        assert pacer.wait() == 0.0 and pacer.wait() == 0.0
+        assert slept == []
+
+    def test_waiting_is_accumulated_for_reporting(self, agent):
+        """
+        Time on the quota is indistinguishable from a slow agent otherwise, and
+        the two want opposite responses: raise the quota, or shorten the run.
+        """
+        pacer, _ = self._pacer(agent, 10)
+        pacer.wait(); pacer.wait(); pacer.wait()
+        assert pacer.total_waited > 0
+
+    def test_the_default_matches_the_observed_quota(self, agent):
+        assert agent.DEFAULT_REQUESTS_PER_MINUTE == 10

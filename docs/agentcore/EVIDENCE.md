@@ -29,7 +29,7 @@ the CDP idle-socket fix).
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **0%** — 1 of 1 labelled finding was a real defect |
-| 5 | False-negative rate against seeded bugs | ❌ **67%** — 2 of 3 seeded bugs missed |
+| 5 | False-negative rate against seeded bugs | ❌ **67%** — unchanged after a rubric fix; cause now understood, see Results |
 | 6 | Two rungs benchmarked | ⛔ **NOT MEASURED** |
 
 **The headline is criterion 5, and it is not good news.** See below — it is also
@@ -232,3 +232,83 @@ tuning loop Phase 1's exit criteria anticipated.
 **Honest caveat on the false-positive rate.** 0% over a single labelled finding
 is not a rate, it is one data point. Criterion 4 needs the three real PRs before
 it can be quoted.
+
+---
+
+### 2026-08-27 (second run) — same corpus, revised rubric + pacing, runtime v9
+
+- **False-negative rate: 67% — UNCHANGED.** S-1 caught again; S-2 and S-3 missed again.
+- False positives: 0% of 1 labelled finding. The "look harder" instruction did
+  **not** cause the false-positive spike it risked, which is the one clearly
+  good result here.
+- 24 turns · 144s · cache hit 89% · **$0.08** · 83.6s of that wall-clock was
+  spent waiting on the request quota, not on the model.
+- Both seeded routes **were visited** (`/maintenance` and `/sire` are in
+  `routes_visited`). Only `/` was skipped. So these are perception misses, not
+  coverage misses.
+
+**The rubric change did not work, and the reason is not the rubric.**
+
+The agent's entire model of a page is `document.body.innerText`, plus console
+errors and failed requests (`browser_tools._state`). An absent value leaves **no
+textual trace**: `<span>{score}</span>` with `score` undefined renders
+`<span></span>` and contributes nothing to `innerText`. There is no gap to
+notice, no label sitting next to an empty space — the number is simply not in
+the agent's input at all.
+
+So "read the values" asked the agent to read something it cannot see. The
+instruction is not wrong; it is unactionable through this tool surface.
+
+S-1 is caught reliably for the mirror-image reason: a thrown `TypeError`
+surfaces **twice** in what the agent receives — once as a
+`Runtime.exceptionThrown` console error, and once as the error boundary's
+visible text. Loud failures are loud *in the agent's input*, which is the only
+place loudness counts.
+
+**A correction to the previous entry.** It called S-2 "a fair miss to charge
+against the agent". That was wrong. A miss is only fair if the agent could have
+perceived the defect, and through `innerText` it could not. S-2 and S-3 are both
+weak seeds, for the same underlying reason — their symptom is not textual. S-3
+is the more extreme case (a CSS class that stops applying); S-2 is visible to a
+human eye on a screenshot but invisible in text.
+
+**This moves the next change from the prompt to the TOOL.** Options, cheapest
+first:
+
+1. **A structural read.** Add a tool (or extend `read_page`) that returns
+   label/value pairs harvested from the DOM — `aria-label`, `<dt>/<dd>`, table
+   headers with cells, elements whose text is empty but whose siblings suggest a
+   figure belongs. A slot with no value then *exists* in the agent's input and
+   becomes reportable. This is the change that would actually move the number.
+2. **Screenshot-and-look on every route.** Rejected by PLAN.md 1d on cost —
+   screenshots are the single largest contributor to input tokens — and it would
+   be a large regression in run cost for a narrow gain.
+3. **Accept the limitation and say so in the rubric**, so nobody re-tunes a
+   prompt against a wall.
+
+Take (1). Until then the honest claim about this agent is narrower than the
+project has been assuming: **it detects failures that reach the text layer —
+exceptions, error boundaries, and values that render as literal `NaN`,
+`undefined` or `[object Object]` — and is blind to a value that is simply
+absent.** That is worth writing on the tin, because it is exactly the class the
+target's own audit says dominates.
+
+### Operational findings from taking this measurement
+
+Two, both of which cost runs before they were understood:
+
+- **Bedrock's request quota binds, not its token quota.** Both rungs are capped
+  at **10 requests per minute** here, against 5,000,000 tokens per minute. One
+  Converse call per turn at ~3.5s per turn is ~17 RPM, so the agent breaches the
+  request quota while using a fraction of a percent of the token quota. The
+  agent now paces itself; `paced_seconds` reports the cost of that, because time
+  on a quota is otherwise indistinguishable from a slow agent and the two want
+  opposite responses.
+- **A slow run used to amplify itself.** With botocore's default retry
+  behaviour on `InvokeAgentRuntime`, a run that outlived the read timeout was
+  retried — starting a second and third agent **while the first was still
+  running**. Run 33081262493's log shows three invocations under one
+  `sessionId`, each opening its own browser session, all competing for that same
+  10 RPM quota and throttling each other. Retries are now disabled and the read
+  timeout is sized to the agent.
+

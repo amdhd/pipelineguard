@@ -284,3 +284,35 @@ class TestRouteBudget:
         s, _ = self._capped(None)
         for r in ("/a", "/b", "/c", "/d", "/e"):
             assert "error" not in s.navigate(r)
+
+
+class TestAuthProbe:
+    """
+    A false PASS is the worst failure a QA agent has. An agent stuck on the login
+    page and an agent exploring a healthy app both produce "no findings", so the
+    answer must come from something OBSERVABLE rather than the model's account of
+    itself. The frontend writes its JWT to localStorage on login.
+    """
+
+    def test_token_present_means_authenticated(self):
+        fake = FakeCDP(eval_results={"localStorage": True})
+        s, _ = _session(fake)
+        assert s.is_authenticated("vm_token") is True
+        assert "vm_token" in fake.evaluated[-1]
+
+    def test_token_absent_means_not_authenticated(self):
+        fake = FakeCDP(eval_results={"localStorage": False})
+        s, _ = _session(fake)
+        assert s.is_authenticated("vm_token") is False
+
+    def test_no_key_configured_declines_to_answer(self):
+        """
+        None, not False. A different target may authenticate differently, and
+        guessing would turn "we cannot tell" into "it failed".
+        """
+        s, _ = _session(FakeCDP())
+        assert s.is_authenticated("") is None
+
+    def test_a_failed_probe_declines_rather_than_accusing(self):
+        s, _ = _session(FakeCDP(raise_on_eval=CDPError("Target crashed")))
+        assert s.is_authenticated("vm_token") is None

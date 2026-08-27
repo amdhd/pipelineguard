@@ -266,17 +266,6 @@ resource "aws_iam_role_policy" "agent_runtime" {
         ]
       },
       {
-        # AgentCore fetches the deployment zip under this role at cold start.
-        # UNVERIFIED until the runtime exists: if the service reads the artifact
-        # with its own service principal instead, this statement is unnecessary
-        # rather than wrong. Left in because a missing read fails the runtime at
-        # startup with an error that points at the artifact, not at IAM.
-        Sid      = "ReadAgentCode"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
-        Resource = ["${aws_s3_bucket.code.arn}/*"]
-      },
-      {
         Sid      = "ReadQaCredentials"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
@@ -321,28 +310,41 @@ resource "aws_iam_role_policy" "agent_runtime" {
   })
 }
 
-# AgentCore writes to a log group IT names, derived from the runtime id:
+# --- Log retention for the group AgentCore creates for itself ---
 #
-#   /aws/bedrock-agentcore/runtimes/<agent_runtime_id>-DEFAULT
+# AgentCore writes to /aws/bedrock-agentcore/runtimes/<agent_runtime_id>-DEFAULT
+# and CREATES THAT GROUP ITSELF, with **no retention** -- logs never expire.
+# On a project that caps every other group at 7 days with a written
+# justification, that is unbounded storage nobody would notice.
 #
-# An earlier version of this module guessed "/aws/bedrock-agentcore/<prefix>"
-# and created a group that nothing ever wrote to -- dead weight carrying a
-# retention setting that protected nothing.
+# Terraform cannot own the group, and the reason is structural rather than
+# incidental: the name contains the runtime's server-generated id, so the
+# resource cannot exist until the runtime does -- and by then AgentCore has
+# already created it. An `aws_cloudwatch_log_group` here fails the apply with
+# ResourceAlreadyExistsException. (It appears to work if you delete the group
+# from an already-running runtime and re-apply, which is exactly the misleading
+# half-success that hid this the first time.)
 #
-# The reason to own it here is NOT the name. It is that the group AgentCore
-# creates for itself has **no retention at all**: logs never expire, growing
-# forever, on a project where every other log group is capped at 7 days with an
-# explicit justification. Declaring it here puts it back under that discipline.
-#
-# The id is only knowable after the runtime exists, so this is gated on the same
-# count and depends on it implicitly through the reference.
-resource "aws_cloudwatch_log_group" "agent" {
-  # checkov:skip=CKV_AWS_338:Short dev retention is intentional (cost); matches the gate log groups.
+# So Terraform sets the retention rather than owning the group. put-retention-policy
+# is idempotent, and the trigger re-runs it whenever the runtime is replaced --
+# which matters, because a replacement means a NEW group at the default of
+# "never expire".
+resource "terraform_data" "log_retention" {
   count = var.qa_agent_code_key == "" ? 0 : 1
 
-  name              = "/aws/bedrock-agentcore/runtimes/${aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id}-DEFAULT"
-  retention_in_days = var.log_retention
-  kms_key_id        = var.kms_key_arn
+  triggers_replace = {
+    runtime_id = aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id
+    retention  = var.log_retention
+  }
+
+  provisioner "local-exec" {
+    command = join(" ", [
+      "aws logs put-retention-policy",
+      "--region ${var.aws_region}",
+      "--log-group-name /aws/bedrock-agentcore/runtimes/${aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id}-DEFAULT",
+      "--retention-in-days ${var.log_retention}",
+    ])
+  }
 }
 
 # --- GitHub Actions OIDC role for the vesselAI QA workflow ---

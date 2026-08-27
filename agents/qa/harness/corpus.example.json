@@ -1,0 +1,26 @@
+{
+  "corpus": "vesselAI qa-corpus-1 (PR #95), seeded 2026-08-27",
+  "seeded": [
+    {
+      "id": "S-1",
+      "page": "/voyage",
+      "description": "history returns actual_fuel where the client reads actualFuel",
+      "keywords": ["tofixed", "crash", "typeerror", "undefined", "fuel", "blank"]
+    },
+    {
+      "id": "S-2",
+      "page": "/maintenance",
+      "description": "equipment list response drops healthScore",
+      "keywords": ["health score", "healthscore", "blank", "missing", "nan", "undefined", "empty"]
+    },
+    {
+      "id": "S-3",
+      "page": "/sire",
+      "description": "finding status OPEN vs frontend comparison against 'open'",
+      "keywords": ["status", "open finding", "colour", "color", "styling", "uncategorised"]
+    }
+  ],
+  "labels": {
+    "/voyage::HIGH::voyage history tab crashes with typeerror when clicked": "true-positive"
+  }
+}

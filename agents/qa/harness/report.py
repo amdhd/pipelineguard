@@ -72,16 +72,51 @@ def _finding_block(f: dict) -> str:
     return "\n".join(lines)
 
 
+def _cache_line(cost: dict) -> str | None:
+    """
+    Whether prompt caching actually worked, in one line.
+
+    Worth its own row because it is invisible otherwise and expensive when it
+    silently stops: the agent re-sends its whole history every turn, so a run
+    whose cache never matches pays full input price for the same tokens dozens
+    of times. The token counts say what happened; the hit rate says whether it
+    was supposed to.
+    """
+    rate = cost.get("cache_hit_rate")
+    if rate is None or not cost.get("total_input_tokens"):
+        return None
+    if not cost.get("cache_read_tokens") and not cost.get("cache_write_tokens"):
+        return "_Prompt cache: not used on this run._"
+    if not cost.get("cache_read_tokens"):
+        return (
+            f"_Prompt cache: **0% hit rate** — {cost['cache_write_tokens']:,} tokens were "
+            "written to cache and none read back. Something volatile is changing the "
+            "prompt prefix between turns; this run cost several times what it should._"
+        )
+    return (
+        f"_Prompt cache: {rate:.0%} of input served from cache "
+        f"({cost['cache_read_tokens']:,} read, {cost['cache_write_tokens']:,} written)._"
+    )
+
+
 def _cost_table(cost: dict) -> str:
+    # Uncached input only, matching how Bedrock reports it -- the cached tokens
+    # are on the line below, at their own rates.
+    tokens = f"{cost['input_tokens']:,} in / {cost['output_tokens']:,} out"
+    if cost.get("cache_read_tokens") or cost.get("cache_write_tokens"):
+        tokens += f" (+{cost['cache_read_tokens']:,} cached)"
     rows = [
         "| Meter | Units | Estimated |",
         "|---|---|---|",
-        f"| Model inference (`{cost['model']}`) | {cost['input_tokens']:,} in / {cost['output_tokens']:,} out | {fmt_usd(cost['model_usd'])} |",
+        f"| Model inference (`{cost['model']}`) | {tokens} | {fmt_usd(cost['model_usd'])} |",
         f"| AgentCore runtime session | {cost['session_seconds']}s | {fmt_usd(cost['runtime_usd'])} |",
         f"| Browser session | {cost['session_seconds']}s | {fmt_usd(cost['browser_usd'])} |",
         f"| **Total** | {cost['turns']} turns | **{fmt_usd(cost['estimated_total_usd'])}** |",
     ]
     notes = [f"_Excludes: {', '.join(cost['excludes'])}._"]
+    cache_line = _cache_line(cost)
+    if cache_line:
+        notes.append(cache_line)
     if cost["unpriced"]:
         notes.append(
             f"_`{cost['model']}` is not in the price table, so inference is unpriced and the "
@@ -91,7 +126,7 @@ def _cost_table(cost: dict) -> str:
     return "\n".join(rows + [""] + notes)
 
 
-def render(findings: dict, *, target_url: str | None = None, runner_minutes: int | None = None) -> str:
+def render(findings: dict, *, runner_minutes: int | None = None) -> str:
     """Render the full comment. Always leads with the verdict."""
     from pricing import summarise
 
@@ -128,10 +163,26 @@ def render(findings: dict, *, target_url: str | None = None, runner_minutes: int
 
     parts = [MARKER, headline, ""]
 
-    if target_url:
-        parts += [f"Target: `{target_url}` · {findings.get('pages_tested', 0)} routes tested", ""]
+    # THE TARGET URL IS DELIBERATELY ABSENT.
+    #
+    # PLAN.md 1e: the tunnel is an unauthenticated public URL and there is "no
+    # reason to write it anywhere durable -- not into the PR comment, not into
+    # the findings JSON, not into logs." This used to print it, on a public
+    # repo, which is as durable as it gets. The tunnel dies with the job, so the
+    # link is stale by the time anyone reads it -- but a rule this repo states in
+    # its own plan should not be broken by its own reporting.
+    parts += [f"{findings.get('pages_tested', 0)} routes tested", ""]
 
-    if not items:
+    if not items and findings.get("incomplete") and not findings.get("report_salvaged"):
+        # An empty list on a truncated run is not the same claim as an empty
+        # list on a complete one, and must not read like it.
+        parts += [
+            "**No findings could be salvaged.** The run stopped before the agent "
+            "produced a report, so this is not evidence that the application is "
+            "healthy -- it is an absence of evidence either way.",
+            "",
+        ]
+    elif not items:
         parts += ["No findings. The agent explored the route list and observed nothing reportable.", ""]
     else:
         counts = {s: sum(1 for f in items if f["severity"] == s) for s in SEVERITY_ORDER}

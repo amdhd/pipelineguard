@@ -1,8 +1,31 @@
 {
-  "source": "compute: AgentCore public pricing (see PRICING.md, dated). models: EMPTY — fill in from the Bedrock pricing page.",
+  "source": "models: AWS Marketplace listings per model (see PRICING.md), read 2026-08-27. compute: AgentCore public pricing (see PRICING.md, dated).",
   "compute": {
     "vcpu_hour_usd": 0.0895,
     "gb_hour_usd": 0.00945
   },
-  "models": {}
+  "models": {
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+      "input_usd_per_mtok": 1.0,
+      "output_usd_per_mtok": 5.0,
+      "read_on": "2026-08-27",
+      "tier": "global cross-region inference, standard service tier",
+      "source": "AWS Marketplace listing for Claude Haiku 4.5 (Bedrock Edition), Marketplace product ID prod-xdkflymybwmvi per the Bedrock model card. Quoted as $0.00100/1K in, $0.00500/1K out for global cross-region inference.",
+      "cache_read_usd_per_mtok": 0.1,
+      "cache_write_usd_per_mtok": 1.25,
+      "cache_source": "DERIVED, not read: 0.1x input for a cache read and 1.25x input for a 5-minute cache write. Those multipliers are confirmed for Anthropic-on-Bedrock by the Sonnet 4.6 listing below, whose published cache rates are exactly 0.1x and 1.25x its input rate. Replace with a directly-read figure when the Haiku listing is reachable.",
+      "cache_min_tokens_per_checkpoint": 4096
+    },
+    "global.anthropic.claude-sonnet-4-6": {
+      "input_usd_per_mtok": 3.0,
+      "output_usd_per_mtok": 15.0,
+      "read_on": "2026-08-27",
+      "tier": "global cross-region inference, standard service tier",
+      "source": "https://aws.amazon.com/marketplace/pp/prodview-o6w4hyizv7g64 -- Claude Sonnet 4.6 (Amazon Bedrock Edition), Standard Context: $3.00/M in, $15.00/M out, scope Global.",
+      "cache_read_usd_per_mtok": 0.3,
+      "cache_write_usd_per_mtok": 3.75,
+      "cache_source": "https://aws.amazon.com/marketplace/pp/prodview-o6w4hyizv7g64 -- Prompt Caching: Cache Read $0.30/M, Cache Write $3.75/M (1-hour cache write is $6.00/M and is not used; this agent leaves the TTL at the 5-minute default).",
+      "cache_min_tokens_per_checkpoint": 1024
+    }
+  }
 }

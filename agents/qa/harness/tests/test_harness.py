@@ -323,3 +323,231 @@ class TestUnauthenticatedRun:
 
     def test_it_is_a_pipeline_failure_not_a_findings_failure(self):
         assert report.exit_code({"error": "unauthenticated", "findings": []}) == 2
+
+
+def _agent_default(name: str):
+    """
+    Read a constant out of agent.py without importing it.
+
+    agent.py pulls in bedrock_agentcore (and pydantic and starlette beneath it),
+    which CI deliberately does not install for the harness tests. Reading the
+    literal keeps the cross-file check without the dependency -- and reading it,
+    rather than copying it here, is the point: a duplicated constant drifts, and
+    catching drift is what the check is for.
+    """
+    import ast
+
+    source = _HARNESS.parent / "agent/agent.py"
+    for node in ast.parse(source.read_text()).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {source}")
+
+
+class TestShippedPriceTable:
+    """
+    The SHIPPED prices.json, not a fixture.
+
+    An empty `models` table is a defensible degraded state -- and it was the
+    state this shipped in, which meant every run reported "unpriced" and no
+    total. Phase 1's exit criterion is a PR comment carrying the cost of the
+    run, so a table that prices nothing does not meet it. These tests make the
+    table's completeness a property of the build rather than of somebody
+    remembering.
+    """
+
+    @staticmethod
+    def _table():
+        return json.loads((_HARNESS / "prices.json").read_text())
+
+    def test_the_default_model_is_priced(self):
+        """
+        The rung that runs unless someone overrides it. If only the expensive
+        rung were priced, every scheduled run would still report "unpriced".
+        """
+        table = self._table()
+        assert _agent_default("DEFAULT_MODEL") in table["models"]
+
+    def test_every_entry_is_dated_and_sourced(self):
+        """
+        A price with no date cannot be audited and cannot be known to be stale,
+        which is the failure mode PRICING.md exists to prevent.
+        """
+        for model, entry in self._table()["models"].items():
+            assert entry["input_usd_per_mtok"] > 0, model
+            assert entry["output_usd_per_mtok"] > 0, model
+            assert entry.get("read_on"), f"{model} has no read_on date"
+            assert entry.get("source"), f"{model} does not say where the price came from"
+
+    def test_every_granted_rung_is_priced(self):
+        """
+        Cross-file invariant. Terraform enumerates the inference profiles the
+        agent's IAM policy allows it to invoke; a rung that can be invoked but
+        not priced reports "unpriced" the first time anyone uses it, which is
+        discovered on a PR rather than here.
+        """
+        import re
+
+        tf = (_HARNESS.parents[2] / "infra/modules/qa_agent/variables.tf").read_text()
+        block = re.search(
+            r'variable "model_profile_ids".*?default\s*=\s*\[(.*?)\]', tf, re.DOTALL
+        )
+        assert block, "could not find model_profile_ids in variables.tf"
+        granted = set(re.findall(r'"([^"]+)"', block.group(1)))
+        assert granted, "no model profile ids parsed"
+        assert granted <= set(self._table()["models"]), (
+            f"granted but unpriced: {granted - set(self._table()['models'])}"
+        )
+
+    def test_a_priced_run_reports_a_total_and_says_nothing_is_unpriced(self):
+        """The end state B2 was blocking: a comment with real money in it."""
+        findings = _findings()
+        findings["cost"]["model"] = _agent_default("DEFAULT_MODEL")
+        cost = pricing.summarise(findings, self._table())
+
+        assert cost["unpriced"] is False
+        assert cost["estimated_total_usd"] is not None
+        comment = report.render(findings)
+        assert "unpriced" not in comment
+        assert "$" in comment
+
+
+class TestCachePricing:
+    """
+    Input arrives on three meters once caching is on, and they differ by more
+    than 10x. Pricing cache reads at the full input rate overstates a cached run
+    by roughly that much; treating them as free understates it. Either way the
+    number in the PR comment is wrong, which is the one thing this file exists
+    to prevent.
+    """
+
+    _WITH_CACHE = {
+        "source": "test",
+        "compute": {"vcpu_hour_usd": 0.0895, "gb_hour_usd": 0.00945},
+        "models": {
+            "m": {
+                "input_usd_per_mtok": 1.0,
+                "output_usd_per_mtok": 5.0,
+                "cache_read_usd_per_mtok": 0.10,
+                "cache_write_usd_per_mtok": 1.25,
+            }
+        },
+    }
+
+    def test_each_meter_is_charged_at_its_own_rate(self):
+        cost = pricing.model_cost_usd(
+            "m", 1_000_000, 1_000_000, self._WITH_CACHE,
+            cache_read=1_000_000, cache_write=1_000_000,
+        )
+        assert cost == pytest.approx(1.0 + 5.0 + 0.10 + 1.25)
+
+    def test_cache_reads_are_not_free(self):
+        """A silent zero is the failure mode this module is built against."""
+        priced = pricing.model_cost_usd("m", 0, 0, self._WITH_CACHE, cache_read=1_000_000)
+        assert priced > 0
+
+    def test_missing_cache_rates_fall_back_to_documented_multipliers(self):
+        """
+        An entry with base rates but no cache rates must not price cached tokens
+        at zero. 0.1x read / 1.25x write, the multipliers Sonnet 4.6's published
+        rates confirm.
+        """
+        table = {"models": {"m": {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 5.0}}}
+        cost = pricing.model_cost_usd(
+            "m", 0, 0, table, cache_read=1_000_000, cache_write=1_000_000
+        )
+        assert cost == pytest.approx(0.1 + 1.25)
+
+    def test_an_explicit_rate_beats_the_multiplier(self):
+        table = {"models": {"m": {
+            "input_usd_per_mtok": 1.0, "output_usd_per_mtok": 5.0,
+            "cache_read_usd_per_mtok": 0.42,
+        }}}
+        assert pricing.model_cost_usd("m", 0, 0, table, cache_read=1_000_000) == pytest.approx(0.42)
+
+    def test_caching_makes_a_run_materially_cheaper(self):
+        """
+        The point of the whole exercise, as arithmetic: the same tokens, cached,
+        against the same tokens uncached.
+        """
+        uncached = pricing.model_cost_usd("m", 900_000, 10_000, self._WITH_CACHE)
+        cached = pricing.model_cost_usd(
+            "m", 50_000, 10_000, self._WITH_CACHE, cache_read=800_000, cache_write=50_000
+        )
+        assert cached < uncached / 3
+
+    def test_the_hit_rate_is_reported(self):
+        findings = _findings()
+        findings["cost"]["model"] = "m"
+        findings["cost"]["model_tokens"] = {
+            "input": 100_000, "output": 5_000,
+            "cache_read": 800_000, "cache_write": 100_000,
+        }
+        cost = pricing.summarise(findings, self._WITH_CACHE)
+        assert cost["total_input_tokens"] == 1_000_000
+        assert cost["cache_hit_rate"] == pytest.approx(0.8)
+        assert "80%" in report.render(findings)
+
+    def test_a_cache_that_never_matched_is_called_out(self):
+        """
+        Writes with no reads across a multi-turn run means the prefix is being
+        invalidated every turn. It costs several times what it should and is
+        otherwise completely invisible.
+        """
+        findings = _findings()
+        findings["cost"]["model"] = "m"
+        findings["cost"]["model_tokens"] = {
+            "input": 500_000, "output": 5_000, "cache_read": 0, "cache_write": 500_000,
+        }
+        comment = report.render(findings)
+        assert "0% hit rate" in comment
+
+    def test_an_uncached_run_says_nothing_about_caching(self):
+        comment = report.render(_findings())
+        assert "Prompt cache: not used" in comment
+
+
+class TestTargetUrlIsNotPublished:
+    """
+    PLAN.md 1e: the tunnel is an unauthenticated public URL, and the plan says
+    plainly not to write it anywhere durable -- "not into the PR comment, not
+    into the findings JSON, not into logs." The comment used to lead with it, on
+    a public repo.
+    """
+
+    def test_the_comment_does_not_carry_the_target_url(self):
+        comment = report.render(_findings())
+        assert "trycloudflare" not in comment
+        assert "https://" not in comment.replace("https://example", "")
+
+    def test_the_route_count_survives(self):
+        """Removing the URL must not remove the coverage figure with it."""
+        assert "8 routes tested" in report.render(_findings())
+
+
+class TestReachableKnobs:
+    """
+    The agent accepted these and the CLI could not send them, which made one of
+    its own error messages unactionable: a truncated run tells the reader to
+    raise max_tokens_per_call through a flag that did not exist.
+    """
+
+    def test_max_tokens_per_call_reaches_the_payload(self):
+        import main as harness
+
+        args = harness.build_parser().parse_args(
+            ["--runtime-arn", "a", "--target-url", "u", "--max-tokens-per-call", "8192"]
+        )
+        assert args.max_tokens_per_call == 8192
+
+    def test_unset_knobs_are_not_sent_at_all(self):
+        """
+        An unset flag must stay absent from the payload so the AGENT's default
+        applies. Sending None would override a derived default with nothing.
+        """
+        import main as harness
+
+        args = harness.build_parser().parse_args(["--runtime-arn", "a", "--target-url", "u"])
+        assert args.max_tokens_per_call is None and args.presign_expires is None

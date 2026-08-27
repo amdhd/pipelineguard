@@ -311,3 +311,287 @@ class TestArchiving:
     def test_no_bucket_configured_is_not_an_error(self, agent, monkeypatch):
         monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
         assert agent._archive("run-7", {}) is None
+
+
+class TestDerivedBudgets:
+    """
+    The defaults have to describe a run that can FINISH.
+
+    They did not. A flat 200_000-token budget, 40 turns and 8 routes were chosen
+    independently, and context grows quadratically because every turn re-sends
+    the whole history. Solving for 200k gives ~15 turns against the ~25 a login
+    plus eight routes needs -- so the token cap fired mid-sweep on a default run
+    and the turn cap was unreachable. Deriving one from the other is what stops
+    three individually-reasonable numbers describing an impossible run.
+    """
+
+    def test_turns_and_budget_rise_with_routes(self, agent):
+        assert agent.turns_for(2) < agent.turns_for(4) < agent.turns_for(8)
+        assert agent.token_budget_for(2) < agent.token_budget_for(4) < agent.token_budget_for(8)
+
+    def test_budget_covers_the_quadratic_growth_it_models(self, agent):
+        """
+        Simulate the run the defaults describe and assert it does not run out.
+        This is the arithmetic the old defaults failed.
+        """
+        for routes in (2, 4, 8):
+            turns = agent.turns_for(routes)
+            budget = agent.token_budget_for(routes)
+            # Cumulative input across `turns` turns, at the model this file uses.
+            spent = sum(
+                agent._BASE_TOKENS + agent._TOKENS_PER_TURN * i for i in range(turns)
+            )
+            assert spent <= budget, f"{routes} routes: needs {spent}, budgeted {budget}"
+
+    def test_the_old_flat_budget_would_not_have_covered_the_default_sweep(self, agent):
+        """The regression, stated as arithmetic rather than as a story."""
+        turns = agent.turns_for(agent.DEFAULT_MAX_ROUTES)
+        spent = sum(agent._BASE_TOKENS + agent._TOKENS_PER_TURN * i for i in range(turns))
+        assert spent > 200_000
+        assert spent <= agent.DEFAULT_TOKEN_BUDGET
+
+    def test_defaults_are_derived_from_the_route_cap(self, agent):
+        assert agent.DEFAULT_MAX_TURNS == agent.turns_for(agent.DEFAULT_MAX_ROUTES)
+        assert agent.DEFAULT_TOKEN_BUDGET == agent.token_budget_for(agent.DEFAULT_MAX_ROUTES)
+
+
+class TestReportReserve:
+    """
+    Stopping EARLY is what makes reporting possible: the findings exist only in
+    the model's final message, so a budget with nothing left cannot ask for one.
+    """
+
+    def test_no_reserve_requested_means_no_reserve_held(self, agent):
+        """The caps keep their plain meaning when nothing asked for a reserve."""
+        b = agent.Budget(max_turns=100, token_budget=100, deadline_seconds=600)
+        b.record({"inputTokens": 60, "outputTokens": 0})
+        assert b.reserve() == 0
+        assert b.exhausted() is None
+
+    def test_reserve_stops_the_loop_with_room_for_one_more_call(self, agent):
+        b = agent.Budget(
+            max_turns=100, token_budget=10_000, deadline_seconds=600, report_tokens=1_000
+        )
+        b.record({"inputTokens": 4_000, "outputTokens": 500})
+        # 4_500 spent, and one more call would cost ~4_000 + 1_000. That lands
+        # under 10_000, so there is still room to continue.
+        assert b.exhausted() is None
+        b.record({"inputTokens": 4_500, "outputTokens": 500})
+        # 9_500 spent; another call cannot fit. Stop now, while the reserve is
+        # still unspent.
+        assert "token budget" in b.exhausted()
+        assert b.total_tokens < b.token_budget
+
+    def test_reserve_tracks_the_growing_context(self, agent):
+        b = agent.Budget(
+            max_turns=100, token_budget=10**9, deadline_seconds=600, report_tokens=1_000
+        )
+        b.record({"inputTokens": 2_000, "outputTokens": 10})
+        assert b.reserve() == 3_000
+        b.record({"inputTokens": 9_000, "outputTokens": 10})
+        assert b.reserve() == 10_000
+
+    def test_deadline_reserves_seconds_too(self, agent):
+        """
+        The salvage call needs wall-clock as well as tokens. A deadline with no
+        slack leaves no time to make it.
+        """
+        b = agent.Budget(
+            max_turns=100, token_budget=10**9, deadline_seconds=30, report_seconds=60
+        )
+        assert "wall-clock" in b.exhausted()
+
+
+class TestFinalReport:
+    """
+    A truncated run must report WHAT IT FOUND.
+
+    It used to return `"findings": []` with a label, so a run that stopped after
+    finding four defects reported none of them -- and since the token budget was
+    the cap most likely to bind, that was the common path, not the rare one.
+    """
+
+    @staticmethod
+    def _bedrock(text=None, stop_reason="end_turn", error=None):
+        client = MagicMock()
+        if error is not None:
+            client.converse.side_effect = error
+            return client
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": text or ""}]}},
+            "stopReason": stop_reason,
+            "usage": {"inputTokens": 500, "outputTokens": 100},
+        }
+        return client
+
+    @staticmethod
+    def _messages():
+        """A history that ends the way the loop always ends: on tool results."""
+        return [
+            {"role": "user", "content": [{"text": "go"}]},
+            {"role": "assistant", "content": [{"toolUse": {"toolUseId": "1", "name": "navigate", "input": {}}}]},
+            {"role": "user", "content": [{"toolResult": {"toolUseId": "1", "content": [{"json": {}}]}}]},
+        ]
+
+    _REPORT = (
+        "I have run out of budget. Here is what I found.\n\n"
+        '```json\n{"overall": "FAIL", "pages_tested": 3, "findings": ['
+        '{"id": "F-001", "severity": "HIGH", "page": "/voyage", "summary": "blank chart",'
+        ' "evidence": "no data points", "steps_to_reproduce": ["log in"],'
+        ' "expected": "a curve", "actual": "empty", "suspected_source": null}]}\n```'
+    )
+
+    def test_findings_survive_budget_exhaustion(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock(self._REPORT), "m", "sys", self._messages(), b, 4096, "token budget reached"
+        )
+        assert out is not None
+        assert len(out["findings"]) == 1
+        assert out["findings"][0]["id"] == "F-001"
+
+    def test_the_nudge_does_not_create_two_user_turns_in_a_row(self, agent):
+        """
+        Converse requires alternating roles, and the loop always stops on a user
+        message of tool results. Appending a second user message would be
+        rejected outright -- turning the salvage into another way to lose the run.
+        """
+        messages = self._messages()
+        client = self._bedrock(self._REPORT)
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        agent._final_report(client, "m", "sys", messages, b, 4096, "deadline")
+
+        roles = [m["role"] for m in messages]
+        assert not any(a == b_ == "user" for a, b_ in zip(roles, roles[1:]))
+        assert any("STOP" in blk.get("text", "") for blk in messages[-1]["content"])
+
+    def test_the_salvage_call_is_charged_to_the_budget(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        agent._final_report(
+            self._bedrock(self._REPORT), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert b.input_tokens == 500 and b.output_tokens == 100
+
+    def test_another_tool_call_salvages_nothing(self, agent):
+        """
+        If the model keeps exploring rather than reporting, say so. Presenting an
+        empty findings list as a result would be the same lie in a new place.
+        """
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock("...", stop_reason="tool_use"), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert out is None
+
+    def test_narration_without_json_salvages_nothing(self, agent):
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock("Let me check a few more things first."),
+            "m", "sys", self._messages(), b, 4096, "deadline",
+        )
+        assert out is None
+
+    def test_a_failing_model_call_salvages_nothing_rather_than_raising(self, agent):
+        from botocore.exceptions import ClientError
+
+        err = ClientError({"Error": {"Code": "ThrottlingException"}}, "Converse")
+        b = agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+        out = agent._final_report(
+            self._bedrock(error=err), "m", "sys", self._messages(), b, 4096, "deadline"
+        )
+        assert out is None
+
+
+class TestPromptCaching:
+    """
+    This loop re-sends its entire history on every call, so without a cache
+    checkpoint the same tokens are bought again at full price up to thirty times
+    in one run. These pin the two things that make caching work: exactly one
+    rolling checkpoint, and accounting that knows a cached token is still a token.
+    """
+
+    def test_a_checkpoint_is_placed_at_the_end(self, agent):
+        messages = [{"role": "user", "content": [{"text": "go"}]}]
+        agent._place_cache_point(messages)
+        assert messages[-1]["content"][-1] == {"cachePoint": {"type": "default"}}
+
+    def test_only_one_checkpoint_survives(self, agent):
+        """
+        Bedrock allows four per request and looks back ~20 content blocks for the
+        longest match, so old markers buy nothing and spend the allowance.
+        """
+        messages = [
+            {"role": "user", "content": [{"text": "a"}]},
+            {"role": "assistant", "content": [{"text": "b"}]},
+        ]
+        for _ in range(5):
+            agent._place_cache_point(messages)
+            messages.append({"role": "user", "content": [{"text": "more"}]})
+        agent._place_cache_point(messages)
+
+        points = sum(
+            1 for m in messages for b in m["content"] if "cachePoint" in b
+        )
+        assert points == 1
+
+    def test_the_checkpoint_moves_to_the_new_tail(self, agent):
+        messages = [{"role": "user", "content": [{"text": "a"}]}]
+        agent._place_cache_point(messages)
+        messages.append({"role": "assistant", "content": [{"text": "b"}]})
+        messages.append({"role": "user", "content": [{"toolResult": {}}]})
+        agent._place_cache_point(messages)
+
+        assert "cachePoint" not in messages[0]["content"][-1]
+        assert "cachePoint" in messages[-1]["content"][-1]
+
+    def test_it_does_not_disturb_the_content_it_marks(self, agent):
+        """The prefix must stay byte-identical or every cache read misses."""
+        messages = [{"role": "user", "content": [{"text": "the prompt"}]}]
+        agent._place_cache_point(messages)
+        agent._place_cache_point(messages)
+        assert messages[0]["content"][0] == {"text": "the prompt"}
+
+    def test_empty_history_is_survivable(self, agent):
+        assert agent._place_cache_point([]) == []
+
+
+class TestCachedTokenAccounting:
+    """
+    With caching on, Bedrock reports `inputTokens` as the NON-cached portion
+    only. Summing it alone -- which is what the budget did before caching --
+    under-counts a cached turn by an order of magnitude, so the token cap stops
+    binding and the run drifts until the wall-clock deadline catches it, with
+    the browser meter collecting the difference.
+    """
+
+    def test_cached_tokens_count_towards_the_budget(self, agent):
+        b = agent.Budget(max_turns=100, token_budget=10_000, deadline_seconds=600)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert b.total_tokens == 10_000
+        assert "token budget" in b.exhausted()
+
+    def test_the_meters_stay_separate_for_pricing(self, agent):
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert (b.input_tokens, b.cache_read_tokens, b.cache_write_tokens) == (200, 9_000, 500)
+
+    def test_the_reserve_sizes_itself_on_total_input_not_billed_input(self, agent):
+        """
+        The next call re-sends the whole history whether or not it is cached, so
+        a reserve computed from the uncached slice alone would be far too small
+        and the salvage call would not fit.
+        """
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600,
+                         report_tokens=1_000)
+        b.record({"inputTokens": 200, "cacheReadInputTokens": 9_000,
+                  "cacheWriteInputTokens": 500, "outputTokens": 300})
+        assert b.reserve() == 9_700 + 1_000
+
+    def test_a_run_without_caching_is_unaffected(self, agent):
+        """Absent cache fields must behave exactly as before."""
+        b = agent.Budget(max_turns=100, token_budget=10**9, deadline_seconds=600)
+        b.record({"inputTokens": 100, "outputTokens": 50})
+        assert b.total_tokens == 150
+        assert b.cache_read_tokens == 0 and b.cache_write_tokens == 0

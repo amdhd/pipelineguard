@@ -126,7 +126,7 @@ def _cost_table(cost: dict) -> str:
     return "\n".join(rows + [""] + notes)
 
 
-def render(findings: dict, *, target_url: str | None = None, runner_minutes: int | None = None) -> str:
+def render(findings: dict, *, runner_minutes: int | None = None) -> str:
     """Render the full comment. Always leads with the verdict."""
     from pricing import summarise
 
@@ -163,8 +163,15 @@ def render(findings: dict, *, target_url: str | None = None, runner_minutes: int
 
     parts = [MARKER, headline, ""]
 
-    if target_url:
-        parts += [f"Target: `{target_url}` · {findings.get('pages_tested', 0)} routes tested", ""]
+    # THE TARGET URL IS DELIBERATELY ABSENT.
+    #
+    # PLAN.md 1e: the tunnel is an unauthenticated public URL and there is "no
+    # reason to write it anywhere durable -- not into the PR comment, not into
+    # the findings JSON, not into logs." This used to print it, on a public
+    # repo, which is as durable as it gets. The tunnel dies with the job, so the
+    # link is stale by the time anyone reads it -- but a rule this repo states in
+    # its own plan should not be broken by its own reporting.
+    parts += [f"{findings.get('pages_tested', 0)} routes tested", ""]
 
     if not items and findings.get("incomplete") and not findings.get("report_salvaged"):
         # An empty list on a truncated run is not the same claim as an empty

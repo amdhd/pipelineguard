@@ -142,6 +142,8 @@ def run(args) -> int:
         ("token_budget", args.token_budget),
         ("deadline_seconds", args.deadline_seconds),
         ("max_routes", args.max_routes),
+        ("max_tokens_per_call", args.max_tokens_per_call),
+        ("presign_expires", args.presign_expires),
     ):
         if value is not None:
             payload[key] = value
@@ -151,9 +153,7 @@ def run(args) -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(findings, indent=2))
 
-    comment = report.render(
-        findings, target_url=args.target_url, runner_minutes=args.runner_minutes
-    )
+    comment = report.render(findings, runner_minutes=args.runner_minutes)
     if args.comment_out:
         Path(args.comment_out).write_text(comment)
     else:
@@ -176,6 +176,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--token-budget", type=int)
     p.add_argument("--deadline-seconds", type=int)
     p.add_argument("--max-routes", type=int)
+    # The agent supports these and the harness could not reach them, which made
+    # its own error message unactionable: a run that hit max_tokens told the
+    # reader to "raise max_tokens_per_call" through a flag that did not exist.
+    p.add_argument(
+        "--max-tokens-per-call",
+        type=int,
+        help="Per-Converse-call output cap. Raise it if a run fails with the agent's "
+        "'hit max_tokens before finishing its JSON' error.",
+    )
+    p.add_argument(
+        "--presign-expires",
+        type=int,
+        help="Seconds a screenshot link stays valid. NOTE: the agent signs with the "
+        "runtime's temporary credentials, so a link cannot outlive them (typically "
+        "~1 hour) no matter what is set here.",
+    )
     p.add_argument("--runner-minutes", type=int)
     p.add_argument("--json-out", help="Write the raw findings JSON here")
     p.add_argument("--comment-out", help="Write the rendered comment here instead of stdout")

@@ -506,3 +506,45 @@ class TestCachePricing:
         comment = report.render(_findings())
         assert "Prompt cache: not used" in comment
 
+class TestTargetUrlIsNotPublished:
+    """
+    PLAN.md 1e: the tunnel is an unauthenticated public URL, and the plan says
+    plainly not to write it anywhere durable -- "not into the PR comment, not
+    into the findings JSON, not into logs." The comment used to lead with it, on
+    a public repo.
+    """
+
+    def test_the_comment_does_not_carry_the_target_url(self):
+        comment = report.render(_findings())
+        assert "trycloudflare" not in comment
+        assert "https://" not in comment.replace("https://example", "")
+
+    def test_the_route_count_survives(self):
+        """Removing the URL must not remove the coverage figure with it."""
+        assert "8 routes tested" in report.render(_findings())
+
+
+class TestReachableKnobs:
+    """
+    The agent accepted these and the CLI could not send them, which made one of
+    its own error messages unactionable: a truncated run tells the reader to
+    raise max_tokens_per_call through a flag that did not exist.
+    """
+
+    def test_max_tokens_per_call_reaches_the_payload(self):
+        import main as harness
+
+        args = harness.build_parser().parse_args(
+            ["--runtime-arn", "a", "--target-url", "u", "--max-tokens-per-call", "8192"]
+        )
+        assert args.max_tokens_per_call == 8192
+
+    def test_unset_knobs_are_not_sent_at_all(self):
+        """
+        An unset flag must stay absent from the payload so the AGENT's default
+        applies. Sending None would override a derived default with nothing.
+        """
+        import main as harness
+
+        args = harness.build_parser().parse_args(["--runtime-arn", "a", "--target-url", "u"])
+        assert args.max_tokens_per_call is None and args.presign_expires is None

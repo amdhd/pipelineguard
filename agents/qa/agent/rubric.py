@@ -168,9 +168,11 @@ fields, and you must use them rather than reasoning from the text alone:
     actually happened.
   - `empty_slots` -- places where an element that renders nothing sits inside a
     container that does have text. This is the shape a missing figure takes: a
-    blank beside the name it belongs to. It is a HINT, not a finding on its own.
-    Confirm what the slot is for before reporting it, and say in your evidence
-    what you expected to see there and why.
+    blank beside the name it belongs to. A lone blank is a HINT, not a finding on
+    its own -- confirm what the slot is for before reporting it. But a blank that
+    repeats across EVERY item in a list (a `count` above 1, or the same blank in
+    item after item) is evidence in itself: report it. Systematic repetition is
+    the signature of a field dropped from a list response, not a design choice.
 
 If a value is absent from the page text AND absent from `values`, and there is
 an `empty_slot` beside the label it belongs to, that is a real observation and

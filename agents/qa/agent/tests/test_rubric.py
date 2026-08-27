@@ -180,6 +180,21 @@ class TestReadTheValues:
         prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
         assert "ABSENT FROM A PLACE THAT HAS ONE" in prompt
 
+    def test_repetition_across_a_list_resolves_the_hint_guard(self):
+        """
+        S-2's shape: a field dropped from a list response leaves the SAME blank
+        in every card. The agent was told an empty slot is "a HINT, not a finding
+        on its own -- confirm what the slot is for", and it cannot confirm what a
+        blank is FOR without the source, so it declined -- the guard was
+        suppressing the report it was meant to enable. Repetition across every
+        item is the evidence that resolves the ambiguity.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "A lone blank is a HINT" in prompt
+        assert "repeats across EVERY item in a list" in prompt
+        assert "`count` above 1" in prompt
+        assert "evidence in itself" in prompt
+
     def test_it_does_not_name_the_seeded_bugs(self):
         """
         Teaching to the test would make the next measurement meaningless. The

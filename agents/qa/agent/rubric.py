@@ -167,9 +167,13 @@ largest contributor to token cost in this run, and an unused one is pure waste.
 
 # OUTPUT
 
-Return exactly one JSON object and nothing else. No preamble, no explanation, no
-markdown fence. Free text outside the JSON object is treated as a FAILED RUN, not
-as findings -- your narration would otherwise be parsed as bugs.
+Return your report as a single JSON object in a ```json fenced block, as the
+LAST thing in your message. Do not summarise it afterwards.
+
+Keep any commentary before the block to a minimum -- it is discarded, never read
+as findings. Only the JSON is used, and only if it validates. If you narrate
+instead of emitting the block at all, the entire run is recorded as FAILED and
+none of your work counts.
 
 {{
   "overall": "PASS" | "FAIL",

@@ -15,6 +15,7 @@ Lambda-style f(event, context).
 
 import json
 import logging
+import re
 import os
 import time
 
@@ -148,35 +149,69 @@ def _emit_metrics(budget: Budget, model: str) -> None:
         logger.warning("metric publish failed", exc_info=True)
 
 
+_FENCE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+
+
 def _extract_json(text: str) -> dict:
     """
     Parse the model's final message as the findings object.
 
-    Prime directive 6: unparsed output is a FAILED RUN, not findings. This
-    tolerates a markdown fence, because that is a formatting slip rather than the
-    model narrating -- but it does NOT go hunting for JSON inside prose. If the
-    model wrote an essay, that is a prompt bug to fix, not a payload to salvage.
+    POSITION REVERSED, and the reason matters. This used to strip a fence only
+    when the message STARTED with one, on the stated principle that hunting for
+    JSON inside prose hides a prompt bug rather than fixing it.
+
+    A real run disproved it. After eleven turns of tool use the model returned:
+
+        I'm being redirected again... this is expected behavior and not a
+        finding. I've now tested 3 routes as per the limit... Let me compile
+        the results.
+
+        ```json
+        { ...a complete, schema-valid findings object... }
+        ```
+
+    The findings were CORRECT. The parser threw them away.
+
+    The original directive guards against INFERRING structure from unstructured
+    text -- that is what turned "Let me verify this further" into a HIGH-severity
+    row in the reference implementation. A ```json fence is not unstructured
+    text. It is an explicit, self-delimiting payload the model chose to mark, and
+    reading it is not inference.
+
+    The practical case is stronger still: models narrate, especially deep in a
+    tool loop. Enforcing "no preamble" by prompt alone makes the gate FLAKY --
+    passing on some runs and discarding good findings on others -- and this
+    plan's own reasoning is that a non-deterministic gate is worse than none,
+    because it trains people to bypass it.
+
+    What has NOT changed, and is the part that actually mattered: narration is
+    DISCARDED, never parsed. Only a schema-valid object survives, so prose can
+    still never become a finding.
     """
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped
-        stripped = stripped.rsplit("```", 1)[0]
+    fences = _FENCE.findall(text)
+    if fences:
+        # The LAST fence. An earlier one may be the model quoting the schema back
+        # to itself before filling it in.
+        candidate = fences[-1].strip()
+    else:
+        candidate = text.strip()
+
+    if not candidate:
+        raise schema.SchemaError(
+            "model returned NO TEXT at all (empty content). Usually the loop "
+            "ended on a stop reason that carried no final message."
+        )
+
     try:
-        return json.loads(stripped.strip())
+        return json.loads(candidate)
     except json.JSONDecodeError as e:
         # Carry a snippet of what was ACTUALLY received. Without it a schema
-        # violation is undiagnosable: "Expecting value: line 1 column 1" is the
-        # same message whether the model narrated, returned nothing, or was cut
-        # off mid-JSON -- and those need three different fixes. The rubric is
-        # meant to be tuned against real failures, which is impossible blind.
-        if not text.strip():
-            raise schema.SchemaError(
-                "model returned NO TEXT at all (empty content). Usually the loop "
-                "ended on a stop reason that carried no final message."
-            ) from e
+        # violation is undiagnosable: "Expecting value: line 1 column 1" reads
+        # the same whether the model narrated, returned nothing, or was cut off
+        # mid-JSON -- and those need three different fixes.
         raise schema.SchemaError(
-            f"model output is not valid JSON: {e}. Received {len(text)} chars "
-            f"starting: {text.strip()[:300]!r}"
+            f"model output is not valid JSON: {e}. Received {len(text)} chars, "
+            f"{len(fences)} fenced block(s); candidate starts: {candidate[:300]!r}"
         ) from e
 
 
@@ -215,7 +250,9 @@ def run_qa(payload: dict) -> dict:
     from bedrock_agentcore.tools.browser_client import browser_session
 
     stop_reason = None
-    session = browser_tools.BrowserSession(base_url, _screenshot_sink(session_id))
+    session = browser_tools.BrowserSession(
+        base_url, _screenshot_sink(session_id), max_routes=max_routes
+    )
 
     with browser_session(region=REGION) as client:
         ws_url, headers = client.generate_ws_headers()

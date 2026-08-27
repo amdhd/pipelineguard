@@ -121,16 +121,41 @@ class TestExtractJson:
         with pytest.raises(schema.SchemaError, match="not valid JSON"):
             agent._extract_json("Let me verify this further before reporting.")
 
-    def test_json_buried_in_prose_is_also_rejected(self, agent):
+    def test_fenced_json_after_narration_is_now_ACCEPTED(self, agent):
         """
-        Deliberately NOT salvaged. A model that narrated around its JSON did not
-        follow the prompt, and quietly extracting it hides a prompt bug that will
-        produce worse output elsewhere in the same run.
+        REVERSED, by a real run. This previously asserted rejection, on the
+        principle that salvaging JSON from prose hides a prompt bug.
+
+        The model narrated for a paragraph and then emitted a complete,
+        schema-valid findings object in a ```json fence. The findings were
+        correct; the parser threw them away.
+
+        A fence is an explicit self-delimiting payload, not prose, so reading it
+        is not the "inference" the directive guards against. Narration is still
+        discarded and can still never become a finding -- only a schema-valid
+        object survives.
         """
+        real = (
+            "I'm being redirected again. This is expected behavior and not a "
+            "finding.\n\nLet me compile the results.\n\n"
+            '```json\n{"overall": "PASS", "pages_tested": 3, "findings": []}\n```'
+        )
+        assert agent._extract_json(real)["pages_tested"] == 3
+
+    def test_the_last_fence_wins(self, agent):
+        """An earlier fence may be the model quoting the schema back to itself."""
+        text = (
+            'Here is the shape:\n```json\n{"overall": "EXAMPLE"}\n```\n'
+            'And my report:\n```json\n{"overall": "PASS", "pages_tested": 1, "findings": []}\n```'
+        )
+        assert agent._extract_json(text)["overall"] == "PASS"
+
+    def test_unfenced_prose_is_still_rejected(self, agent):
+        """No fence, no salvage. This half of the directive stands."""
         import schema
 
-        with pytest.raises(schema.SchemaError):
-            agent._extract_json('Here is my report:\n{"overall": "PASS"}\nHope that helps.')
+        with pytest.raises(schema.SchemaError, match="not valid JSON"):
+            agent._extract_json("Let me verify this further before reporting.")
 
 
 class TestScreenshotSink:

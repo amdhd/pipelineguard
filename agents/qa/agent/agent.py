@@ -19,6 +19,8 @@ import os
 import time
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from bedrock_agentcore import BedrockAgentCoreApp
 
 import browser_tools
@@ -184,7 +186,18 @@ def run_qa(payload: dict) -> dict:
     )
 
     system = rubric.build_system_prompt(ai_fallback_mode=ai_fallback, max_routes=max_routes)
-    bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+
+    # Adaptive retries with a generous attempt count. The first real run died on
+    # ThrottlingException after botocore's default 4 tries: a browser-driving
+    # agent sends large multi-turn requests in quick succession, which is exactly
+    # the shape Bedrock throttles. Adaptive mode adds client-side rate limiting
+    # rather than just retrying harder, so a throttled run slows down instead of
+    # hammering and failing.
+    bedrock = boto3.client(
+        "bedrock-runtime",
+        region_name=REGION,
+        config=Config(retries={"max_attempts": 10, "mode": "adaptive"}),
+    )
 
     from bedrock_agentcore.tools.browser_client import browser_session
 
@@ -217,13 +230,24 @@ def run_qa(payload: dict) -> dict:
                     logger.warning("stopping: %s", reason)
                     break
 
-                response = bedrock.converse(
-                    modelId=model,
-                    system=[{"text": system}],
-                    messages=messages,
-                    inferenceConfig={"maxTokens": max_tokens_per_call},
-                    toolConfig={"tools": browser_tools.tool_specs()},
-                )
+                try:
+                    response = bedrock.converse(
+                        modelId=model,
+                        system=[{"text": system}],
+                        messages=messages,
+                        inferenceConfig={"maxTokens": max_tokens_per_call},
+                        toolConfig={"tools": browser_tools.tool_specs()},
+                    )
+                except ClientError as e:
+                    # Even exhausted retries must not become a 500. The harness
+                    # cannot tell a crashed runtime from a broken application,
+                    # and on a PR those want different responses -- so a model
+                    # failure ends the run as a labelled PARTIAL result carrying
+                    # whatever was already learned.
+                    code = e.response.get("Error", {}).get("Code", "ClientError")
+                    stop_reason = f"model call failed: {code}"
+                    logger.error("converse failed after retries: %s", code)
+                    break
                 budget.record(response.get("usage", {}))
                 out = response["output"]["message"]
                 messages.append(out)

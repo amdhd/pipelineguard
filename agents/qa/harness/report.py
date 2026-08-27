@@ -19,6 +19,24 @@ SEVERITY_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "�
 
 MARKER = "<!-- pipelineguard-qa-agent -->"
 
+# Failure modes worth telling the reader what to DO about. A run that failed and
+# explains nothing costs the same as one that failed and points somewhere.
+_ERROR_HINTS = {
+    "runtime_unavailable": (
+        "The AgentCore runtime could not be invoked or returned an error. Check "
+        "its CloudWatch log group — the cause is there, not in this workflow."
+    ),
+    "schema_violation": (
+        "The agent ran but returned something that is not a valid findings "
+        "object. That is a prompt bug, not an application bug."
+    ),
+    "invalid_runtime_response": (
+        "The runtime returned a non-JSON body. Usually an unhandled exception "
+        "inside the agent; its CloudWatch logs will have the traceback."
+    ),
+    "bad_payload": "The harness was invoked without a field the agent requires.",
+}
+
 
 def _finding_block(f: dict) -> str:
     icon = SEVERITY_ICON.get(f["severity"], "")
@@ -78,6 +96,8 @@ def render(findings: dict, *, target_url: str | None = None, runner_minutes: int
                 "## 🚫 QA agent — run failed",
                 "",
                 f"**`{findings['error']}`** — {findings.get('detail', 'no detail')}",
+                "",
+                _ERROR_HINTS.get(findings["error"], ""),
                 "",
                 "No findings are reported. A failed run is not a passing run: the agent "
                 "either could not start or returned something that did not match the "

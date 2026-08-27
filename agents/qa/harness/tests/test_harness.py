@@ -244,3 +244,51 @@ class TestValidate:
 
         err = {"error": "bad_payload", "detail": "x", "findings": []}
         assert harness.validate(err) is err
+
+
+class TestRuntimeFailures:
+    """
+    Regression tests for the first real run, which failed in a way that hid its
+    own cause: the runtime returned 500, botocore raised, the harness died before
+    writing a comment, and the workflow then failed three steps later on a
+    missing file. The error the operator saw was `cat: comment.md: No such file`.
+
+    Every failure mode must leave a renderable result behind.
+    """
+
+    def test_a_client_error_becomes_a_renderable_result(self, monkeypatch):
+        import main as harness
+        from botocore.exceptions import ClientError
+
+        client = MagicMock()
+        client.invoke_agent_runtime.side_effect = ClientError(
+            {"Error": {"Code": "RuntimeClientError", "Message": "Received error (500) from runtime"}},
+            "InvokeAgentRuntime",
+        )
+        monkeypatch.setattr(harness.boto3, "client", lambda *a, **k: client)
+
+        result = harness.invoke("arn:x", {})
+        assert result["error"] == "runtime_unavailable"
+        assert "500" in result["detail"]
+        # The point: it renders, so the workflow always has something to publish.
+        assert report.render(result)
+        assert report.exit_code(result) == 2
+
+    def test_a_connection_error_also_renders(self, monkeypatch):
+        import main as harness
+        from botocore.exceptions import EndpointConnectionError
+
+        client = MagicMock()
+        client.invoke_agent_runtime.side_effect = EndpointConnectionError(endpoint_url="https://x")
+        monkeypatch.setattr(harness.boto3, "client", lambda *a, **k: client)
+        assert harness.invoke("arn:x", {})["error"] == "runtime_unavailable"
+
+    def test_error_report_points_at_the_runtime_logs(self):
+        out = report.render({"error": "runtime_unavailable", "detail": "500", "findings": []})
+        assert "CloudWatch" in out
+        assert "not in this workflow" in out
+
+    def test_every_error_code_has_a_hint(self):
+        """A run that failed and explains nothing costs as much as one that points somewhere."""
+        for code in ("runtime_unavailable", "schema_violation", "invalid_runtime_response", "bad_payload"):
+            assert report._ERROR_HINTS.get(code)

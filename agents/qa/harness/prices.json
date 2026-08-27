@@ -1,0 +1,8 @@
+{
+  "source": "compute: AgentCore public pricing (see PRICING.md, dated). models: EMPTY — fill in from the Bedrock pricing page.",
+  "compute": {
+    "vcpu_hour_usd": 0.0895,
+    "gb_hour_usd": 0.00945
+  },
+  "models": {}
+}

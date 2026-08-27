@@ -26,6 +26,7 @@ import threading
 import time
 
 import websocket
+from websocket import WebSocketTimeoutException
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class CDPSession:
         self._pending: dict[int, dict] = {}
         self._cv = threading.Condition(self._lock)
         self._closed = False
+        self._reader_stopped: str | None = None
         self.session_id: str | None = None
 
         # Event state. Guarded by _lock because the reader thread writes it.
@@ -67,10 +69,35 @@ class CDPSession:
     # --- plumbing ---
 
     def _read_loop(self) -> None:
+        reason = "reader thread exited"
         while not self._closed:
             try:
                 raw = self._ws.recv()
-            except Exception:  # noqa: BLE001 -- closed socket ends the thread
+            except WebSocketTimeoutException:
+                # A QUIET SOCKET IS NORMAL. This used to end the run.
+                #
+                # create_connection(timeout=...) calls settimeout(), which applies
+                # to recv as well as to connect, so recv raises after
+                # DEFAULT_TIMEOUT seconds of SILENCE -- not of failure. CDP is
+                # silent for exactly as long as the model is thinking, and a
+                # multi-turn Converse call on a large history, or a single
+                # adaptive-retry backoff, routinely runs past 30s.
+                #
+                # The previous `except Exception: break` read that as a dead
+                # socket and killed the reader for good. Nothing restarted it, so
+                # every later command failed with "timeout waiting for
+                # Page.navigate", and is_authenticated() fell back to None --
+                # which also disarms the false-PASS guard. One idle gap took out
+                # the run AND the check that would have caught it.
+                #
+                # Resuming is safe at the frame level: websocket-client appends
+                # each partial read to frame_buffer.recv_buffer BEFORE the call
+                # that raises, and recomputes the shortage on re-entry, so a
+                # timeout mid-frame resumes rather than desynchronising the
+                # stream.
+                continue
+            except Exception as e:  # noqa: BLE001 -- a closed socket ends the thread
+                reason = f"{type(e).__name__}: {e}"[:200]
                 break
             if not raw:
                 continue
@@ -84,6 +111,13 @@ class CDPSession:
                     self._cv.notify_all()
                 else:
                     self._on_event(msg)
+
+        # Wake anyone blocked in send(). With the reader gone no reply can ever
+        # arrive, so waiting out the full timeout only delays a failure that has
+        # already happened -- and reports it as the wrong one.
+        with self._cv:
+            self._reader_stopped = "session closed" if self._closed else reason
+            self._cv.notify_all()
 
     def _on_event(self, msg: dict) -> None:
         """Called with _lock held."""
@@ -118,11 +152,20 @@ class CDPSession:
         payload = {"id": msg_id, "method": method, "params": params or {}}
         if self.session_id:
             payload["sessionId"] = self.session_id
-        self._ws.send(json.dumps(payload))
+        try:
+            self._ws.send(json.dumps(payload))
+        except Exception as e:  # noqa: BLE001
+            # A dead socket must surface as a CDPError, which browser_tools turns
+            # into data for the model, not as a raw websocket exception escaping
+            # into the tool loop.
+            raise CDPError(f"{method}: send failed ({type(e).__name__}: {e})"[:200]) from e
 
         deadline = time.monotonic() + timeout
         with self._cv:
             while msg_id not in self._pending:
+                if self._reader_stopped is not None:
+                    # Distinguishable from a slow command, and it names the cause.
+                    raise CDPError(f"{method}: CDP reader stopped -- {self._reader_stopped}")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CDPError(f"timeout waiting for {method}")

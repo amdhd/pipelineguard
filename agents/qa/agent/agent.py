@@ -285,6 +285,7 @@ def run_qa(payload: dict) -> dict:
     from bedrock_agentcore.tools.browser_client import browser_session
 
     stop_reason = None
+    authenticated = None
     session = browser_tools.BrowserSession(
         base_url, _screenshot_sink(session_id), max_routes=max_routes
     )
@@ -386,10 +387,13 @@ def run_qa(payload: dict) -> dict:
                     "stop_reason": stop_reason,
                 }
         finally:
+            # INSIDE the session, before close(). localStorage lives in the
+            # browser, so the probe has to run while the socket is still open --
+            # an earlier version put this after the `with` block and every run
+            # died on "socket is already closed", including the comment claiming
+            # it ran before teardown.
+            authenticated = session.is_authenticated(auth_token_key)
             session.close()
-
-    # Probe BEFORE tearing the session down -- localStorage dies with the browser.
-    authenticated = session.is_authenticated(auth_token_key)
 
     keys = [s["key"] for s in session.screenshots]
     urls = _presign(keys, presign_expires)

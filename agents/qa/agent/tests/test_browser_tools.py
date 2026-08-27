@@ -316,3 +316,18 @@ class TestAuthProbe:
     def test_a_failed_probe_declines_rather_than_accusing(self):
         s, _ = _session(FakeCDP(raise_on_eval=CDPError("Target crashed")))
         assert s.is_authenticated("vm_token") is None
+
+
+def test_auth_probe_never_crashes_the_run():
+    """
+    Regression: the probe caught only CDPError, so a closed websocket raised
+    straight through and failed a run that had otherwise completed. A check that
+    can kill the run it is checking is worse than no check.
+    """
+    class DeadSocket:
+        def evaluate(self, *a, **k):
+            raise RuntimeError("socket is already closed.")
+
+    s = browser_tools.BrowserSession("https://x.test", lambda l, p: "k")
+    s.cdp = DeadSocket()
+    assert s.is_authenticated("vm_token") is None

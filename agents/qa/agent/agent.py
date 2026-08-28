@@ -178,10 +178,35 @@ _TURNS_PER_ROUTE = 3.5  # measured: navigate, read, and usually a click to reach
 _LOGIN_TURNS = 6  # navigate, type, type, click, verify, and one to spare
 _HEADROOM = 1.25  # models are not perfectly efficient; do not cap them exactly
 
+# The rubric's "EXERCISE each route" pass, budgeted separately from the measured
+# 3.5 so the addition stays reviewable -- and removable -- rather than
+# disappearing into a number that used to mean something.
+#
+# WHY IT EXISTS: S-1 in the seeded corpus is click-triggered, and the run that
+# missed it read the route without ever using the control, so the crash never
+# fired. That was a COVERAGE miss, not a detection miss: the console_error and
+# failed_request detectors were in place the whole time and had nothing to see.
+# Telling the agent to read harder cannot fix that; only provoking the app can.
+#
+# THE NUMBER: up to two controls per route, click plus re-read each, so 4 turns
+# worst case. 2.0 because most routes offer fewer than two such controls, and
+# the headroom multiplier already covers the spread.
+#
+# THE COST, stated plainly: this raises the DERIVED CEILINGS by roughly 2.2x
+# (42 -> 62 turns, 1.55M -> 3.34M tokens at eight routes). It does not raise
+# measured spend by anything like that -- the corpus run used 18 turns of a cap
+# of 42, took 137s, and cost ~$0.18 -- because these are stop-losses, not
+# targets, and DEFAULT_DEADLINE_SECONDS (600) is the backstop that actually
+# bounds a runaway: at the measured ~7.6s/turn, 62 turns is ~470s and the clock
+# still bites first. Re-measure on the corpus once the interaction pass has run,
+# and pull this constant down to what it really costs.
+_INTERACTION_TURNS_PER_ROUTE = 2.0
+
 
 def turns_for(max_routes: int) -> int:
-    """Turns a run needs to log in and cover `max_routes` routes."""
-    return int((_LOGIN_TURNS + _TURNS_PER_ROUTE * max_routes) * _HEADROOM)
+    """Turns a run needs to log in, cover `max_routes` routes, and exercise them."""
+    per_route = _TURNS_PER_ROUTE + _INTERACTION_TURNS_PER_ROUTE
+    return int((_LOGIN_TURNS + per_route * max_routes) * _HEADROOM)
 
 
 def token_budget_for(max_routes: int) -> int:

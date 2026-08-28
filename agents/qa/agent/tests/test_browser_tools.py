@@ -173,6 +173,10 @@ def test_state_includes_console_errors_and_failed_requests():
     state = session.read_page()
     assert state["console_errors"]
     assert state["failed_requests"]
+    # The same events must have fired deterministic candidates -- this is the
+    # whole point of the layer: the model is required to assess them.
+    cands = state["candidate_findings"]
+    assert {c["type"] for c in cands} == {"console_error", "failed_request"}
 
 
 def test_long_text_is_truncated_with_a_flag():
@@ -443,3 +447,81 @@ class TestStructuralRead:
 
     def test_passwords_are_never_harvested(self):
         assert "el.type === 'password'" in browser_tools._HARVEST
+
+
+class TestCandidateFindings:
+    """
+    The deterministic-candidate layer. The discriminator run proved the model
+    rung is not the S-2 bottleneck -- sonnet saw the pristine repeated_svg_empty
+    signal and still reported nothing -- so the runtime now emits the mechanical
+    signals itself and REQUIRES the model to assess each one. These pin the
+    session-side bookkeeping: ids, (type, url) dedup, and the auto-captured
+    screenshot that becomes the confirmed finding's evidence.
+    """
+
+    _SVG_HARVEST = {
+        "repeated_slots": [
+            {"kind": "svg-adjacent", "count": 13,
+             "sample": ["Main Engine…", "Turbocharger…", "Shaft Generator…"]}
+        ]
+    }
+
+    def test_repeated_svg_empty_fires_a_candidate(self):
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        cands = session.read_page()["candidate_findings"]
+        assert len(cands) == 1
+        assert cands[0]["type"] == "repeated_svg_empty"
+        assert cands[0]["count"] == 13
+        assert cands[0]["id"] == "cand-1"
+
+    def test_candidate_findings_are_deduplicated_per_url(self):
+        """
+        Re-reading a buggy page must not spawn cand-2 of the same observation,
+        or the mandatory-assessment contract becomes untractable and the bounded
+        retry can never converge.
+        """
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        assert session.read_page()["candidate_findings"][0]["id"] == "cand-1"
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_candidate_screenshot_is_captured_once(self):
+        """Evidence for the confirmed finding, deterministically attached later."""
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, labels = _session(fake)
+        session.read_page()
+        assert labels == ["candidate-cand-1"]
+        assert session.candidate_screenshots["cand-1"] == "screenshots/candidate-cand-1.png"
+        session.read_page()
+        assert labels == ["candidate-cand-1"]  # not captured again
+
+    def test_clean_page_has_an_empty_candidate_list(self):
+        """
+        The field is ALWAYS present -- the rubric requires the model to assess
+        every entry, so an absent key would be a broken contract on the page
+        where nothing fired.
+        """
+        session, _ = _session(FakeCDP())
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_warning_console_errors_do_not_fire_a_candidate(self):
+        """Warnings are decoration noise; never ask the model to explain them."""
+        fake = FakeCDP()
+        fake.events = {"console_errors": ["warning: manifest icon failed"], "failed_requests": []}
+        session, _ = _session(fake)
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_candidate_screenshot_failure_does_not_kill_the_read(self):
+        """A CDP failure mid-_state is data for the read, not a crash for it."""
+        class ScreenshotBroken(FakeCDP):
+            def send(self, method, params=None, timeout=None):
+                if method == "Page.captureScreenshot":
+                    raise CDPError("target crashed")
+                return super().send(method, params, timeout)
+
+        fake = ScreenshotBroken(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        state = session.read_page()
+        assert state["candidate_findings"][0]["type"] == "repeated_svg_empty"
+        assert session.candidate_screenshots == {}

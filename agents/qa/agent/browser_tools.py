@@ -15,6 +15,7 @@ import json
 import logging
 import os
 
+import candidates
 from cdp import CDPError, CDPSession
 
 logger = logging.getLogger(__name__)
@@ -172,7 +173,8 @@ def tool_specs() -> list[dict]:
                 "description": (
                     "Navigate to a path on the target application, e.g. '/voyage'. "
                     "Waits for the network to settle. Returns the final URL and the "
-                    "page's visible text, plus any console errors or failed requests."
+                    "page's visible text, plus any console errors, failed requests, "
+                    "and `candidate_findings` the page mechanically triggered."
                 ),
                 "inputSchema": {
                     "json": {
@@ -193,7 +195,8 @@ def tool_specs() -> list[dict]:
                 "name": "read_page",
                 "description": (
                     "Read the current page without navigating: visible text, console "
-                    "errors since the last read, and failed network requests. Use "
+                    "errors since the last read, failed network requests, and any "
+                    "`candidate_findings` the page mechanically triggered. Use "
                     "this to check whether something actually rendered."
                 ),
                 "inputSchema": {"json": {"type": "object", "properties": {}}},
@@ -317,6 +320,14 @@ class BrowserSession:
         # going. A budget the model can decline is not a budget.
         self.max_routes = max_routes
         self.visited: list[str] = []
+        # Candidate-findings bookkeeping (candidates.py). The session owns the
+        # id space and the (type, url) dedup set: re-reading a buggy page must
+        # not spawn a new candidate for the same observation, or the rubric's
+        # mandatory-assessment contract becomes untractable.
+        self._candidate_counter = 0
+        self._seen_candidate_slots: set[tuple[str, str]] = set()
+        self.seen_candidates: dict[str, dict] = {}
+        self.candidate_screenshots: dict[str, str] = {}
 
     def attach(self, ws_url: str, headers: dict) -> None:
         self.cdp = CDPSession(ws_url, headers)
@@ -379,6 +390,11 @@ class BrowserSession:
             **self._harvest(),
             **self.cdp.drain_events(),
         }
+        # Deterministic candidates ride on every read. Always present (empty
+        # list on a clean page) -- the rubric promises the field and requires
+        # the model to assess every entry, so an absent key would be a broken
+        # contract rather than a missing signal.
+        state["candidate_findings"] = self._emit_candidates(state, candidates.detect(state))
         # DIAGNOSTIC LOOK. When LOG_PAGE_STATE is set, every read emits the full
         # page state -- including empty_slots, the structure innerText cannot
         # carry. This is how a run's blindness is diagnosed: a QA agent that
@@ -388,6 +404,43 @@ class BrowserSession:
         if os.environ.get("LOG_PAGE_STATE"):
             logger.info("page state: %s", json.dumps(state, default=str)[:20000])
         return state
+
+    def _emit_candidates(self, state: dict, detected: list[dict]) -> list[dict]:
+        """
+        Assign ids to newly-detected candidates and auto-capture a screenshot
+        for each.
+
+        Emitted once per (type, url): re-reading a buggy page must not spawn
+        cand-2 of the same observation, or the rubric's mandatory-assessment
+        contract becomes untractable and the bounded retry can never converge.
+        The id is the stable handle the report uses to reference a candidate.
+
+        The auto-captured bytes go to S3 only, never back to the model --
+        matching screenshot()'s existing contract (it knows what it just looked
+        at). A capture failure must not kill the read, so it is guarded here:
+        screenshot() is not itself exception-guarded the way dispatch() is.
+        """
+        url = state.get("url", "")
+        emitted: list[dict] = []
+        for c in detected:
+            slot = (c["type"], url)
+            if slot in self._seen_candidate_slots:
+                continue
+            self._seen_candidate_slots.add(slot)
+            self._candidate_counter += 1
+            cid = f"cand-{self._candidate_counter}"
+            self.seen_candidates[cid] = {
+                "type": c["type"],
+                "count": c["count"],
+                "evidence": c["evidence"],
+            }
+            emitted.append({**c, "id": cid})
+            try:
+                shot = self.screenshot(f"candidate-{cid}")
+                self.candidate_screenshots[cid] = shot.get("key")
+            except Exception:  # noqa: BLE001
+                logger.warning("candidate screenshot failed for %s", cid, exc_info=True)
+        return emitted
 
     # --- tool implementations ---
 

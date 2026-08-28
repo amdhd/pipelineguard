@@ -118,6 +118,40 @@ def validate(payload: object) -> dict:
     ids = [f["id"] for f in payload["findings"]]
     _require(len(ids) == len(set(ids)), "finding ids are not unique")
 
+    # candidate_assessments is optional metadata: the agent's mandatory verdicts
+    # on the deterministic candidates the runtime emitted (candidates.py). Shape
+    # is validated here; COMPLETENESS -- every candidate that was seen got a
+    # verdict -- is checked by the agent (agent._ensure_candidate_assessments),
+    # the only place that knows what was actually seen. A confirmed assessment
+    # must reference a REAL finding: allowing an inline candidate finding would
+    # create a second source of truth and let an unconfirmed candidate into the
+    # report by the back door.
+    assessments = payload.get("candidate_assessments")
+    if assessments is not None:
+        _require(isinstance(assessments, list), "candidate_assessments must be a list")
+        finding_ids = set(ids)
+        for i, a in enumerate(assessments):
+            where = f"candidate_assessments[{i}]"
+            _require(isinstance(a, dict), f"{where} is not an object")
+            _require(
+                isinstance(a.get("candidate_id"), str) and bool(a["candidate_id"]),
+                f"{where}.candidate_id must be a non-empty string",
+            )
+            _require(
+                a.get("verdict") in ("confirmed", "refuted"),
+                f"{where}.verdict must be 'confirmed' or 'refuted'",
+            )
+            _require(
+                isinstance(a.get("reason"), str) and bool(a["reason"]),
+                f"{where}.reason must be a non-empty string",
+            )
+            if a["verdict"] == "confirmed":
+                _require(
+                    isinstance(a.get("finding_id"), str) and a["finding_id"] in finding_ids,
+                    f"{where} is confirmed but finding_id '{a.get('finding_id')}' "
+                    "is not a reported finding id",
+                )
+
     return payload
 
 

@@ -242,3 +242,49 @@ class TestReadTheValues:
         lowered = prompt.lower()
         for leak in ("healthscore", "health score", "actualfuel", "actual_fuel", "tofixed"):
             assert leak not in lowered, f"rubric leaks the corpus: {leak}"
+
+
+class TestCandidates:
+    """
+    The mandatory-verdict contract. The discriminator run proved the model rung
+    is not the quiet-blank bottleneck -- sonnet was shown the pristine repeated
+    svg-adjacent signal and still reported nothing -- so the rubric must make it
+    IMPOSSIBLE to walk past a mechanically-detected signal: every candidate gets
+    a verdict, and no unconfirmed candidate becomes a finding.
+    """
+
+    def _prompt(self):
+        return rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+
+    def test_the_prompt_requires_candidate_assessment(self):
+        prompt = self._prompt()
+        for token in ("candidate_findings", "candidate_assessments", "confirmed", "refuted"):
+            assert token in prompt, token
+
+    def test_unassessed_candidates_are_called_incomplete(self):
+        assert "an unassessed candidate makes the run's output incomplete" in self._prompt()
+
+    def test_unconfirmed_candidates_are_forbidden_as_findings(self):
+        assert "Never report an unconfirmed candidate as a finding" in self._prompt()
+
+    def test_a_confirmed_candidate_must_produce_a_real_finding(self):
+        """The single-source-of-truth rule the schema enforces, stated up front."""
+        prompt = self._prompt()
+        # Wraps across a line break in the prompt, so assert the fragments.
+        assert "Produce" in prompt
+        assert "a finding for it" in prompt
+        assert "finding_id" in prompt
+
+    def test_warnings_are_excluded_from_console_candidates(self):
+        assert "warnings are excluded" in self._prompt()
+
+    def test_the_candidate_section_does_not_leak_seeded_bugs(self):
+        """
+        Same guard as TestReadTheValues: the candidate instruction must stay
+        general or the next corpus measurement is meaningless. Route names are
+        intentionally NOT leak terms -- the route allow-list always contains
+        them -- only the field-level vocabulary of the seeded bugs.
+        """
+        lowered = self._prompt().lower()
+        for leak in ("healthscore", "health score", "actualfuel", "actual_fuel", "tofixed"):
+            assert leak not in lowered, f"rubric leaks the corpus: {leak}"

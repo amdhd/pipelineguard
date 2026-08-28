@@ -191,6 +191,26 @@ If a value is absent from the page text AND absent from `values`, and there is
 an `empty_slot` beside the label it belongs to, that is a real observation and
 you may report it. If it is merely absent from the text, it is not.
 
+## Candidates you must assess
+
+Every tool result carries a `candidate_findings` list -- mechanically-detected
+signals the runtime computed for you: a blank that repeats across every list
+item beside a chart or ring (`repeated_svg_empty`), a genuine console error
+(`console_error`; warnings are excluded), or a failed network request
+(`failed_request`). Each entry has an `id`, a `type`, a `count`, samples, and
+evidence.
+
+You MUST assess every candidate in your final report's `candidate_assessments`:
+
+  - `"verdict": "confirmed"` -- you verified it and it is a real defect. Produce
+    a finding for it (severity + evidence + steps) and set `finding_id` to that
+    finding's exact id (F-001, F-002, ...).
+  - `"verdict": "refuted"` -- you verified it and it is not a defect (noise,
+    by-design, or not reproducible). Give a one-line reason.
+
+Never report an unconfirmed candidate as a finding. Never omit a candidate --
+an unassessed candidate makes the run's output incomplete.
+
 ## But do NOT turn this into guesswork
 
 This section tells you to look harder, not to speculate. Still not findings:
@@ -265,6 +285,14 @@ none of your work counts.
       "actual": "what did happen",
       "suspected_source": "file or subsystem guess, or null if you do not know"
     }}
+  ],
+  "candidate_assessments": [
+    {{
+      "candidate_id": "cand-1",
+      "verdict": "confirmed" | "refuted",
+      "reason": "one line",
+      "finding_id": "F-001"
+    }}
   ]
 }}
 
@@ -273,6 +301,8 @@ Rules for the output:
   - Ids are F-001, F-002, ... and must be unique.
   - Prefer null for "suspected_source" over a guess. A wrong guess sends the
     fix agent to the wrong file, which is worse than no guess at all.
+  - Every candidate_findings entry you saw must appear in candidate_assessments,
+    confirmed or refuted.
   - No findings is a valid, good result: {{"overall": "PASS", "pages_tested": N,
     "findings": []}}.
 """

@@ -157,16 +157,19 @@ A starter corpus file is at `agents/qa/harness/corpus.example.json`.
 
 ## Criterion 6 — benchmarking the two rungs
 
-The cheap rung is the default, so the question is whether it clears the bar, not
-which model is best. The reference implementation ran one round on a weaker rung
-and got findings stronger models never reproduced — they were agent noise, and
-noise costs human review time, which is the expensive resource.
+The quality rung is now the default, and that is a measured decision: the
+discriminator run showed the cheap rung cannot connect a pristine mechanical
+signal to a finding — haiku scored zero on a run where two real bugs were
+present — and the quiet-blank class this project exists to catch is exactly the
+one that needs a model that connects. The question is no longer "does the cheap
+rung clear the bar" but "does the quality rung clear it for the price". Haiku
+remains an explicit `--model` opt-in for cost-constrained runs.
 
 Run the **same PR** twice, changing only `--model`:
 
 ```
-global.anthropic.claude-haiku-4-5-20251001-v1:0   # cheap rung, the default
-global.anthropic.claude-sonnet-4-6                # quality rung
+global.anthropic.claude-sonnet-4-6                # quality rung, the default
+global.anthropic.claude-haiku-4-5-20251001-v1:0   # cheap rung, explicit opt-in
 ```
 
 Then:
@@ -428,6 +431,15 @@ still there.
 slot and still does not, on pages it demonstrably reads. Two plausible causes
 remain, and the cheapest discriminator between them is one run on the quality
 rung (which criterion 6 needs anyway):
+
+> **[resolved]** The discriminator run settled both hypotheses at once. Hypothesis
+> 1 was real but not the whole story: sonnet caught the semantic seed (S-3) that
+> haiku missed, so rung matters — but sonnet ALSO missed S-2 on a pristine
+> harvest (a single `repeated_slots` svg-adjacent group, count 13), which rules
+> out hypothesis 2: the harvest surfaced the shape perfectly. The fix is neither
+> pure model choice nor another prompt edit, but a deterministic candidate layer
+> (agents/qa/agent/candidates.py) that makes the mechanical signal unskippable,
+> with the quality rung as the default.
 
 1. **The cheap rung cannot connect the input to the finding.** Haiku may read
    `empty_slots: [{"context": "...", "count": N}]` and not infer "a dropped

@@ -13,6 +13,7 @@ test_browser_tools.py; the tool-use loop itself needs a live model and is
 exercised by a real invoke instead.
 """
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -224,12 +225,15 @@ def test_emit_metrics_never_fails_the_run(agent, monkeypatch):
     agent._emit_metrics(budget, "some-model")  # must not raise
 
 
-def test_default_model_matches_the_cheap_benchmark_rung(agent):
+def test_default_model_is_the_quality_rung(agent):
     """
-    PLAN.md 1d: the default is the cheap rung, and the quality rung is an
-    explicit opt-in. If this flips, every scheduled run silently gets dearer.
+    PLAN.md 1d, MEASURED: the default flipped from the cheap rung to the quality
+    rung because the discriminator run proved haiku cannot connect a pristine
+    mechanical signal to a finding -- it scored zero on a run with two real bugs
+    present. Sonnet stays the default so scheduled runs catch the quiet-blank
+    class; haiku remains an explicit --model opt-in for cost-constrained runs.
     """
-    assert "haiku" in agent.DEFAULT_MODEL
+    assert "sonnet" in agent.DEFAULT_MODEL
 
 
 def test_token_budget_is_cumulative_not_per_call(agent):
@@ -500,6 +504,134 @@ class TestFinalReport:
             self._bedrock(error=err), "m", "sys", self._messages(), b, 4096, "deadline"
         )
         assert out is None
+
+
+class TestCandidateAssurance:
+    """
+    The mandatory-verdict contract, agent side. The deterministic layer removes
+    "the model must notice" by REQUIRING a verdict on every candidate the
+    runtime emitted. A report that omits one is incomplete -- and since a silent
+    false PASS is the worst outcome a QA agent can have, the miss triggers one
+    bounded retry, and a retry that still misses is recorded as a pipeline
+    failure rather than a clean pass.
+    """
+
+    _FINDING = {
+        "id": "F-001", "severity": "HIGH", "page": "/voyage", "summary": "blank chart",
+        "evidence": "no data points", "steps_to_reproduce": ["log in"],
+        "expected": "a curve", "actual": "empty", "suspected_source": None,
+    }
+    _SEEN = {"cand-1": {"type": "repeated_svg_empty", "count": 13, "evidence": "svg group"}}
+
+    @staticmethod
+    def _payload(*, assessments=None):
+        payload = {"overall": "FAIL", "pages_tested": 3, "findings": [dict(TestCandidateAssurance._FINDING)]}
+        if assessments is not None:
+            payload["candidate_assessments"] = assessments
+        return payload
+
+    @staticmethod
+    def _report(*, assessments=None):
+        return "```json\n" + json.dumps(TestCandidateAssurance._payload(assessments=assessments)) + "\n```"
+
+    @staticmethod
+    def _client(agent, text, stop_reason="end_turn"):
+        client = MagicMock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+            "stopReason": stop_reason,
+            "usage": {"inputTokens": 500, "outputTokens": 100},
+        }
+        return client
+
+    def _budget(self, agent):
+        return agent.Budget(max_turns=10, token_budget=10**9, deadline_seconds=600)
+
+    def test_unassessed_candidates_trigger_exactly_one_retry(self, agent):
+        """The retry is bounded to ONE call, and its output is what is returned."""
+        client = self._client(agent, self._report(assessments=[
+            {"candidate_id": "cand-1", "verdict": "confirmed", "reason": "blank beside every ring", "finding_id": "F-001"}
+        ]))
+        out = agent._ensure_candidate_assessments(
+            client, "m", "sys", TestFinalReport._messages(), self._budget(agent), 4096,
+            self._SEEN, self._payload(),
+        )
+        assert client.converse.call_count == 1
+        assert out["candidate_assessments"][0]["candidate_id"] == "cand-1"
+        assert out["findings"][0]["id"] == "F-001"
+        assert "incomplete" not in out
+
+    def test_no_retry_when_all_candidates_assessed(self, agent):
+        """A complete report costs nothing extra -- the retry must not fire."""
+        client = MagicMock()
+        client.converse.side_effect = AssertionError("must not retry")
+        findings = self._payload(assessments=[
+            {"candidate_id": "cand-1", "verdict": "refuted", "reason": "decoration"}
+        ])
+        out = agent._ensure_candidate_assessments(
+            client, "m", "sys", [], self._budget(agent), 4096, self._SEEN, findings,
+        )
+        assert out is findings
+
+    def test_no_candidates_seen_means_no_retry(self, agent):
+        client = MagicMock()
+        client.converse.side_effect = AssertionError("must not retry")
+        findings = self._payload()
+        out = agent._ensure_candidate_assessments(
+            client, "m", "sys", [], self._budget(agent), 4096, {}, findings,
+        )
+        assert out is findings
+
+    def test_unassessed_candidates_mark_incomplete_when_still_missing(self, agent):
+        """A retry that still omits the candidate is a pipeline failure, not a pass."""
+        client = self._client(agent, self._report(assessments=[]))
+        out = agent._ensure_candidate_assessments(
+            client, "m", "sys", TestFinalReport._messages(), self._budget(agent), 4096,
+            self._SEEN, self._payload(),
+        )
+        assert out["incomplete"] is True
+        assert "cand-1" in out["stop_reason"]
+        assert out["unassessed_candidates"] == ["cand-1"]
+
+    def test_a_retry_that_keeps_exploring_marks_incomplete(self, agent):
+        """Nothing salvaged means the miss is recorded, never presented as clean."""
+        client = self._client(agent, "let me verify", stop_reason="tool_use")
+        out = agent._ensure_candidate_assessments(
+            client, "m", "sys", TestFinalReport._messages(), self._budget(agent), 4096,
+            self._SEEN, self._payload(),
+        )
+        assert out["incomplete"] is True
+        assert out["stop_reason"] == "candidate assessment retry failed"
+        assert out["unassessed_candidates"] == ["cand-1"]
+
+    def test_the_salvage_nudge_names_the_candidates(self, agent):
+        """A truncated run's salvage report must not walk past the signals either."""
+        client = self._client(agent, self._report(assessments=[]))
+        messages = TestFinalReport._messages()
+        agent._final_report(
+            client, "m", "sys", messages, self._budget(agent), 4096, "deadline",
+            seen_candidates={"cand-1": {}, "cand-2": {}},
+        )
+        nudge_text = " ".join(b.get("text", "") for b in messages[-1]["content"])
+        assert "cand-1" in nudge_text and "cand-2" in nudge_text
+        assert "must assess each" in nudge_text
+
+    def test_attach_candidate_evidence(self, agent):
+        """The runtime's own capture of a confirmed candidate wins over the guess."""
+        findings = self._payload(assessments=[
+            {"candidate_id": "cand-1", "verdict": "confirmed", "reason": "blank", "finding_id": "F-001"}
+        ])
+        session = types.SimpleNamespace(candidate_screenshots={"cand-1": "screenshots/run/x.png"})
+        agent._attach_candidate_evidence(findings, session)
+        assert findings["findings"][0]["screenshot"] == {"key": "screenshots/run/x.png"}
+
+    def test_refuted_candidates_do_not_attach_evidence(self, agent):
+        findings = self._payload(assessments=[
+            {"candidate_id": "cand-1", "verdict": "refuted", "reason": "decoration"}
+        ])
+        session = types.SimpleNamespace(candidate_screenshots={"cand-1": "screenshots/run/x.png"})
+        agent._attach_candidate_evidence(findings, session)
+        assert "screenshot" not in findings["findings"][0]
 
 
 class TestPromptCaching:

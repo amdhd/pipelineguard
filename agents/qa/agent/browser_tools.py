@@ -13,6 +13,7 @@ wall-clock as cost.
 
 import json
 import logging
+import os
 
 from cdp import CDPError, CDPSession
 
@@ -108,13 +109,29 @@ _HARVEST = r"""
     if ((el.textContent || '').trim()) continue;
     if (el.getAttribute('aria-hidden') === 'true') continue;
     if (el.closest('svg, img, button[disabled]')) continue;
+    // A decorative marker -- a badge dot, a separator, a status indicator --
+    // renders small but POSITIVE. A genuinely missing figure has NO laid-out
+    // box at all (an empty span is 0x0), so requiring a small positive size in
+    // both dimensions drops the dot while keeping the slot. Without this the
+    // status-badge dots aggregated into a text-kind repeated_slots group on
+    // every page, and the model was told that repetition is evidence -- which
+    // manufactured a phantom "empty column" finding from pure decoration.
+    if (el.offsetWidth > 0 && el.offsetWidth <= 8 && el.offsetHeight > 0 && el.offsetHeight <= 8) continue;
     // Climb for context rather than reading the immediate parent only. The
     // shape this exists to catch defeated the parent-only version: a score
     // rendered as <span/> inside a <div> holding an <svg> and nothing else, so
     // the PARENT's innerText is empty too and the slot was dropped -- by the
     // very filter meant to find it. Walk up until some ancestor has text.
-    let node = el.parentElement, ctx = '', hops = 0;
+    //
+    // Along the way, note whether the blank sits beside an <svg> -- a ring,
+    // chart or icon whose number/label slot renders nothing. That is a figure
+    // that arrived missing, and it is also the key that lets "the same blank
+    // in every item" aggregate even when each item's text differs (see
+    // repeated_slots below): the context-based dedup splits on the differing
+    // text, so without this kind the repetition stays invisible as count:1s.
+    let node = el.parentElement, ctx = '', hops = 0, svgAdjacent = false;
     while (node && hops < 4) {
+      if (!svgAdjacent && node.querySelector('svg')) svgAdjacent = true;
       const t = (node.innerText || '').trim().replace(/\s+/g, ' ');
       if (t) { ctx = t; break; }
       node = node.parentElement;
@@ -125,10 +142,23 @@ _HARVEST = r"""
     // Deduplicated with a count: "every card" is a stronger signal than one
     // card, and twenty copies of it would otherwise eat the whole cap.
     const hit = empty.find(e => e.context === key);
-    if (hit) { hit.count++; } else { empty.push({ context: key, count: 1 }); }
+    if (hit) { hit.count++; } else { empty.push({ context: key, count: 1, kind: svgAdjacent ? 'svg-adjacent' : 'text' }); }
   }
 
-  return { values: values, empty_slots: empty };
+  // Group the blanks by kind so a blank repeated across list items is visible
+  // even when each item's surrounding text differs. A kind with a count above
+  // 1 is the systematic-repetition signal: the same figure slot missing on
+  // every card, which is what a dropped list field looks like.
+  const byKind = {};
+  for (const e of empty) {
+    const k = e.kind;
+    byKind[k] = byKind[k] || { kind: k, count: 0, sample: [] };
+    byKind[k].count += e.count;
+    if (byKind[k].sample.length < 3) byKind[k].sample.push(e.context.slice(0, 80));
+  }
+  const repeated_slots = Object.values(byKind).filter(g => g.count >= 2);
+
+  return { values: values, empty_slots: empty, repeated_slots: repeated_slots };
 })()
 """ % (MAX_VALUES, MAX_EMPTY_SLOTS)
 
@@ -337,17 +367,27 @@ class BrowserSession:
         return {
             "values": got.get("values", []),
             "empty_slots": got.get("empty_slots", []),
+            "repeated_slots": got.get("repeated_slots", []),
         }
 
     def _state(self) -> dict:
         text = self.cdp.evaluate("document.body ? document.body.innerText : ''") or ""
-        return {
+        state = {
             "url": self.cdp.evaluate("location.href"),
             "text": text[:MAX_TEXT_CHARS],
             "text_truncated": len(text) > MAX_TEXT_CHARS,
             **self._harvest(),
             **self.cdp.drain_events(),
         }
+        # DIAGNOSTIC LOOK. When LOG_PAGE_STATE is set, every read emits the full
+        # page state -- including empty_slots, the structure innerText cannot
+        # carry. This is how a run's blindness is diagnosed: a QA agent that
+        # misses a blank score might be failing to SEE the blank, and that is
+        # visible here without re-running. Gated so it costs nothing in normal
+        # operation; 20k chars holds the entire state including the 6k text cap.
+        if os.environ.get("LOG_PAGE_STATE"):
+            logger.info("page state: %s", json.dumps(state, default=str)[:20000])
+        return state
 
     # --- tool implementations ---
 

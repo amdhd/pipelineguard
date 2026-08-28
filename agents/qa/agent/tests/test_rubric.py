@@ -195,6 +195,43 @@ class TestReadTheValues:
         assert "`count` above 1" in prompt
         assert "evidence in itself" in prompt
 
+    def test_repeated_slots_is_named_as_the_visible_aggregation(self):
+        """
+        The relaxation said a `count` above 1 is evidence -- but the harvest
+        dedups by context, and each card's header differs, so the S-2 blanks
+        arrived as twelve count:1s and read as lone hints. `repeated_slots` is
+        the fix: the group count is the repetition, even when the per-item
+        entries each show count 1.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "repeated_slots" in prompt
+        assert "grouped by" in prompt
+        assert "each show `count: 1`" in prompt
+
+    def test_svg_adjacent_is_named_as_the_loudest_blank_shape(self):
+        """
+        A blank beside an icon/chart/ring is a figure that arrived missing --
+        the strongest form of the shape, and the discriminator that keeps
+        decorative dots (plain spans, no svg) from aggregating with it.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "svg-adjacent" in prompt
+        assert "beside an icon, chart or ring" in prompt
+
+    def test_text_kind_repetition_is_not_evidence(self):
+        """
+        The first version told the model any repeated_slots group with a count
+        above 1 is evidence -- but the badge dots aggregate exactly that way on
+        every page, and the model reported a phantom blank CII column off pure
+        decoration. Repetition is evidence only for the svg-adjacent kind, the
+        one that means "a figure slot that renders nothing"; text-kind groups
+        are dots and separators.
+        """
+        prompt = rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+        assert "in an `svg-adjacent` group is evidence in itself" in prompt
+        assert "A text-kind group with a count above 1 is usually decoration" in prompt
+        assert "NOT a finding on its own" in prompt
+
     def test_it_does_not_name_the_seeded_bugs(self):
         """
         Teaching to the test would make the next measurement meaningless. The

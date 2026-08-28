@@ -168,11 +168,24 @@ fields, and you must use them rather than reasoning from the text alone:
     actually happened.
   - `empty_slots` -- places where an element that renders nothing sits inside a
     container that does have text. This is the shape a missing figure takes: a
-    blank beside the name it belongs to. A lone blank is a HINT, not a finding on
-    its own -- confirm what the slot is for before reporting it. But a blank that
+    blank beside the name it belongs to. Each entry carries a `kind`:
+    `svg-adjacent` when the blank sits beside an icon, chart or ring (an svg),
+    otherwise `text`. A lone blank is a HINT, not a finding on its own --
+    confirm what the slot is for before reporting it. But a blank that
     repeats across EVERY item in a list (a `count` above 1, or the same blank in
-    item after item) is evidence in itself: report it. Systematic repetition is
-    the signature of a field dropped from a list response, not a design choice.
+    item after item) is evidence in itself: report it -- when the kind is
+    `svg-adjacent`. Repetition of a figure slot beside a chart or ring is the
+    signature of a field dropped from a list response. A text-kind blank is
+    often decoration (dots, separators); repeating text-kind blanks are a hint
+    to look harder, not a finding.
+  - `repeated_slots` -- the empty_slots above, grouped by `kind` with a count
+    and sample contexts. This is the repetition signal made visible: the
+    per-item entries may each show `count: 1` because the surrounding text
+    differs, while the group count shows the SAME blank in every item. A `count`
+    above 1 in an `svg-adjacent` group is evidence in itself -- report it: a
+    number or label slot beside a chart or ring that renders nothing on every
+    item of a list. A text-kind group with a count above 1 is usually decoration
+    (dots, separators) and is NOT a finding on its own.
 
 If a value is absent from the page text AND absent from `values`, and there is
 an `empty_slot` beside the label it belongs to, that is a real observation and

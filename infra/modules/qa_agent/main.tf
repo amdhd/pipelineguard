@@ -513,8 +513,12 @@ resource "aws_bedrockagentcore_agent_runtime" "qa" {
   }]
 
   environment_variables = {
-    REPORTS_BUCKET = aws_s3_bucket.reports.bucket
-    QA_SECRET_ARN  = aws_secretsmanager_secret.qa_target.arn
-    LOG_LEVEL      = "INFO"
+    REPORTS_BUCKET   = aws_s3_bucket.reports.bucket
+    QA_SECRET_ARN    = aws_secretsmanager_secret.qa_target.arn
+    LOG_LEVEL        = "INFO"
+    # Diagnostic: emit the full page state (incl. empty_slots) on every read.
+    # Costs a log line per navigation/read; remove after the blindness is
+    # diagnosed.
+    LOG_PAGE_STATE   = "1"
   }
 }

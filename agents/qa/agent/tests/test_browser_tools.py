@@ -183,6 +183,36 @@ def test_long_text_is_truncated_with_a_flag():
     assert state["text_truncated"] is True
 
 
+def test_harvest_forwards_repeated_slots_and_kind():
+    """
+    The JS computes the repeated_slots rollup; the Python wrapper must forward
+    it. Dropping it is exactly the bug that cost a corpus run: the model saw
+    twelve svg-adjacent blanks (kind passed through) but never the aggregate
+    count that makes repetition evidence, so each still read as a lone hint.
+    """
+    fake = FakeCDP(eval_results={
+        "document.querySelectorAll": {
+            "values": [{"label": "Speed", "value": "12", "kind": "input"}],
+            "empty_slots": [
+                {"context": "Main Engine MAN Energy Solutions", "count": 1, "kind": "svg-adjacent"},
+                {"context": "Turbocharger #1 MAN Energy Solutions", "count": 1, "kind": "svg-adjacent"},
+            ],
+            "repeated_slots": [
+                {"kind": "svg-adjacent", "count": 2, "sample": ["Main Engine…", "Turbocharger…"]}
+            ],
+        }
+    })
+    session, _ = _session(fake)
+    got = session._harvest()
+    assert got["repeated_slots"] == [
+        {"kind": "svg-adjacent", "count": 2, "sample": ["Main Engine…", "Turbocharger…"]}
+    ]
+    assert got["empty_slots"][0]["kind"] == "svg-adjacent"
+    assert got["values"][0]["value"] == "12"
+    # And the model-facing read carries it, not just the internal helper.
+    assert session.read_page()["repeated_slots"][0]["count"] == 2
+
+
 class TestDispatch:
     def test_routes_each_tool(self):
         fake = FakeCDP()
@@ -390,6 +420,20 @@ class TestStructuralRead:
     def test_repeated_slots_are_counted_not_repeated(self):
         """"Every card" is a stronger signal than one card, and cheaper."""
         assert "e.context === key" in browser_tools._HARVEST
+
+    def test_decorative_dots_are_not_empty_slots(self):
+        """
+        The CII phantom's mechanism: a 5x5 badge dot renders small but POSITIVE,
+        so it passed the empty-leaf filter and aggregated into a text-kind
+        repeated_slots group that the rubric then called evidence -- and the
+        model reported a column as blank that was not. A genuinely missing
+        figure has no laid-out box at all (an empty span is 0x0), so requiring
+        a small positive size in BOTH dimensions drops the dot and keeps the
+        slot.
+        """
+        assert "el.offsetWidth > 0" in browser_tools._HARVEST
+        assert "el.offsetHeight > 0" in browser_tools._HARVEST
+        assert "<= 8" in browser_tools._HARVEST
 
     def test_the_harvest_is_capped(self):
         """It rides on every read; page content is the dominant input cost."""

@@ -26,6 +26,18 @@ locals {
   # apply, and the mismatch only shows up as AccessDenied at invoke time.
   runtime_name = replace("${local.name_prefix}-runtime", "-", "_")
 
+  # The fix harness invokes a model directly from the runner -- no AgentCore
+  # session, no runtime -- so it needs the same three-ARN expansion per profile
+  # and none of the rest. Built from its own variable, not from model_profile_ids:
+  # see the InvokeFixModel statement below.
+  fix_model_arns = flatten([
+    for id in var.fix_model_profile_ids : [
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${id}",
+      "arn:aws:bedrock:::foundation-model/${replace(id, "global.", "")}",
+      "arn:aws:bedrock:${var.aws_region}::foundation-model/${replace(id, "global.", "")}",
+    ]
+  ])
+
   # The agent writes only under these two prefixes. Scoping the role to them
   # rather than the whole bucket is what lets the bucket hold anything else
   # later without silently widening the agent's reach.
@@ -449,6 +461,84 @@ resource "aws_iam_role_policy" "github_qa" {
         Effect   = "Allow"
         Action   = ["kms:Decrypt"]
         Resource = [var.kms_key_arn]
+      },
+    ]
+  })
+}
+
+# --- GitHub Actions OIDC role for the Phase 2 bug-fix harness ---
+#
+# A SECOND role, deliberately, rather than two more statements on github_qa.
+# See PLAN.md Phase 2, "a SECOND role, not a wider one". The short version:
+# github_qa's trust policy admits the "pull_request" subject, which is
+# byte-identical for a fork PR and a same-repo PR, and the only thing keeping a
+# fork out is a guard in vesselAI's workflow file. That is an acceptable trade
+# for "invoke one runtime, read one secret". It is not an acceptable trade for
+# "invoke a model and bill for it", which is why this role's subject list is
+# built from a REF LIST -- a "pull_request" subject cannot be expressed here
+# even by accident, so no fork has a path to it and no workflow-file guard is
+# load-bearing.
+#
+# count, not a variable that only changes the policy: until the fix harness
+# exists there is nothing to grant, and once it does, flipping this flag off is
+# the Phase 2 kill switch. It stops the fix agent in the ACCOUNT rather than in
+# the repo that spends the money, which is the difference between a control and
+# a request.
+resource "aws_iam_role" "github_fix" {
+  count = var.fix_agent_enabled ? 1 : 0
+
+  name = "${local.name_prefix}-github-fix"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+
+          # Refs only. The workflow_dispatch trigger presents
+          # repo:<owner>/<repo>:ref:refs/heads/<branch>; there is no dispatch
+          # subject that is not a ref, which is exactly why the trigger decision
+          # in PLAN.md Phase 2 and this list are the same decision written twice.
+          "token.actions.githubusercontent.com:sub" = [
+            for ref in var.fix_workflow_refs :
+            "repo:${var.qa_workflow_repo}:ref:${ref}"
+          ]
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "github_fix" {
+  count = var.fix_agent_enabled ? 1 : 0
+
+  name = "${local.name_prefix}-github-fix-policy"
+  role = aws_iam_role.github_fix[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # ONE statement, and it stays one. The findings JSON reaches the harness
+        # as a workflow artifact or a committed fixture -- NOT from the reports
+        # bucket. A GetObject here would pull a kms:Decrypt in behind it (the
+        # bucket is CMK-encrypted) and take the fix agent's floor from one
+        # statement to three, to save copying a file that the job already has.
+        #
+        # Separate model list from the QA role's on purpose: a cheaper rung is
+        # often fine for triage and is not fine for code edits, and two variables
+        # make that difference show up in a plan diff.
+        Sid    = "InvokeFixModel"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+        ]
+        Resource = local.fix_model_arns
       },
     ]
   })

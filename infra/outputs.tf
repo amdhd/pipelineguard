@@ -72,3 +72,8 @@ output "qa_code_bucket" {
   description = "S3 bucket for the QA agent deployment zip"
   value       = module.qa_agent.code_bucket_name
 }
+
+output "qa_fix_role_arn" {
+  description = "Role the vesselAI bug-fix workflow assumes via OIDC. Null while fix_agent_enabled is false."
+  value       = module.qa_agent.github_fix_role_arn
+}

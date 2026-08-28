@@ -94,6 +94,14 @@ variable "qa_agent_code_version_id" {
   default     = ""
 }
 
+# PLAN.md Phase 2. False creates no fix role at all -- the kill switch is the
+# absence of the identity, not a narrower policy on one that still exists.
+variable "fix_agent_enabled" {
+  description = "Create the CI role the Phase 2 bug-fix harness assumes. Leave false until agents/fix/ exists; flipping it off later stops the fix agent at the account, with no workflow change."
+  type        = bool
+  default     = false
+}
+
 variable "qa_corpus_refs" {
   description = "Git refs allowed to assume the QA role via workflow_dispatch for seeded-corpus runs. Empty by default (strict main-only); pass e.g. [\"refs/heads/qa-corpus-1\"] to reopen a branch for a corpus dispatch, then drop the flag to restore."
   type        = list(string)

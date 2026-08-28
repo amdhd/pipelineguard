@@ -47,3 +47,8 @@ output "runtime_id" {
   description = "AgentCore runtime id, or null when the runtime is not yet created."
   value       = try(aws_bedrockagentcore_agent_runtime.qa[0].agent_runtime_id, null)
 }
+
+output "github_fix_role_arn" {
+  description = "Role the vesselAI bug-fix workflow assumes via OIDC. Null while fix_agent_enabled is false."
+  value       = try(aws_iam_role.github_fix[0].arn, null)
+}

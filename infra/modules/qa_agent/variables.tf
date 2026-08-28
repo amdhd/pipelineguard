@@ -54,6 +54,12 @@ variable "qa_workflow_ref" {
   default     = "refs/heads/main"
 }
 
+variable "qa_corpus_refs" {
+  description = "Extra git refs allowed to assume the QA role via workflow_dispatch, for the seeded-bug corpus (e.g. the qa-corpus-1 test branch). Empty by default so the strict main-only baseline needs no change; pass explicitly to reopen a branch for a corpus run, then drop the flag to restore."
+  type        = list(string)
+  default     = []
+}
+
 # --- Runtime code artifact ---
 #
 # Empty by default, which is what makes the cold-start ordering work: the

@@ -377,10 +377,20 @@ resource "aws_iam_role" "github_qa" {
           # The workflow has three triggers presenting two subjects:
           #   pull_request              -> ...:pull_request
           #   schedule/workflow_dispatch -> ...:ref:refs/heads/main
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:${var.qa_workflow_repo}:pull_request",
-            "repo:${var.qa_workflow_repo}:ref:${var.qa_workflow_ref}",
-          ]
+          "token.actions.githubusercontent.com:sub" = concat(
+            [
+              "repo:${var.qa_workflow_repo}:pull_request",
+              "repo:${var.qa_workflow_repo}:ref:${var.qa_workflow_ref}",
+            ],
+            [
+              # CORPUS TEST REFS (temporary). Each entry reopens workflow_dispatch
+              # on exactly that branch -- never a wildcard. Default is empty, so
+              # the main-only baseline needs no change; pass qa_corpus_refs to
+              # permit a seeded-corpus dispatch, then drop the flag to restore.
+              for ref in var.qa_corpus_refs :
+              "repo:${var.qa_workflow_repo}:ref:${ref}"
+            ],
+          )
         }
       }
     }]

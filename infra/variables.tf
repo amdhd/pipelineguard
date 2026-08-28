@@ -93,3 +93,9 @@ variable "qa_agent_code_version_id" {
   type        = string
   default     = ""
 }
+
+variable "qa_corpus_refs" {
+  description = "Git refs allowed to assume the QA role via workflow_dispatch for seeded-corpus runs. Empty by default (strict main-only); pass e.g. [\"refs/heads/qa-corpus-1\"] to reopen a branch for a corpus dispatch, then drop the flag to restore."
+  type        = list(string)
+  default     = []
+}

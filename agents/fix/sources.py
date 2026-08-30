@@ -75,6 +75,10 @@ WEIGHT_ROUTE = 3
 WEIGHT_IDENTIFIER = 2
 WEIGHT_WORD = 1
 
+# Multiplier applied to a term that matches the file's PATH as well as, or
+# instead of, its body. See score_file for the measurement behind it.
+PATH_BONUS = 3
+
 _STOPWORDS = frozenset(
     """
     a an and are as at be but by does for from has have in into is it its no not
@@ -84,7 +88,14 @@ _STOPWORDS = frozenset(
     """.split()
 )
 
-_QUOTED = re.compile(r"[\"'`]([^\"'`\n]{3,60})[\"'`]")
+# Quote delimiters must not be word-internal. Without the lookarounds, the
+# apostrophe in "the user's stored display name is 'Captain Ahmad Fauzi'" opens
+# a match at `user'` and closes it at the next apostrophe, yielding the term
+# "s stored display name is " and DISCARDING both real literals. Measured
+# against the committed fixture on the real repo: the old pattern extracted
+# nothing but garbage, and the correct file was ranking first on weaker signals
+# in spite of it.
+_QUOTED = re.compile(r"(?<![A-Za-z0-9])[\"'`]([^\"'`\n]{3,60})[\"'`](?![A-Za-z0-9])")
 _IDENTIFIER = re.compile(r"\b([a-z]+[A-Z][A-Za-z0-9]{2,}|[A-Z][a-z]{2,}[A-Z][A-Za-z0-9]*)\b")
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,}")
 
@@ -157,16 +168,37 @@ def candidate_files(root: Path) -> list[str]:
     return sorted(found)
 
 
-def score_file(text: str, terms: list[tuple[str, int]]) -> int:
+def score_file(text: str, terms: list[tuple[str, int]], path: str = "") -> int:
     """
     How well one file answers the finding.
 
     Counts DISTINCT terms matched, not occurrences. A file mentioning `greeting`
     forty times is not forty times more likely to be the right file, and scoring
     by occurrence reliably promotes the largest file in the tree.
+
+    A term matching the PATH counts extra, and that is not a tie-breaker bolted
+    on afterwards -- it is different evidence. Body text says the file mentions
+    the subject; a filename says the file is ABOUT it.
+
+    Measured, and the measurement corrected an assumption. On the committed
+    fixture against the real repo, `backend/src/routes/auth.ts` outscored
+    `frontend/src/pages/DashboardPage.tsx` on body text alone, because the
+    finding quotes the seeded user name "Captain Ahmad Fauzi" -- which is DATA
+    and appears verbatim in the seed -- while "Captain Captain" is RENDERED
+    output assembled from a template and appears nowhere in source. Quoted UI
+    text is a strong signal for the string, and can point at the wrong file for
+    the template. The filename match is what separates them.
+
+    PATH_BONUS is the smallest multiplier that puts the right file first on the
+    one finding available to test it, chosen low deliberately. N=1 is not a
+    measurement, and this repo has a documented habit of treating it as one --
+    re-check the number when there are more findings to check it against.
     """
     lowered = text.lower()
-    return sum(weight for term, weight in terms if term.lower() in lowered)
+    lowered_path = path.lower()
+    score = sum(weight for term, weight in terms if term.lower() in lowered)
+    score += sum(weight * PATH_BONUS for term, weight in terms if term.lower() in lowered_path)
+    return score
 
 
 def select(finding: dict, root: Path) -> dict:
@@ -201,7 +233,7 @@ def select(finding: dict, root: Path) -> dict:
         except (UnicodeDecodeError, OSError):
             continue
 
-        score = WEIGHT_SUSPECTED if relative in seeded else score_file(text, terms)
+        score = WEIGHT_SUSPECTED if relative in seeded else score_file(text, terms, relative)
         if score > 0:
             scored.append((score, relative, text))
 

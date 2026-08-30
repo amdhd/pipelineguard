@@ -209,3 +209,56 @@ class TestAgainstTheRealFixture:
         offered = {f["path"] for f in chosen["files"]}
         assert not any(p.startswith(("infra/", "frontend-angular/")) for p in offered)
         assert not any(".env" in p for p in offered)
+
+
+class TestPathScoring:
+    """
+    The correction the real repo forced. Quoted UI text is a strong signal for a
+    STRING and can point at the wrong file for a TEMPLATE: the fixture quotes the
+    seeded name "Captain Ahmad Fauzi", which is data and lives in the seed, while
+    "Captain Captain" is rendered output that appears in no source file at all.
+    """
+
+    def test_a_filename_match_outweighs_a_body_match(self):
+        terms = [("Dashboard", selector.WEIGHT_WORD)]
+        in_name = selector.score_file("nothing here", terms, "frontend/src/pages/DashboardPage.tsx")
+        in_body = selector.score_file("Dashboard", terms, "backend/src/routes/auth.ts")
+        assert in_name > in_body
+
+    def test_the_path_bonus_is_a_multiplier_not_a_flat_bump(self):
+        """A filename match on a high-weight literal must outrank one on a stopword-ish term."""
+        strong = selector.score_file("", [("Greeting", selector.WEIGHT_LITERAL)], "src/Greeting.tsx")
+        weak = selector.score_file("", [("Greeting", selector.WEIGHT_WORD)], "src/Greeting.tsx")
+        assert strong > weak
+
+    def test_a_file_matching_neither_scores_zero(self):
+        assert selector.score_file("x", [("Dashboard", 1)], "a/b.ts") == 0
+
+    def test_the_bonus_is_kept_conservative(self):
+        """
+        Tuned against exactly one finding. This repo's own evidence notes say a
+        single run is not a measurement; the same applies to a single fixture.
+        """
+        assert selector.PATH_BONUS <= 3
+
+
+class TestQuoteExtraction:
+    def test_an_apostrophe_does_not_open_a_quoted_term(self):
+        """
+        Before the lookarounds, "the user's stored display name is 'Captain
+        Ahmad Fauzi'" matched from `user'` to the next apostrophe -- yielding
+        "s stored display name is " and DISCARDING both real literals. It
+        extracted nothing but garbage, and selection was working in spite of it.
+        """
+        terms = [
+            t
+            for t, _ in selector.search_terms(
+                {"summary": "the user's display name is 'Captain Ahmad Fauzi' here"}
+            )
+        ]
+        assert "Captain Ahmad Fauzi" in terms
+        assert not any(t.startswith("s display name") for t in terms)
+
+    def test_double_quotes_and_backticks_still_work(self):
+        terms = [t for t, _ in selector.search_terms({"summary": 'shows "NaN kg" in `fuelBurn`'})]
+        assert "NaN kg" in terms and "fuelBurn" in terms

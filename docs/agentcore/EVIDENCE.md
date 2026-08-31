@@ -573,3 +573,64 @@ Phase 2 can start on this basis — its first real target is the "Captain Captai
 MEDIUM, which is a genuine, reproducible, trivially patchable defect that exercises
 the whole loop end to end.
 
+
+---
+
+### 2026-08-28 (sixth pass) — the coverage half: provoking S-1
+
+The fifth pass closed S-2 by making a mechanical signal unskippable, and left
+S-1 explicitly unaddressed: *"a coverage miss, not a detection miss — the agent
+read `/voyage` but never performed the click, so the crash never fired."* Zero
+genuine console errors and zero failed requests across the whole session. The
+`console_error` and `failed_request` detectors were in place the entire time and
+had nothing to see.
+
+That is worth stating precisely, because it bounds what any prompt change can
+do. Every recall fix so far has been about **reading harder** — the structural
+DOM read, the repeated-blank harvest, the candidate layer. None of them can
+touch a defect that has not been provoked. The remaining lever is the agent's
+own behaviour in the browser.
+
+**Shipped:** a bounded interaction pass in the rubric — "EXERCISE each route, do
+not only read it". Up to **two** in-page controls per route that change what is
+displayed (tabs, expanders, view switches), read the page again after each, and
+three explicit prohibitions: nothing that **writes**, nothing that leaves the
+route allow-list, and never log out.
+
+The write prohibition is not incidental. One database backs everything after it,
+so a single write makes every later observation on every later route suspect —
+the same problem PLAN.md Phase 3 raises across rounds, arriving one phase early
+if the rule is left unstated.
+
+**What it costs, stated before the run rather than after.** The interaction pass
+is budgeted as its own constant, `_INTERACTION_TURNS_PER_ROUTE = 2.0`, kept
+separate from the measured `_TURNS_PER_ROUTE = 3.5` so it stays reviewable and
+removable. At eight routes the derived ceilings rise from **42 turns / 1.55M
+tokens** to **62 turns / 3.34M**.
+
+That is a 2.2x rise in a stop-loss, and it deserves the scrutiny a cost-first
+project owes it. Two things make it acceptable, and both are checkable:
+
+- **A ceiling is not a spend.** Run 33140269258 used 18 turns of a cap of 42 and
+  cost ~$0.18. The cap has never been the binding constraint since it was raised
+  from 32.
+- **The wall clock still bites first.** At the measured ~7.6 s/turn (137 s over
+  18 turns), 62 turns is ~470 s against `DEFAULT_DEADLINE_SECONDS = 600`. If that
+  ever stops being true, the change traded a real control for a nominal one, so
+  there is a test asserting it.
+
+**What this pass has NOT shown.** Nothing here is a measurement — it is a
+hypothesis with a cost attached. The claim to test on the next corpus run is
+narrow and falsifiable:
+
+1. S-1 is caught, because the click now happens and the crash fires into
+   detectors that were always ready for it.
+2. Turns per route rises by roughly the budgeted 2.0 and no further.
+3. The healthy-`main` negative check produces no new findings — an agent that
+   clicks more has more chances to misread what it sees, and the interaction
+   pass is exactly the shape of change that could reopen the false-positive
+   side that the candidate layer just closed.
+
+If (1) holds and (3) does not, the pass is not a win. Re-measure both, three runs
+each per the variance finding above, and pull
+`_INTERACTION_TURNS_PER_ROUTE` down to whatever the interaction actually costs.

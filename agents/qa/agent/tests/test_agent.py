@@ -779,3 +779,35 @@ class TestPacer:
 
     def test_the_default_matches_the_observed_quota(self, agent):
         assert agent.DEFAULT_REQUESTS_PER_MINUTE == 10
+
+
+class TestInteractionBudget:
+    """
+    The turn budget has to pay for the rubric's interaction pass, or the pass
+    silently costs coverage instead of buying it -- the run would truncate
+    mid-sweep, which is the exact failure the derived budget was built to remove.
+    """
+
+    def test_the_interaction_pass_is_budgeted_separately(self, agent):
+        """
+        Kept as its own constant so it stays reviewable and removable. Folding it
+        into _TURNS_PER_ROUTE would destroy a measured number by addition.
+        """
+        assert agent._TURNS_PER_ROUTE == 3.5
+        assert agent._INTERACTION_TURNS_PER_ROUTE > 0
+
+    def test_turns_cover_login_reads_and_interactions(self, agent):
+        per_route = agent._TURNS_PER_ROUTE + agent._INTERACTION_TURNS_PER_ROUTE
+        expected = int((agent._LOGIN_TURNS + per_route * 8) * agent._HEADROOM)
+        assert agent.turns_for(8) == expected
+
+    def test_the_deadline_still_bites_before_the_raised_turn_cap(self, agent):
+        """
+        The honest check on raising a stop-loss. Measured pace is ~7.6s/turn
+        (137s over 18 turns, corpus run 33140269258); the wall clock must still
+        be the thing that bounds a runaway, or this change traded a real control
+        for a nominal one.
+        """
+        measured_seconds_per_turn = 7.6
+        at_cap = agent.turns_for(agent.DEFAULT_MAX_ROUTES) * measured_seconds_per_turn
+        assert at_cap < agent.DEFAULT_DEADLINE_SECONDS

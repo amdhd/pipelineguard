@@ -95,3 +95,29 @@ variable "max_session_lifetime" {
   type        = number
   default     = 1800
 }
+
+# --- Phase 2 bug-fix harness ---
+#
+# Off by default. Until the harness in agents/fix/ exists there is nothing to
+# grant, and once it does, this flag is the kill switch: false means the fix
+# agent cannot authenticate at all, enforced in the account rather than in
+# vesselAI's workflow file. See PLAN.md Phase 2.
+variable "fix_agent_enabled" {
+  description = "Create the CI role the Phase 2 bug-fix harness assumes. False removes the role entirely, which is the Phase 2 kill switch."
+  type        = bool
+  default     = false
+}
+
+variable "fix_model_profile_ids" {
+  description = "Bedrock inference profile IDs the fix harness may invoke. Deliberately separate from model_profile_ids: a cheaper rung is often fine for QA triage and is not fine for code edits."
+  type        = list(string)
+  # Quality rung only. Haiku is available to the QA agent as an explicit opt-in
+  # for triage; nothing writes source with it.
+  default = ["global.anthropic.claude-sonnet-4-6"]
+}
+
+variable "fix_workflow_refs" {
+  description = "Git refs whose workflow_dispatch runs may assume the fix role. A REF list, not a subject list, so a fork-reachable pull_request subject cannot be expressed here."
+  type        = list(string)
+  default     = ["refs/heads/main"]
+}

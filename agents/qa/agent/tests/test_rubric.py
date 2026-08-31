@@ -288,3 +288,81 @@ class TestCandidates:
         lowered = self._prompt().lower()
         for leak in ("healthscore", "health score", "actualfuel", "actual_fuel", "tofixed"):
             assert leak not in lowered, f"rubric leaks the corpus: {leak}"
+
+
+class TestInteraction:
+    """
+    The coverage half of recall, which the "read harder" work never touched.
+
+    S-1 in the seeded corpus is click-triggered. The run that missed it read the
+    route and never used the control, so the crash never fired -- zero console
+    errors and zero failed requests across the whole session. The detectors were
+    in place and had nothing to see. No amount of instruction about reading
+    values fixes a defect that has not been provoked, which is why this section
+    exists and why it is bounded: an unbounded one would spend the turn budget on
+    the first route and never reach the rest.
+    """
+
+    def _prompt(self):
+        return rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+
+    def test_reading_a_route_is_stated_to_be_half_a_test(self):
+        assert "half-tested" in self._prompt()
+
+    def test_the_interaction_pass_is_capped_at_two_controls(self):
+        prompt = self._prompt()
+        assert "UP TO TWO in-page" in prompt
+        assert "Two controls, not more" in prompt
+
+    def test_the_cap_is_justified_by_the_turn_budget(self):
+        """
+        A cap the agent does not understand is a cap it rationalises around. The
+        reason has to travel with the number.
+        """
+        assert "never reaches the rest of the list" in self._prompt()
+
+    def test_writes_are_forbidden(self):
+        """
+        One database backs the whole run, so a write invalidates every later
+        observation -- and PLAN.md Phase 3 raises the same problem across rounds.
+        Interaction must stay read-only or the findings stop being comparable.
+        """
+        prompt = self._prompt()
+        assert "Anything that WRITES" in prompt
+        for control in ("submit", "save", "create", "delete", "send", "upload"):
+            assert control in prompt
+
+    def test_interaction_does_not_reopen_crawling(self):
+        """
+        The route allow-list is a cost control. "Use the controls" must not be
+        read as "follow whatever they lead to".
+        """
+        prompt = self._prompt()
+        assert "Anything that leaves the route list above" in prompt
+        assert "controls INSIDE a route" in prompt
+
+    def test_a_route_without_controls_is_not_a_finding(self):
+        """The missing-feature rule, restated where it would otherwise be lost."""
+        prompt = self._prompt()
+        assert "offers no such control" in prompt
+        assert "The absence" in prompt and "is a missing feature" in prompt
+
+    def test_a_broken_control_is_tied_back_to_the_candidate_contract(self):
+        """
+        The interaction pass and the candidate layer are one mechanism: clicking
+        is what makes console_error and failed_request fire at all.
+        """
+        assert "candidate you must assess" in self._prompt()
+
+    def test_it_does_not_leak_the_seeded_bugs(self):
+        """
+        The strongest temptation in this section is to name the control that
+        crashes. Doing so would make the next corpus run measure nothing.
+
+        Route and fixture-surface names are NOT leak terms -- the allow-list and
+        the known-by-design list have always contained them. What must not
+        appear is the seeded defect's own vocabulary.
+        """
+        lowered = self._prompt().lower()
+        for leak in ("history tab", "crashes when clicked", "healthscore", "health score"):
+            assert leak not in lowered, f"rubric leaks the corpus: {leak}"

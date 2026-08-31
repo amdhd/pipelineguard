@@ -961,10 +961,58 @@ A finding whose source cannot be located within the cap is reported as
 "could not locate source; skipped" rows were a symptom of exactly this step being
 implicit; making it explicit turns them from a failure into an honest output.
 
-**Consequence for Phase 1a:** the QA agent's execution role needs
-`bedrock:InvokeModel` on the QA model ARN; the *harness* now needs it too, for
-the fix model. Scope both to specific model ARNs, and note that they may differ —
-a cheaper rung is often fine for QA triage but not for code edits.
+**Consequence for Phase 1a — a SECOND role, not a wider one. [corrected]** An
+earlier revision said "the *harness* now needs it too" and left it there, which
+reads as "add `bedrock:InvokeModel` to the existing CI role." Do not. That role
+is `aws_iam_role.github_qa`, and 1a spends a paragraph on why its trust policy
+cannot distinguish a fork PR from a same-repo PR: the `pull_request` subject is
+byte-identical for both, and the only control that keeps a fork out is the fork
+guard *in vesselAI's workflow file*. Putting billable model invocation behind a
+guard that lives in a YAML file in another repo is a bigger step than it looks,
+and it silently un-does the property 1a is proud of — that the CI-reachable role
+is "invoke one runtime, read one secret."
+
+So the fix harness gets its own role, `…-github-fix`, and three properties
+follow from the same reasoning:
+
+- **Trusted on refs, never on `pull_request`.** The role's subject list is built
+  from a *ref list* (`fix_workflow_refs`, default `["refs/heads/main"]`), so a
+  `pull_request` subject cannot appear in it even by mistake. A fork PR
+  therefore has no path to it at all, with no dependence on a workflow-file
+  guard.
+- **One statement.** `bedrock:InvokeModel` + `InvokeModelWithResponseStream` on
+  the fix model ARNs, and nothing else. In particular **no S3 read**: the
+  findings JSON reaches the harness as a workflow artifact or a committed
+  fixture, not from the reports bucket. Adding a bucket read would drag a
+  `kms:Decrypt` in behind it and put the fix agent's minimum privilege at three
+  statements to save a file copy.
+- **Off by default.** `fix_agent_enabled`, default `false`, gates the whole
+  resource. Creating a model-invoking role before the harness that uses it
+  exists is granting capability ahead of need — and once Phase 2 ships, the flag
+  is the kill switch at the IAM layer: flip it off and the fix agent cannot
+  authenticate at all, no workflow edit required. This is the Phase 2 equivalent
+  of `QA_SCHEDULE_ENABLED`, and it is stronger, because it is enforced in the
+  account rather than in the repo that spends the money.
+
+**Separate model variable, too.** `fix_model_profile_ids` defaults to the
+quality rung alone. A cheaper rung is often fine for QA triage and is not fine
+for code edits, and pinning that as two variables rather than one is what makes
+the difference visible in a plan diff.
+
+### What triggers it **[added]**
+
+The earlier revision described the mechanism, the guardrails and the token
+identity, and never said what fires the job. That omission is load-bearing,
+because the trigger determines the subject list above — and the two most
+obvious choices have very different blast radii.
+
+**Decision: `workflow_dispatch` only, on `main`.** A dispatch *is* the deliberate
+act, in exactly the way 1d argues the `agent-qa` label is for PR runs and 0.5 #4
+argues the real AI key is. It needs no label plumbing, it cannot be reached by a
+fork, it takes the findings JSON as an input so a run is reproducible, and "one
+pass, one PR" is already the rule. Running the fix agent automatically at the end
+of every QA run would be the version of this that quietly spends money and opens
+PRs nobody asked for.
 
 - **Structured edits, not raw diffs.** Have the agent return
   `{file, old_string, new_string}` objects and apply them programmatically.
@@ -1019,16 +1067,77 @@ a cheaper rung is often fine for QA triage but not for code edits.
     `github-oidc.tf` argues against at length for AWS. Acceptable as a first
     step; note it as debt rather than pretending it is the end state.
 
+- **Report the fix model's spend.** Phase 1 reports three meters — model tokens,
+  runtime session, browser — and 1b explains at length why a single number next
+  to a token count is dishonest. The fix model is a **fourth meter**, billed in a
+  different account path (direct `InvokeModel`, no AgentCore session), and it is
+  the only one that bills per *attempt* rather than per run: a patch rejected by
+  the allow-list or the compile gate cost exactly as much to generate as one that
+  landed. So carry Phase 1's `--token-budget` across to the fix harness, and put
+  a cost line in the PR summary alongside the patched/skipped table. A fix agent
+  whose PR does not say what it cost is the same reporting gap this repo exists
+  to close.
 - **Stop there.** One pass, one PR, no re-trigger. Branch protection provides the
   human gate.
 
+### Where the harness lives, and how it reaches the runner **[added]**
+
+The fix harness is PipelineGuard code (`agents/fix/`), like the QA harness, and
+reaches vesselAI's runner the same way: a second checkout into `.pipelineguard/`
+at `PIPELINEGUARD_REF`. **Pin that ref for Phase 2.** `WORKFLOW-REVIEW.md` rules
+the mutable `main` "not a defect, and the right call," and that ruling is sound
+*for the program it was made about* — a reporter whose worst failure is a wrong
+PR comment, sharing `schema.py` with a deployed agent that a stale pin would
+disagree with. The fix harness breaks both halves of that argument: it writes
+source and pushes branches, so its worst failure is a bad commit rather than a
+bad comment, and every push to PipelineGuard `main` would go live in another
+repo's write path with no review of that promotion. Pin it to a tag or SHA
+before the first fix run, and keep the QA checkout on `main` if you like — they
+do not have to agree.
+
 **Exit criteria:** the agent opens a PR whose patches compile and pass tests, and
 a human can review it in under ten minutes. Confirm by test that a patch
-targeting a denied path is rejected rather than applied. **And explicitly: the
-agent's own PR must show CI checks running on itself, with no human
-intervention** — that is the criterion that catches the `GITHUB_TOKEN` trap
-above, and it fails silently rather than loudly, so it has to be checked for
-rather than assumed.
+targeting a denied path is rejected rather than applied — a pure unit test with
+no Bedrock dependency, which is also how the harness gets validated while the IAM
+role is still applying. **And explicitly: the agent's own PR must show CI checks
+running on itself, with no human intervention** — that is the criterion that
+catches the `GITHUB_TOKEN` trap above, and it fails silently rather than loudly,
+so it has to be checked for rather than assumed.
+
+**Two things to establish before that last criterion can be read. [added]**
+
+1. **Confirm vesselAI actually has required checks on `pull_request`.** "CI runs
+   on the agent's own PR" presupposes them. Without that confirmation, a PR with
+   no checks is ambiguous: it may be the `GITHUB_TOKEN` trap, or it may be a repo
+   that was never going to run anything. Check it first, so the criterion has one
+   possible cause instead of two.
+
+2. **Drive the first run from a stored findings JSON, not a fresh QA run.**
+   `EVIDENCE.md` records that `/` was skipped in most runs, which is why the
+   "Captain Captain" defect went unseen for ten of them — so a smoke test that
+   depends on the QA agent rediscovering it is testing route-selection variance
+   and the fix loop at the same time, and a failure will not say which. Commit
+   the findings JSON from a run that *did* catch it as a fixture and dispatch
+   against that. It costs nothing, it is deterministic, and it is the reason the
+   dispatch trigger takes findings as an input.
+
+   Commit it as a **fixture**, not an S3 key: the reports bucket expires
+   everything after `report_retention_days` (7), so a stored report is a
+   reference that stops resolving a week later.
+
+   Also check that finding's `suspected_source` before running. `rubric.py`
+   instructs the agent to prefer `null` over a guess, so it is likely null — in
+   which case the very first smoke test exercises the **grep fallback**, the
+   untested half of file selection, rather than the happy path. Either is a fine
+   thing to test; running it without knowing which is not.
+
+**And judge that run on the loop, not on the patch.** The "Captain Captain"
+defect is genuinely ambiguous: `{greeting}, Captain {firstName}` against a seeded
+name of *"Captain Ahmad Fauzi"* can be fixed in the template or in the name
+split, both are defensible, and nothing in vesselAI's tests encodes which was
+intended. That makes it an excellent test of whether the loop runs end to end and
+a poor test of whether the agent chose correctly. Do not tune the fix prompt on
+an example that has no right answer.
 
 ---
 
@@ -1196,10 +1305,29 @@ agent artifact must exist in S3 before the runtime that references it can be
 created — so the ordering is package, upload, then apply the runtime.
 
 **Phase 2 — bug-fix agent**
-13. — *set up the GitHub App (or fine-grained PAT) for vesselAI* —
-14. `feat(agent): bug-fix harness with path allow-list and structured edits`
-15. `feat(ci): compile-and-test gate before agent commits`
-16. — *ship, review real agent PRs — confirm CI runs on the agent's own PR* —
+
+**[revised]** The two *credential* prerequisites now come first, together. The
+earlier ordering put the IAM path after the harness and the gate, which reads
+naturally — code, then permissions — and is wrong for the same reason Phase 0.5
+comes before Phase 1: both of these are slow, manual, and outside the commit
+you would be trying to test. The GitHub App needs an install and two secrets;
+the IAM role needs a reviewed Terraform commit and an apply. Neither is
+something to discover you are blocked on at step 5.
+
+13. — *set up the GitHub App (or fine-grained PAT) for vesselAI, and confirm
+    vesselAI has required checks on `pull_request`* —
+14. `feat(infra): separate CI role for the fix harness, model-invoke only`
+    *(PipelineGuard)* — off by default behind `fix_agent_enabled`
+15. `feat(agent): bug-fix harness with path allow-list and structured edits`
+    *(PipelineGuard)* — including the denied-path rejection test, which needs no
+    credentials and so can be written and run while 14 is still applying
+16. `feat(ci): compile-and-test gate before agent commits` *(vesselAI)* —
+    `workflow_dispatch` only, findings JSON as an input, pinned
+    `PIPELINEGUARD_REF`
+17. `test(agent): findings fixture from a run that caught the greeting defect`
+18. — *smoke test: dispatch against the fixture. Confirm CI runs on the agent's
+    own PR, and that a denied-path patch is rejected. Then review real agent
+    PRs* —
 
 **Phase 3 — convergence**
-17. `feat(ci): convergence-based retry loop behind a separate label gate`
+19. `feat(ci): convergence-based retry loop behind a separate label gate`

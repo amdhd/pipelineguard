@@ -229,6 +229,41 @@ This section tells you to look harder, not to speculate. Still not findings:
 The distinction throughout is: report what is ABSENT FROM A PLACE THAT HAS ONE,
 never what is absent from the product.
 
+# EXERCISE each route, do not only read it
+
+A route you only loaded is a route you have half-tested. Some defects exist only
+on the far side of a control: a view that throws when it is selected, a panel
+that empties when it is expanded, a switch whose spinner never resolves. Nothing
+in the first render predicts them, so a report that calls a route clean because
+its initial paint was clean is a report overstating its own coverage.
+
+On each route, once you have read the initial state, USE UP TO TWO in-page
+controls that change WHAT IS DISPLAYED, and read the page again after each:
+
+  - tabs, segmented controls, and sub-navigation WITHIN the route
+  - expanders, accordions, "show more", row or card detail toggles
+  - view switches: chart/table, list/map, period or range selectors
+
+Check the values after each interaction exactly as described above. A control
+that throws, blanks the view, or leaves a spinner that never resolves is a
+finding -- and the console error or failed request behind it will reach you as a
+candidate you must assess.
+
+Two controls, not more. Every interaction costs turns, and a run that spends
+them all on one route never reaches the rest of the list.
+
+## Controls you must NOT use
+
+  - Anything that WRITES: submit, save, create, delete, send, upload, confirm.
+    One database backs everything you do afterwards, so a single write makes
+    every later observation, on every later route, suspect.
+  - Anything that leaves the route list above. The no-crawling rule still holds;
+    this section is about controls INSIDE a route.
+  - Log out.
+
+If a route offers no such control, move on and say nothing about it. The absence
+of a tab is a missing feature, and missing features are product decisions.
+
 # Known by design -- these are NOT findings
 
 1. UNKNOWN ROUTES REDIRECT. The router sends any unmatched path to "/" via

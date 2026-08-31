@@ -44,10 +44,34 @@ DEFAULT_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 # AccessDenied at invoke time, not a fallback.
 DEFAULT_MODEL = "global.anthropic.claude-sonnet-4-6"
 
-# Cumulative input+output tokens across every finding in one run. Sized against
-# the selection caps: MAX_BYTES is 96_000 (~24k input tokens) per finding, so
-# this is roughly four full-context findings plus their outputs.
-DEFAULT_TOKEN_BUDGET = 120_000
+# MEASURED, on run 33409654638: one finding cost 29,402 tokens (29,028 in /
+# 374 out) against a full 8-file selection. Rounded up for headroom.
+MEASURED_TOKENS_PER_FINDING = 32_000
+
+# How many findings one run will attempt. Beyond this, findings are SKIPPED WITH
+# A REASON rather than silently dropped or half-attempted.
+DEFAULT_MAX_FINDINGS = 5
+
+
+def token_budget_for(max_findings: int) -> int:
+    """
+    A budget that can actually pay for the findings the run says it will attempt.
+
+    DERIVED, not chosen, for the same reason agent.py derives its token budget
+    from its route cap: two independently reasonable numbers describe an
+    impossible run. The old flat 120,000 against a measured 29,402 per finding
+    meant the budget ran out on the FIFTH finding of a five-finding run -- and
+    before the fix in this commit, that discarded the four patches already
+    applied. A budget and a work cap that can disagree will eventually disagree
+    at the worst moment.
+    """
+    return int(max_findings * MEASURED_TOKENS_PER_FINDING * 1.25)
+
+
+# ~200k at the default of five findings. At sonnet rates that is a worst case of
+# roughly $0.45 for a run that attempts all five, which is the number to look at
+# before raising the cap.
+DEFAULT_TOKEN_BUDGET = token_budget_for(DEFAULT_MAX_FINDINGS)
 
 # ANY info string, not just `json`. The QA agent's pattern only recognises
 # ```json, which is fine for an agent that reports what it saw and never writes

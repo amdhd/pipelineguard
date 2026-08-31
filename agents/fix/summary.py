@@ -64,12 +64,22 @@ def render(result: dict, *, budget=None, model: str = "", prices: dict | None = 
     skipped = result.get("skipped", [])
     excluded = result.get("excluded", [])
 
+    errors = result.get("errors") or ([result["error"]] if result.get("error") else [])
+
     verdict = (
         f"Patched {len(applied)} edit(s) across "
         f"{len({a['path'] for a in applied})} file(s)."
         if applied
         else "**No patches applied.**"
     )
+    if errors and applied:
+        # A partially failed run must not read as a clean one. The patches below
+        # are real and gated; the failures are real too, and a reviewer who is
+        # not told about them will assume the findings list was fully addressed.
+        verdict += (
+            f" **{len(errors)} finding(s) failed** and are listed under Skipped —"
+            " this run is PARTIAL, not complete."
+        )
 
     parts = [
         "## Bug-fix agent",
@@ -119,11 +129,25 @@ def render(result: dict, *, budget=None, model: str = "", prices: dict | None = 
 
 def exit_code(result: dict) -> int:
     """
-    0 when the run did what it was asked, 1 when it could not.
+    0 means "the workflow may proceed to the gate", 1 means "there is nothing
+    usable here". It is NOT a report card on the findings.
 
-    Applying nothing is NOT a failure -- "every finding was honestly skipped" is
-    a valid outcome and the prompt is written to encourage it. What fails is the
-    harness itself breaking: an invalid response, an exhausted budget, a batch
-    refused by the caps.
+    THIS USED TO CONFLATE TWO DIFFERENT THINGS, and the bug was expensive.
+    Any single finding's failure set `result["error"]`, which returned 1, which
+    failed the workflow step, which skipped the gate and the commit -- so a run
+    where four findings produced good, compiling patches and the fifth hit an
+    unparseable reply threw all four away on a runner that was then destroyed.
+    Reproduced before the fix: exit code 1 with a correct patch sitting on disk.
+
+    So the question this answers is narrow: did anything get applied? If yes,
+    proceed -- the gate is what decides whether the patches are good, and it
+    cannot decide anything about work it never sees. Per-finding failures are
+    reported in the summary, loudly, and do not veto the patches that worked.
+
+    Applying nothing is still not a failure on its own: "every finding was
+    honestly skipped" is a valid outcome the prompt actively encourages. It is a
+    failure only when nothing was applied AND something broke.
     """
-    return 1 if result.get("error") else 0
+    if result.get("applied"):
+        return 0
+    return 1 if (result.get("errors") or result.get("error")) else 0

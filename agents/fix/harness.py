@@ -28,6 +28,7 @@ than attempted against whatever files happened to score highest.
 import argparse
 import json
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,19 +43,84 @@ import sources  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-def _load_findings(path: Path) -> list[dict]:
+def _load_findings(path: Path) -> tuple[list[dict], str | None]:
+    """Returns (findings, observed_at_commit). The commit is None when unstamped."""
     payload = json.loads(path.read_text())
     findings = payload.get("findings", [])
     if not isinstance(findings, list):
         raise ValueError("findings JSON does not carry a 'findings' list")
-    return findings
+    observed = payload.get("observed_at_commit")
+    return findings, observed if isinstance(observed, str) else None
+
+
+def _head_commit(root: Path) -> str | None:
+    """The checkout's HEAD, or None when `root` is not a git repository."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def staleness(observed: str | None, head: str | None) -> str | None:
+    """
+    Why these findings must not be acted on, or None if they may be.
+
+    A FINDINGS JSON OUTLIVES THE CODE IT DESCRIBES, and nothing else in this
+    harness notices. Run 33137979741 observed two defects on `qa-corpus-1`;
+    replayed three days later against `main`, one had already been fixed and the
+    other never existed there. The agent produced confident, compiling, wrong
+    patches for both.
+
+    The "old_string not found" check in edits.py does not catch this. It only
+    stops an agent that tries the exact stale edit -- one that adapts to the
+    code in front of it will happily fix a defect that is not there, which is
+    what happened. So the guard has to sit above the model, not below it.
+
+    Unstamped findings are ALLOWED, with a warning, because refusing them would
+    break every report written before this field existed. Present-and-different
+    is refused, because that is the case we have actually been burned by.
+    """
+    if observed is None:
+        return None
+    if head is None:
+        return None
+    if observed != head:
+        return (
+            f"findings were observed at {observed[:12]}, the checkout is at "
+            f"{head[:12]}. A report is only about the code it was written "
+            "against; pass --allow-stale-findings to override deliberately."
+        )
+    return None
 
 
 def run(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     root = Path(args.repo).resolve()
-    findings = _load_findings(Path(args.findings))
+    findings, observed = _load_findings(Path(args.findings))
+
+    stale = staleness(observed, _head_commit(root))
+    if stale and not args.allow_stale_findings:
+        result = {
+            "applied": [], "excluded": [], "errors": [stale],
+            "skipped": [{"finding_id": f.get("id", "?"), "reason": stale} for f in findings],
+        }
+        rendered = fix_summary.render(result, model=args.model)
+        if args.summary_out:
+            Path(args.summary_out).write_text(rendered)
+        else:
+            print(rendered)
+        if args.json_out:
+            Path(args.json_out).write_text(json.dumps(result, indent=2, default=str))
+        return fix_summary.exit_code(result)
+    if observed is None:
+        logger.warning(
+            "findings carry no observed_at_commit; staleness could not be checked"
+        )
 
     if args.severities:
         wanted = {s.strip().upper() for s in args.severities.split(",")}
@@ -192,6 +258,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Select files and enforce every guardrail, but make no model call and "
         "write nothing. Costs nothing and proves the selection half on a real tree.",
+    )
+    p.add_argument(
+        "--allow-stale-findings",
+        action="store_true",
+        help="Act on findings observed at a different commit than the checkout. Off by "
+        "default: a report is only about the code it was written against.",
     )
     p.add_argument("--summary-out", help="Write the PR summary here instead of stdout")
     p.add_argument("--json-out", help="Write the machine-readable result here")

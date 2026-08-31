@@ -339,3 +339,84 @@ class TestFindingsCap:
         out = tmp_path / "s.md"
         fix_harness.run(_args(repo=tree, dry_run=True, max_findings=0, summary_out=out))
         assert "beyond --max-findings (0)" in out.read_text()
+
+
+class TestStaleness:
+    """
+    A findings JSON outlives the code it describes, and nothing else in the
+    harness noticed. Run 33137979741 observed two defects on `qa-corpus-1`;
+    replayed against `main` three days later, one was already fixed and the
+    other never existed there. The agent produced confident, compiling, wrong
+    patches for both.
+
+    The "old_string not found" check in edits.py does NOT cover this. It stops
+    an agent that tries the exact stale edit; one that adapts to the code in
+    front of it fixes a defect that is not there. So the guard sits above the
+    model rather than below it.
+    """
+
+    def test_matching_commits_are_fine(self):
+        assert fix_harness.staleness("abc123", "abc123") is None
+
+    def test_a_different_commit_is_refused_with_both_shas(self):
+        reason = fix_harness.staleness("a" * 40, "b" * 40)
+        assert "aaaaaaaaaaaa" in reason and "bbbbbbbbbbbb" in reason
+        assert "--allow-stale-findings" in reason
+
+    def test_unstamped_findings_are_allowed(self):
+        """
+        Refusing them would break every report written before the field existed.
+        Present-and-different is the case we have actually been burned by.
+        """
+        assert fix_harness.staleness(None, "abc123") is None
+
+    def test_a_non_git_checkout_cannot_be_checked(self):
+        assert fix_harness.staleness("abc123", None) is None
+
+    def test_head_of_a_non_repo_is_none(self, tmp_path):
+        assert fix_harness._head_commit(tmp_path) is None
+
+    def test_stale_findings_are_all_skipped_and_nothing_is_written(self, tree, tmp_path, monkeypatch):
+        called = []
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: called.append(1))
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: "b" * 40)
+        payload = json.loads(FIXTURE.read_text())
+        payload["observed_at_commit"] = "a" * 40
+        f = tmp_path / "stale.json"
+        f.write_text(json.dumps(payload))
+        out = tmp_path / "s.md"
+
+        args = fix_harness.build_parser().parse_args(
+            ["--findings", str(f), "--repo", str(tree), "--summary-out", str(out)]
+        )
+        code = fix_harness.run(args)
+
+        assert called == []
+        assert code == 1
+        assert "observed at aaaaaaaaaaaa" in out.read_text()
+
+    def test_the_override_lets_a_deliberate_replay_through(self, tree, tmp_path, monkeypatch):
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: "b" * 40)
+        payload = json.loads(FIXTURE.read_text())
+        payload["observed_at_commit"] = "a" * 40
+        f = tmp_path / "stale.json"
+        f.write_text(json.dumps(payload))
+        out = tmp_path / "s.md"
+
+        args = fix_harness.build_parser().parse_args(
+            ["--findings", str(f), "--repo", str(tree), "--dry-run",
+             "--allow-stale-findings", "--summary-out", str(out)]
+        )
+        fix_harness.run(args)
+        assert "would show" in out.read_text()
+
+    def test_both_committed_fixtures_carry_their_provenance(self):
+        """
+        Backfilled from the runs that produced them, so they are honest about
+        being historical -- and so a replay is correctly refused by default.
+        """
+        for name in ("findings-33140664097.json", "findings-33137979741.json"):
+            path = FIXTURE.parent / name
+            payload = json.loads(path.read_text())
+            assert len(payload.get("observed_at_commit", "")) == 40

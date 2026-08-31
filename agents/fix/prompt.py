@@ -99,12 +99,36 @@ Each edit is an exact string replacement:
     top of one.
   - "new_string" is what replaces it. It may be shorter, longer, or empty.
 
+# FIRST, CONFIRM THE DEFECT IS STILL THERE
+
+Before proposing anything, find the reported defect in the source you were
+shown. The report was written against a running application at some earlier
+moment, and the code in front of you may since have changed: the defect may
+already be fixed, or may never have existed on this branch.
+
+If you cannot point at the specific lines that produce the reported behaviour,
+SKIP the finding and say that the source does not exhibit it. Do not reconstruct
+the defect from the report's description and patch what the description implies.
+A report is evidence about code that was; the files are evidence about code that
+is, and where they disagree the files win.
+
+This has gone wrong in exactly one way before, so it is worth naming: the
+greeting defect described in an earlier report had already been fixed, and the
+agent -- reasoning from the report rather than the file -- changed a nearby line
+to reproduce the described fix, introducing a new bug. The correct answer was to
+skip.
+
 # When to skip, which is a good answer
 
 Skip the finding, with a reason, when ANY of these is true:
 
+  - The source you were shown does not actually exhibit the reported defect.
   - The files you were shown do not contain the cause.
-  - You would be guessing at what the correct behaviour should be.
+  - You would be guessing at what the correct behaviour should be. In
+    particular, do NOT invent a rule the code does not state -- a threshold, a
+    mapping, a convention -- and then edit data to satisfy it. If hand-written
+    data looks inconsistent but nothing in the code defines what consistent
+    means, that is a judgement for a human.
   - The fix would touch a file you were not shown.
   - The defect is ambiguous and two different fixes are equally defensible.
 

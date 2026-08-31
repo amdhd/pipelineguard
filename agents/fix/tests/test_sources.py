@@ -310,3 +310,29 @@ class TestOversizedFilesAreReported:
     def test_a_genuine_no_match_still_says_so(self, tree):
         chosen = selector.select({"summary": "zzzqqq wobblefish", "page": "/"}, tree)
         assert "no allow-listed source matched" in chosen["reason"]
+
+
+class TestMultiFindingFixture:
+    """
+    The one-finding fixture cannot exercise the behaviour PR #33 fixed. This one
+    can, and it is a real run rather than a synthetic file.
+    """
+
+    FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "findings-33137979741.json"
+
+    def _findings(self):
+        return json.loads(self.FIXTURE.read_text())["findings"]
+
+    def test_it_carries_more_than_one_finding(self):
+        assert len(self._findings()) >= 2
+
+    def test_both_findings_exercise_the_grep_fallback(self):
+        """Neither names a file, so file selection has to earn both."""
+        assert all(f["suspected_source"] is None for f in self._findings())
+
+    def test_the_findings_are_on_different_routes(self):
+        """
+        Same-route findings would likely select the same files and understate
+        the per-run cap behaviour this fixture exists to exercise.
+        """
+        assert len({f["page"] for f in self._findings()}) >= 2

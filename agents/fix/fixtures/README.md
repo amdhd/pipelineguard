@@ -29,3 +29,30 @@ to tune on:
 The `screenshots/…` URLs inside point at the private reports bucket. They are
 unsigned, they 403 for everyone, and the objects behind them have expired. They
 are kept because the JSON is a verbatim record of a real run, not an edited one.
+
+## `findings-33137979741.json`
+
+**Two findings, which is the point.** Every Phase 2 result so far rests on the
+one-finding fixture above, and the defect fixed in PR #33 -- a single failing
+finding discarding every good patch -- was invisible to it by construction. A
+multi-finding input is the cheapest way to find what else is hiding.
+
+A real run against `main` on 2026-08-28, not a synthetic file:
+
+| id | severity | page | what |
+|---|---|---|---|
+| F-001 | MEDIUM | `/sire` | SIRE readiness shows 0 GREEN chapters |
+| F-002 | LOW | `/` | the "Captain Captain" greeting duplicate |
+
+Both carry `suspected_source: null`, so both exercise the grep fallback.
+
+**F-002 is expected to fail to apply, and that is a feature of this fixture.**
+The greeting defect was fixed on `main` by the agent's own PR
+(amdhd/vesselAI#102), so the text an edit would quote is no longer there. A run
+against current `main` should therefore report F-002 as skipped with
+`old_string not found` -- an honest "already fixed" -- while F-001 is attempted
+normally. That is exactly the partial-run shape PR #33 rewrote `exit_code` to
+survive, so this fixture tests the fix rather than merely the happy path.
+
+Pulled out of S3 before `report_retention_days` (7) expired it, same as the
+fixture above.

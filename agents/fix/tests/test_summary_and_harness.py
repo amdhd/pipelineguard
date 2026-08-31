@@ -220,3 +220,122 @@ class TestEndToEnd:
         out = tmp_path / "result.json"
         fix_harness.run(_args(repo=tree, dry_run=True, json_out=out))
         assert set(json.loads(out.read_text())) >= {"applied", "skipped", "excluded"}
+
+
+class TestPartialRunsAreNotFailures:
+    """
+    The bug this class exists for was reproduced before it was fixed: two
+    findings, the first unparseable and the second fine, produced exit code 1
+    with a correct patch already written to disk. In the workflow that failed the
+    Propose step, which skipped the gate and the commit, so the patch died on a
+    runner that was then destroyed. Good work, silently discarded.
+    """
+
+    def test_a_run_with_patches_and_failures_still_proceeds(self):
+        result = {"applied": [{"path": "a.tsx"}], "errors": ["bad response"]}
+        assert fix_summary.exit_code(result) == 0
+
+    def test_nothing_applied_and_something_broke_is_a_failure(self):
+        assert fix_summary.exit_code({"applied": [], "errors": ["bad response"]}) == 1
+
+    def test_nothing_applied_and_nothing_broken_is_success(self):
+        """"Every finding honestly skipped" is an outcome the prompt encourages."""
+        assert fix_summary.exit_code({"applied": [], "errors": []}) == 0
+
+    def test_the_legacy_single_error_key_is_still_honoured(self):
+        assert fix_summary.exit_code({"applied": [], "error": "boom"}) == 1
+
+    def test_a_partial_run_says_so_in_the_summary(self):
+        """
+        A reviewer told only about the patches will assume the findings list was
+        fully addressed. The failures are as much a result as the diff.
+        """
+        out = fix_summary.render(
+            {
+                "applied": [{"finding_id": "F-1", "path": "a.tsx", "lines": 2, "rationale": "x"}],
+                "skipped": [{"finding_id": "F-2", "reason": "invalid response"}],
+                "errors": ["invalid response"],
+            }
+        )
+        assert "PARTIAL, not complete" in out
+        assert "1 finding(s) failed" in out
+
+    def test_a_clean_run_does_not_claim_to_be_partial(self):
+        out = fix_summary.render(
+            {
+                "applied": [{"finding_id": "F-1", "path": "a.tsx", "lines": 2, "rationale": "x"}],
+                "skipped": [],
+                "errors": [],
+            }
+        )
+        assert "PARTIAL" not in out
+
+
+class TestRunLevelCaps:
+    """
+    The caps bound the PULL REQUEST -- "a human can review it in under ten
+    minutes" is a property of the PR, not of any finding inside it. Enforced
+    per-finding, five findings under a five-file cap produce a twenty-five-file
+    review.
+    """
+
+    def _edit(self, path, old, new):
+        return {"file": path, "old_string": old, "new_string": new}
+
+    def test_earlier_findings_count_against_a_later_batch(self, tree, monkeypatch):
+        import edits as edit_rules
+        import paths
+
+        monkeypatch.setattr(paths, "MAX_FILES_TOUCHED", 1)
+        planned = edit_rules.plan(
+            [self._edit("frontend/src/pages/Dashboard.tsx", "Captain {firstName}", "x")],
+            tree,
+            applied_files=frozenset({"frontend/src/pages/Other.tsx"}),
+        )
+        assert planned["batch_error"] is not None
+        assert "this run would touch 2 files" in planned["batch_error"]
+
+    def test_earlier_lines_count_against_a_later_batch(self, tree, monkeypatch):
+        import edits as edit_rules
+        import paths
+
+        monkeypatch.setattr(paths, "MAX_LINES_CHANGED", 3)
+        planned = edit_rules.plan(
+            [self._edit("frontend/src/pages/Dashboard.tsx", "Captain {firstName}", "x")],
+            tree,
+            applied_lines=3,
+        )
+        assert "this run would change" in planned["batch_error"]
+
+    def test_with_no_prior_spend_the_behaviour_is_unchanged(self, tree):
+        import edits as edit_rules
+
+        planned = edit_rules.plan(
+            [self._edit("frontend/src/pages/Dashboard.tsx", "Captain {firstName}", "x")], tree
+        )
+        assert planned["batch_error"] is None
+
+
+class TestFindingsCap:
+    def test_the_budget_is_derived_from_the_findings_cap(self):
+        """
+        Two independently chosen numbers describe an impossible run -- the same
+        argument agent.py makes for turns against tokens. The old flat 120,000
+        against a measured 29,402 per finding ran out on the fifth finding of a
+        five-finding run.
+        """
+        assert fix_model.DEFAULT_TOKEN_BUDGET == fix_model.token_budget_for(
+            fix_model.DEFAULT_MAX_FINDINGS
+        )
+        needed = fix_model.DEFAULT_MAX_FINDINGS * fix_model.MEASURED_TOKENS_PER_FINDING
+        assert fix_model.DEFAULT_TOKEN_BUDGET >= needed
+
+    def test_the_measured_figure_matches_the_observed_run(self):
+        """Run 33409654638 spent 29,402 tokens on one finding."""
+        assert fix_model.MEASURED_TOKENS_PER_FINDING >= 29_402
+
+    def test_findings_beyond_the_cap_are_reported_not_dropped(self, tree, monkeypatch, tmp_path):
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        out = tmp_path / "s.md"
+        fix_harness.run(_args(repo=tree, dry_run=True, max_findings=0, summary_out=out))
+        assert "beyond --max-findings (0)" in out.read_text()

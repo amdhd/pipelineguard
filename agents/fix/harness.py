@@ -60,12 +60,27 @@ def run(args) -> int:
         wanted = {s.strip().upper() for s in args.severities.split(",")}
         findings = [f for f in findings if str(f.get("severity", "")).upper() in wanted]
 
+    # Beyond the cap, findings are SKIPPED WITH A REASON. Silently dropping them
+    # would make a run's coverage depend on a number nobody was shown.
+    attempted, deferred = findings[: args.max_findings], findings[args.max_findings :]
+
     budget = fix_model.Budget(args.token_budget)
     bedrock = None if args.dry_run else fix_model.client(args.region)
 
-    result: dict = {"applied": [], "skipped": [], "excluded": [], "error": None}
+    result: dict = {"applied": [], "skipped": [], "excluded": [], "errors": []}
+    for finding in deferred:
+        result["skipped"].append({
+            "finding_id": finding.get("id", "?"),
+            "reason": f"beyond --max-findings ({args.max_findings}) for this run",
+        })
 
-    for finding in findings:
+    # Threaded through edit_rules.plan so the file and line caps bound the RUN,
+    # not each finding separately -- five findings under a five-file cap could
+    # otherwise produce a twenty-five-file PR.
+    applied_files: set[str] = set()
+    applied_lines = 0
+
+    for finding in attempted:
         fid = finding.get("id", "?")
         selection = sources.select(finding, root)
         result["excluded"].extend(selection["excluded"])
@@ -89,11 +104,11 @@ def run(args) -> int:
             )
         except fix_model.BudgetExhausted as e:
             result["skipped"].append({"finding_id": fid, "reason": str(e)})
-            result["error"] = str(e)
+            result["errors"].append(str(e))
             break
         except fix_schema.FixSchemaError as e:
             result["skipped"].append({"finding_id": fid, "reason": f"invalid response: {e}"})
-            result["error"] = str(e)
+            result["errors"].append(str(e))
             # Keep the model's full text in the machine-readable result, which
             # the workflow uploads as an artefact. Without it, diagnosing a
             # parse failure means paying for the call again -- run 33408195295
@@ -112,18 +127,25 @@ def run(args) -> int:
             (e["file"], e["old_string"]): (e.get("finding_id", fid), e.get("rationale", ""))
             for e in proposal["edits"]
         }
-        planned = edit_rules.plan(proposal["edits"], root)
+        planned = edit_rules.plan(
+            proposal["edits"],
+            root,
+            applied_files=frozenset(applied_files),
+            applied_lines=applied_lines,
+        )
         result["skipped"].extend(
             {"finding_id": s["edit"].get("finding_id", fid), "reason": s["reason"]}
             for s in planned["skip"]
         )
         if planned["batch_error"]:
-            result["error"] = planned["batch_error"]
+            result["errors"].append(planned["batch_error"])
 
         for item in edit_rules.write(planned):
             found_id, rationale = rationales.get(
                 (item["edit"]["file"], item["edit"]["old_string"]), (fid, "")
             )
+            applied_files.add(item["path"])
+            applied_lines += item["lines"]
             result["applied"].append(
                 {
                     "finding_id": found_id,
@@ -152,6 +174,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--region", default=fix_model.DEFAULT_REGION)
     p.add_argument("--model", default=fix_model.DEFAULT_MODEL)
     p.add_argument("--token-budget", type=int, default=fix_model.DEFAULT_TOKEN_BUDGET)
+    p.add_argument(
+        "--max-findings",
+        type=int,
+        default=fix_model.DEFAULT_MAX_FINDINGS,
+        help="Findings to attempt in one run. The token budget is derived from this, "
+        "so raising it without raising --token-budget will exhaust the budget "
+        "mid-run. Findings beyond the cap are reported as skipped.",
+    )
     p.add_argument("--max-output-tokens", type=int, default=4096)
     p.add_argument(
         "--severities",

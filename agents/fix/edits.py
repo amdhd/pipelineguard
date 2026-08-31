@@ -101,14 +101,28 @@ def _resolve(root: Path, relative: str) -> tuple[Path | None, str | None]:
     return target, None
 
 
-def plan(edits: list, root: Path) -> dict:
+def plan(
+    edits: list,
+    root: Path,
+    *,
+    applied_files: frozenset = frozenset(),
+    applied_lines: int = 0,
+) -> dict:
     """
     Decide what would happen, without writing anything.
 
     Returns {"apply": [...], "skip": [...], "lines": int, "files": int,
-    "batch_error": str | None}. main.py calls this, reports it, and only then
+    "batch_error": str | None}. harness.py calls this, reports it, and only then
     calls `write`. Separating the decision from the write is what makes the
     all-or-nothing rule enforceable and the dry run free.
+
+    THE CAPS ARE PER RUN, NOT PER FINDING. `applied_files` and `applied_lines`
+    carry what earlier findings in the same run already spent, and the caller
+    threads them through. Without that, a run with five findings could touch
+    twenty-five files and four hundred lines while every individual batch passed
+    a five-file cap -- and those numbers exist to bound the thing the exit
+    criterion measures, "a human can review it in under ten minutes", which is a
+    property of the PR and not of any one finding inside it.
     """
     to_apply: list[dict] = []
     to_skip: list[dict] = []
@@ -161,17 +175,19 @@ def plan(edits: list, root: Path) -> dict:
             }
         )
 
-    files = len({item["path"] for item in to_apply})
-    lines = sum(item["lines"] for item in to_apply)
+    files = len({item["path"] for item in to_apply} | set(applied_files))
+    lines = sum(item["lines"] for item in to_apply) + applied_lines
 
     batch_error = None
     if files > path_rules.MAX_FILES_TOUCHED:
         batch_error = (
-            f"batch touches {files} files, cap is {path_rules.MAX_FILES_TOUCHED}"
+            f"this run would touch {files} files, cap is "
+            f"{path_rules.MAX_FILES_TOUCHED}"
         )
     elif lines > path_rules.MAX_LINES_CHANGED:
         batch_error = (
-            f"batch changes {lines} lines, cap is {path_rules.MAX_LINES_CHANGED}"
+            f"this run would change {lines} lines, cap is "
+            f"{path_rules.MAX_LINES_CHANGED}"
         )
 
     if batch_error:

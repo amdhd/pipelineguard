@@ -51,7 +51,18 @@ class _Bedrock:
 
 
 def _args(**overrides):
+    """
+    Args for a harness run.
+
+    Severities default to ALL here, deliberately. The fixture's only finding is
+    MEDIUM, and these tests are about harness mechanics -- staleness, caps, exit
+    codes -- not about the severity filter. Letting them inherit the production
+    default would make every one of them silently exercise nothing, which is the
+    failure mode a test is least likely to notice. TestSeverityDefault below
+    covers the default itself.
+    """
     parser = fix_harness.build_parser()
+    overrides.setdefault("severities", "CRITICAL,HIGH,MEDIUM,LOW")
     argv = ["--findings", str(FIXTURE)]
     for key, value in overrides.items():
         flag = "--" + key.replace("_", "-")
@@ -405,8 +416,11 @@ class TestStaleness:
         out = tmp_path / "s.md"
 
         args = fix_harness.build_parser().parse_args(
+            # Severities explicit: this test is about the staleness override,
+            # and the fixture's only finding is MEDIUM.
             ["--findings", str(f), "--repo", str(tree), "--dry-run",
-             "--allow-stale-findings", "--summary-out", str(out)]
+             "--allow-stale-findings", "--summary-out", str(out),
+             "--severities", "CRITICAL,HIGH,MEDIUM,LOW"]
         )
         fix_harness.run(args)
         assert "would show" in out.read_text()
@@ -420,3 +434,46 @@ class TestStaleness:
             path = FIXTURE.parent / name
             payload = json.loads(path.read_text())
             assert len(payload.get("observed_at_commit", "")) == 40
+
+
+class TestSeverityDefault:
+    """
+    CRITICAL and HIGH are exactly the QA schema's BLOCKING severities -- the ones
+    that make a run FAIL and gate a PR. Attempting those is a principled line
+    rather than an arbitrary one, and it is also the cost control: each finding
+    costs a model call (~$0.11) and one of five budget slots, so cosmetic LOWs
+    can crowd out the defect that matters.
+    """
+
+    def test_the_default_is_the_blocking_severities(self):
+        parsed = fix_harness.build_parser().parse_args(["--findings", str(FIXTURE)])
+        assert parsed.severities == "CRITICAL,HIGH"
+
+    def test_the_default_matches_the_qa_schema_definition_of_blocking(self):
+        """
+        If the schema's BLOCKING ever changes, this default should move with it
+        rather than drift into an unrelated pair of words.
+        """
+        import schema as qa_schema
+
+        assert set(fix_harness.DEFAULT_SEVERITIES.split(",")) == set(qa_schema.BLOCKING)
+
+    def test_a_medium_finding_is_not_attempted_by_default(self, tree, monkeypatch, tmp_path):
+        """The committed fixture is MEDIUM, so the default must skip it."""
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: None)
+        out = tmp_path / "s.md"
+        parsed = fix_harness.build_parser().parse_args(
+            ["--findings", str(FIXTURE), "--repo", str(tree), "--dry-run",
+             "--summary-out", str(out)]
+        )
+        fix_harness.run(parsed)
+        assert "No patches applied" in out.read_text()
+
+    def test_everything_can_still_be_requested(self, tree, monkeypatch, tmp_path):
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: None)
+        out = tmp_path / "s.md"
+        fix_harness.run(_args(repo=tree, dry_run=True, summary_out=out,
+                              severities="CRITICAL,HIGH,MEDIUM,LOW"))
+        assert "would show" in out.read_text()

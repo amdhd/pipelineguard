@@ -42,6 +42,17 @@ import sources  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# The QA schema already defines these two as BLOCKING -- the severities that make
+# a run FAIL and gate a PR. Attempting exactly them is therefore a principled
+# default rather than an arbitrary line: the fix agent addresses what blocks, and
+# a human decides about the rest.
+#
+# It is also the cost control. Every finding attempted costs a model call
+# (~$0.11 measured) and one of the five slots the token budget pays for, so a
+# handful of cosmetic LOWs can consume a whole run's budget and crowd out the
+# defect that actually matters.
+DEFAULT_SEVERITIES = "CRITICAL,HIGH"
+
 
 def _load_findings(path: Path) -> tuple[list[dict], str | None]:
     """Returns (findings, observed_at_commit). The commit is None when unstamped."""
@@ -251,7 +262,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-output-tokens", type=int, default=4096)
     p.add_argument(
         "--severities",
-        help="Comma-separated severities to attempt, e.g. CRITICAL,HIGH. Default: all.",
+        default=DEFAULT_SEVERITIES,
+        help=f"Comma-separated severities to attempt. Default: {DEFAULT_SEVERITIES}. "
+        "Pass 'CRITICAL,HIGH,MEDIUM,LOW' to attempt everything.",
     )
     p.add_argument(
         "--dry-run",

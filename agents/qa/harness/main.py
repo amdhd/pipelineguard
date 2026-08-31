@@ -172,6 +172,19 @@ def run(args) -> int:
 
     findings = validate(invoke(args.runtime_arn, payload, region=args.region))
 
+    # PROVENANCE. Stamped by the harness, not the agent: the agent drives a
+    # browser against a tunnel and has no idea what commit built the thing it is
+    # looking at, while the workflow knows exactly.
+    #
+    # This exists because a findings JSON outlives the code it describes. Run
+    # 33137979741 observed two defects on `qa-corpus-1`; three days later a fix
+    # run replayed them against `main`, where one had already been fixed and the
+    # other never existed. The fix agent produced a confident, compiling,
+    # WRONG patch for both, because nothing in the file told it the report was
+    # about different code.
+    if args.target_commit:
+        findings["observed_at_commit"] = args.target_commit
+
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(findings, indent=2))
 
@@ -219,6 +232,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds a screenshot link stays valid. NOTE: the agent signs with the "
         "runtime's temporary credentials, so a link cannot outlive them (typically "
         "~1 hour) no matter what is set here.",
+    )
+    p.add_argument(
+        "--target-commit",
+        help="Commit SHA the target was built from. Recorded in the findings JSON as "
+        "observed_at_commit so a later fix run can tell whether the report still "
+        "describes the code in front of it.",
     )
     p.add_argument("--runner-minutes", type=int)
     p.add_argument("--json-out", help="Write the raw findings JSON here")

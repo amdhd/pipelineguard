@@ -79,5 +79,6 @@
   ],
   "paced_seconds": 41.4,
   "authenticated": true,
-  "pages_tested_reported_by_model": 8
+  "pages_tested_reported_by_model": 8,
+  "observed_at_commit": "21a21cf84720ba27282676ceab8ed964c5e018e6"
 }

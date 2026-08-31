@@ -401,3 +401,31 @@ class TestUntrustedFindingText:
         """Hardening that mangles real findings would cost more than it saves."""
         built = self._prompt_with(summary="Dashboard greeting renders 'Captain Captain'")
         assert "Dashboard greeting renders 'Captain Captain'" in built
+
+
+class TestConfirmBeforeFixing:
+    def test_the_prompt_requires_confirming_the_defect_is_present(self):
+        assert "CONFIRM THE DEFECT IS STILL THERE" in fix_prompt.SYSTEM
+        # Wraps across a line in the prompt, so match on the halves.
+        assert "the code in front of you may since have changed" in fix_prompt.SYSTEM
+        assert "already be fixed" in fix_prompt.SYSTEM
+
+    def test_reconstructing_from_the_report_is_forbidden(self):
+        """
+        The exact failure: the greeting defect was already fixed, and the agent
+        changed a nearby line to reproduce the described fix, introducing a bug.
+        """
+        assert "Do not reconstruct" in fix_prompt.SYSTEM
+        assert "where they disagree the files win" in fix_prompt.SYSTEM
+
+    def test_not_exhibiting_the_defect_is_a_listed_skip_reason(self):
+        assert "does not actually exhibit the reported defect" in fix_prompt.SYSTEM
+
+    def test_inventing_a_rule_to_justify_a_data_edit_is_forbidden(self):
+        """
+        The other half of the same run: the agent invented a "score >= 70 is
+        green" threshold that appears nowhere in the code, then edited
+        hand-written demo data to satisfy it.
+        """
+        assert "do NOT invent a rule the code does not state" in fix_prompt.SYSTEM
+        assert "that is a judgement for a human" in fix_prompt.SYSTEM

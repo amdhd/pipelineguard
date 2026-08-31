@@ -262,3 +262,51 @@ class TestQuoteExtraction:
     def test_double_quotes_and_backticks_still_work(self):
         terms = [t for t, _ in selector.search_terms({"summary": 'shows "NaN kg" in `fuelBurn`'})]
         assert "NaN kg" in terms and "fuelBurn" in terms
+
+
+class TestOversizedFilesAreReported:
+    """
+    A size-skip used to be a bare `continue`, so "the fix was in a 60KB file"
+    and "no source matched" produced identical output. Only one of those is
+    something the caps can be tuned for.
+    """
+
+    @pytest.fixture
+    def big_tree(self, tmp_path):
+        pages = tmp_path / "frontend" / "src" / "pages"
+        pages.mkdir(parents=True)
+        (pages / "Dashboard.tsx").write_text("// greeting\n" + ("x" * 60_000))
+        (pages / "Unrelated.tsx").write_text("// nothing\n" + ("y" * 60_000))
+        return tmp_path
+
+    def test_a_relevant_oversized_file_is_named(self, big_tree):
+        chosen = selector.select(
+            {"summary": "Dashboard greeting is wrong", "page": "/"}, big_tree
+        )
+        paths = [e["path"] for e in chosen["excluded"]]
+        assert "frontend/src/pages/Dashboard.tsx" in paths
+        assert any("exceeds MAX_FILE_BYTES" in e["reason"] for e in chosen["excluded"])
+
+    def test_an_irrelevant_oversized_file_is_not_listed(self, big_tree):
+        """Listing every large file in the tree would bury the one that mattered."""
+        chosen = selector.select(
+            {"summary": "Dashboard greeting is wrong", "page": "/"}, big_tree
+        )
+        assert "frontend/src/pages/Unrelated.tsx" not in [
+            e["path"] for e in chosen["excluded"]
+        ]
+
+    def test_the_reason_distinguishes_too_large_from_no_match(self, big_tree):
+        """
+        Actionable -- raise the cap, or split the file -- where "nothing
+        matched" is not.
+        """
+        chosen = selector.select(
+            {"summary": "Dashboard greeting is wrong", "page": "/"}, big_tree
+        )
+        assert chosen["files"] == []
+        assert "too large to read" in chosen["reason"]
+
+    def test_a_genuine_no_match_still_says_so(self, tree):
+        chosen = selector.select({"summary": "zzzqqq wobblefish", "page": "/"}, tree)
+        assert "no allow-listed source matched" in chosen["reason"]

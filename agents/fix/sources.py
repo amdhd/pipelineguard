@@ -220,6 +220,7 @@ def select(finding: dict, root: Path) -> dict:
                 seeded.append(normalised)
 
     scored: list[tuple[int, str, str]] = []
+    oversized: list[dict] = []
     for relative in candidate_files(root):
         target = root / relative
         try:
@@ -227,6 +228,22 @@ def select(finding: dict, root: Path) -> dict:
         except OSError:
             continue
         if size > MAX_FILE_BYTES:
+            # Report it, but only when its PATH suggests it was relevant.
+            #
+            # This used to be a bare `continue`, which made a size-skip
+            # invisible: "the fix was in a 60KB file" and "no source matched"
+            # produced identical output, and only one of those is something the
+            # caps can be tuned for. Scoring the path alone costs no read, and
+            # listing every large file in the tree regardless would bury the one
+            # that mattered under noise.
+            if score_file("", terms, relative) > 0:
+                oversized.append(
+                    {
+                        "path": relative,
+                        "score": score_file("", terms, relative),
+                        "reason": f"exceeds MAX_FILE_BYTES ({size:,} > {MAX_FILE_BYTES:,})",
+                    }
+                )
             continue
         try:
             text = target.read_text(encoding="utf-8")
@@ -242,7 +259,7 @@ def select(finding: dict, root: Path) -> dict:
     scored.sort(key=lambda item: (-item[0], item[1]))
 
     chosen: list[dict] = []
-    excluded: list[dict] = []
+    excluded: list[dict] = list(oversized)
     total = 0
     for score, relative, text in scored:
         size = len(text.encode("utf-8"))
@@ -258,7 +275,15 @@ def select(finding: dict, root: Path) -> dict:
         total += size
 
     reason = None
-    if not chosen:
+    if not chosen and oversized:
+        # A distinct reason from "nothing matched". This one is actionable --
+        # raise MAX_FILE_BYTES, or split the file -- and the other is not.
+        names = ", ".join(e["path"] for e in oversized[:5])
+        reason = (
+            "the only matching source was too large to read "
+            f"(MAX_FILE_BYTES={MAX_FILE_BYTES:,}): {names}"
+        )
+    elif not chosen:
         # The honest output PLAN.md asks for. Naming the terms that found
         # nothing is what makes this actionable: it distinguishes "the rubric
         # wrote a vague summary" from "the file is outside the allow-list".

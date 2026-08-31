@@ -1,0 +1,83 @@
+{
+  "overall": "FAIL",
+  "pages_tested": 8,
+  "findings": [
+    {
+      "id": "F-001",
+      "severity": "MEDIUM",
+      "page": "/sire",
+      "summary": "SIRE Readiness Score page shows 0 GREEN chapters despite chapters with no findings and scores \u226570",
+      "evidence": "The summary counters display: 10 CHAPTERS, 0 GREEN, 8 ISSUES. Of the 10 chapter rows visible, Chapter 2 (Crew Management, score 70, 0 findings), Chapter 7 (Safety Management, score 68, 0 findings), Chapter 9 (Electrical Systems, score 66, 0 findings), and Chapter 10 (Mooring Operations, score 72, 0 findings) all have 0 findings. Chapters 2 and 10 score at or above 70. The GREEN counter nonetheless renders as 0.",
+      "steps_to_reproduce": [
+        "Log in as demo@petronas.com / demo123",
+        "Navigate to /sire",
+        "Observe the summary row: 10 CHAPTERS | 0 GREEN | 8 ISSUES",
+        "Compare with the Chapter Scores list \u2014 multiple chapters have 0 findings and scores \u226570"
+      ],
+      "expected": "GREEN count should reflect chapters that meet the green threshold (score \u226570 or 0 findings); at minimum chapters 2 and 10 should be counted, giving GREEN \u2265 2",
+      "actual": "GREEN counter displays 0 regardless of chapter data",
+      "suspected_source": null
+    },
+    {
+      "id": "F-002",
+      "severity": "LOW",
+      "page": "/",
+      "summary": "Dashboard greeting renders 'Good morning, Captain Captain' \u2014 rank is duplicated",
+      "evidence": "The page text includes 'Good morning, Captain Captain' on every load. The sidebar shows the user as 'Captain Ahmad Fauzi / fleet manager', indicating the rank 'Captain' is stored separately from the name; the greeting concatenates both, producing the duplicate.",
+      "steps_to_reproduce": [
+        "Log in as demo@petronas.com / demo123",
+        "Navigate to / (Dashboard)",
+        "Observe the greeting heading near the top of the page content"
+      ],
+      "expected": "Greeting should read 'Good morning, Captain Ahmad Fauzi' or 'Good morning, Captain'",
+      "actual": "Greeting reads 'Good morning, Captain Captain'",
+      "suspected_source": null
+    }
+  ],
+  "session_seconds": 120,
+  "cost": {
+    "model_tokens": {
+      "input": 20,
+      "output": 2735,
+      "cache_read": 157199,
+      "cache_write": 16822
+    },
+    "turns": 18,
+    "model": "global.anthropic.claude-sonnet-4-6",
+    "excludes": [
+      "S3 storage",
+      "CloudWatch Logs",
+      "GitHub runner minutes"
+    ]
+  },
+  "screenshots": [
+    {
+      "key": "screenshots/gh-33137979741/sire-zero-green-chapters.png",
+      "label": "sire-zero-green-chapters",
+      "url": "https://pipelineguard-qa-dev-reports-149751500899.s3.amazonaws.com/screenshots/gh-33137979741/sire-zero-green-chapters.png?AWSAccessKeyId=ASIASFXPCSBRTZJ2DODI&Signature=O11dqIkvbJnnEuhE4Sz2EnL8inA%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEHsaDmFwLXNvdXRoZWFzdC0xIkgwRgIhAK9E8YqomvXU7Ge5Gb5ftXLudq0fAh6hcHyMx840uX%2F3AiEAxPV9EX%2BAFH1ySR89boa%2F5xgsNzF7QZ61eVJTS7G31oIqkAMIRBAAGgwxNDk3NTE1MDA4OTkiDHjjoVJNyWHYMMfc4SrtAtiMP6%2FjwZLaohff4asL0qV6gFTJ8Cfat4YvcR3HA%2Fby%2BpvqW3nC8sqhxgx74ggfhFmy2o5i5OmxrqpN%2FOwsIRplKXK1Y9Kszofo4QjI%2FsXDf0mtz3TW7ttH3FZNEf5qMaJDi8hEn%2Bj3%2BvhT%2F%2FgRj3eXLkyw5HPIj4tZ2Jtmxn1Ly8uYYrgvwK%2BGUF9jvCkrWbSd%2BjH%2FRxEaImlJ165LAeRt6IpgwnBa1D4h0wb09Lhj%2F7xLVHH3nT89sxhkBqxzBIveFfze%2BKvkABAGI29Lte8ZjTowNmfLvaVafedUDPcF87doBZBf0EeoyAJjkrZMJlL1hR8FF8nGyfp1IWj3HfJX0KemN%2BMsCACRcHAjurNd9Jz2zQ0smM%2BBlubE%2FbnIstWuv0s7384y%2FBkjNu5p1b8rTN718xk%2FSB6WplYMnIhGuwDI0IBAekDnwkavtva0UkAySyVTJ4j3dmZC5aCFQi95SVm83fnwQXrmXS6xMOH3w9QGOpQBFxaDY1YvkIS7yqRq8xPN0NtNm83Di5ntn6Ujqx%2ByeZfMdi2Z7%2FuUGzmPl50am9i0AAN%2BLa1mDjN2krN4%2BxN9npewGjZftxac8O4GXU6w8OkKxN3Doz83zlIEAdfhbAaPhKcielQZ45i7ZgYGD6cXlGhHd23fKRCO3GmcUQDT0HRuQTEm%2FxqNbZVmbxYxQso5tZGYcA%3D%3D&Expires=1788491484"
+    },
+    {
+      "key": "screenshots/gh-33137979741/dashboard-captain-captain-greeting.png",
+      "label": "dashboard-captain-captain-greeting",
+      "url": "https://pipelineguard-qa-dev-reports-149751500899.s3.amazonaws.com/screenshots/gh-33137979741/dashboard-captain-captain-greeting.png?AWSAccessKeyId=ASIASFXPCSBRTZJ2DODI&Signature=AZVCSXwa8%2BfvH3FJs2b2meAr2Jw%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEHsaDmFwLXNvdXRoZWFzdC0xIkgwRgIhAK9E8YqomvXU7Ge5Gb5ftXLudq0fAh6hcHyMx840uX%2F3AiEAxPV9EX%2BAFH1ySR89boa%2F5xgsNzF7QZ61eVJTS7G31oIqkAMIRBAAGgwxNDk3NTE1MDA4OTkiDHjjoVJNyWHYMMfc4SrtAtiMP6%2FjwZLaohff4asL0qV6gFTJ8Cfat4YvcR3HA%2Fby%2BpvqW3nC8sqhxgx74ggfhFmy2o5i5OmxrqpN%2FOwsIRplKXK1Y9Kszofo4QjI%2FsXDf0mtz3TW7ttH3FZNEf5qMaJDi8hEn%2Bj3%2BvhT%2F%2FgRj3eXLkyw5HPIj4tZ2Jtmxn1Ly8uYYrgvwK%2BGUF9jvCkrWbSd%2BjH%2FRxEaImlJ165LAeRt6IpgwnBa1D4h0wb09Lhj%2F7xLVHH3nT89sxhkBqxzBIveFfze%2BKvkABAGI29Lte8ZjTowNmfLvaVafedUDPcF87doBZBf0EeoyAJjkrZMJlL1hR8FF8nGyfp1IWj3HfJX0KemN%2BMsCACRcHAjurNd9Jz2zQ0smM%2BBlubE%2FbnIstWuv0s7384y%2FBkjNu5p1b8rTN718xk%2FSB6WplYMnIhGuwDI0IBAekDnwkavtva0UkAySyVTJ4j3dmZC5aCFQi95SVm83fnwQXrmXS6xMOH3w9QGOpQBFxaDY1YvkIS7yqRq8xPN0NtNm83Di5ntn6Ujqx%2ByeZfMdi2Z7%2FuUGzmPl50am9i0AAN%2BLa1mDjN2krN4%2BxN9npewGjZftxac8O4GXU6w8OkKxN3Doz83zlIEAdfhbAaPhKcielQZ45i7ZgYGD6cXlGhHd23fKRCO3GmcUQDT0HRuQTEm%2FxqNbZVmbxYxQso5tZGYcA%3D%3D&Expires=1788491484"
+    },
+    {
+      "key": "screenshots/gh-33137979741/sire-zero-green-confirmed.png",
+      "label": "sire-zero-green-confirmed",
+      "url": "https://pipelineguard-qa-dev-reports-149751500899.s3.amazonaws.com/screenshots/gh-33137979741/sire-zero-green-confirmed.png?AWSAccessKeyId=ASIASFXPCSBRTZJ2DODI&Signature=gKgnoqg3I%2BqdQSpXLayk39o%2Fn%2FA%3D&x-amz-security-token=IQoJb3JpZ2luX2VjEHsaDmFwLXNvdXRoZWFzdC0xIkgwRgIhAK9E8YqomvXU7Ge5Gb5ftXLudq0fAh6hcHyMx840uX%2F3AiEAxPV9EX%2BAFH1ySR89boa%2F5xgsNzF7QZ61eVJTS7G31oIqkAMIRBAAGgwxNDk3NTE1MDA4OTkiDHjjoVJNyWHYMMfc4SrtAtiMP6%2FjwZLaohff4asL0qV6gFTJ8Cfat4YvcR3HA%2Fby%2BpvqW3nC8sqhxgx74ggfhFmy2o5i5OmxrqpN%2FOwsIRplKXK1Y9Kszofo4QjI%2FsXDf0mtz3TW7ttH3FZNEf5qMaJDi8hEn%2Bj3%2BvhT%2F%2FgRj3eXLkyw5HPIj4tZ2Jtmxn1Ly8uYYrgvwK%2BGUF9jvCkrWbSd%2BjH%2FRxEaImlJ165LAeRt6IpgwnBa1D4h0wb09Lhj%2F7xLVHH3nT89sxhkBqxzBIveFfze%2BKvkABAGI29Lte8ZjTowNmfLvaVafedUDPcF87doBZBf0EeoyAJjkrZMJlL1hR8FF8nGyfp1IWj3HfJX0KemN%2BMsCACRcHAjurNd9Jz2zQ0smM%2BBlubE%2FbnIstWuv0s7384y%2FBkjNu5p1b8rTN718xk%2FSB6WplYMnIhGuwDI0IBAekDnwkavtva0UkAySyVTJ4j3dmZC5aCFQi95SVm83fnwQXrmXS6xMOH3w9QGOpQBFxaDY1YvkIS7yqRq8xPN0NtNm83Di5ntn6Ujqx%2ByeZfMdi2Z7%2FuUGzmPl50am9i0AAN%2BLa1mDjN2krN4%2BxN9npewGjZftxac8O4GXU6w8OkKxN3Doz83zlIEAdfhbAaPhKcielQZ45i7ZgYGD6cXlGhHd23fKRCO3GmcUQDT0HRuQTEm%2FxqNbZVmbxYxQso5tZGYcA%3D%3D&Expires=1788491484"
+    }
+  ],
+  "routes_visited": [
+    "/voyage",
+    "/maintenance",
+    "/compliance",
+    "/ports",
+    "/knowledge",
+    "/sire",
+    "/analytics",
+    "/"
+  ],
+  "paced_seconds": 41.4,
+  "authenticated": true,
+  "pages_tested_reported_by_model": 8
+}

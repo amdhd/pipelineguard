@@ -22,7 +22,15 @@ _SKIP_REQUIRED = ("finding_id", "reason")
 
 
 class FixSchemaError(ValueError):
-    """Raised when the model's response does not match the shape below."""
+    """
+    Raised when the model's response does not match the shape below.
+
+    Carries an optional `raw` attribute holding the model's full text. A run
+    that fails to parse has already been paid for, so throwing the evidence away
+    means paying again to find out why.
+    """
+
+    raw: str | None = None
 
 
 def _require(cond: bool, message: str) -> None:

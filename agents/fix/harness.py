@@ -94,6 +94,13 @@ def run(args) -> int:
         except fix_schema.FixSchemaError as e:
             result["skipped"].append({"finding_id": fid, "reason": f"invalid response: {e}"})
             result["error"] = str(e)
+            # Keep the model's full text in the machine-readable result, which
+            # the workflow uploads as an artefact. Without it, diagnosing a
+            # parse failure means paying for the call again -- run 33408195295
+            # cost $0.09 and left a 300-character excerpt behind.
+            raw = getattr(e, "raw", None)
+            if raw:
+                result.setdefault("raw_responses", {})[fid] = raw
             continue
 
         result["skipped"].extend(

@@ -65,6 +65,11 @@ reverted. There is no penalty here for skipping and no reward for volume.
 
 # OUTPUT
 
+EMIT EXACTLY ONE FENCED BLOCK IN YOUR WHOLE REPLY, and let it be the JSON below.
+Do NOT quote the buggy source in a ```tsx or ```ts block to explain yourself, and
+do not show a before/after snippet. Put any explanation in each edit's
+"rationale" field, where it is read, instead of in prose that is discarded.
+
 Return exactly this, in a ```json fenced block, as the last thing you write:
 
 {

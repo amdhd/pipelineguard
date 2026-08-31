@@ -634,3 +634,58 @@ narrow and falsifiable:
 If (1) holds and (3) does not, the pass is not a win. Re-measure both, three runs
 each per the variance finding above, and pull
 `_INTERACTION_TURNS_PER_ROUTE` down to whatever the interaction actually costs.
+
+---
+
+### 2026-09-01 (seventh pass) — the interaction pass measured, N=3
+
+The sixth pass shipped the S-1 interaction pass as an explicitly falsifiable
+hypothesis with three claims, then deployed it and moved on. This is the
+measurement it asked for: three runs on `qa-corpus-1` against runtime v2, at
+$0.75 total.
+
+| Run | Turns | s/turn | Routes | S-1 | S-2 | S-3 | Cost |
+|---|---|---|---|---|---|---|---|
+| [33416330680](https://github.com/amdhd/vesselAI/actions/runs/33416330680) | 22 | 6.8 | 7 | ✅ | ❌ | ❌ | $0.22 |
+| [33416898732](https://github.com/amdhd/vesselAI/actions/runs/33416898732) | 24 | 7.0 | 8 | ✅ | ✅ | ❌ | $0.24 |
+| [33417399893](https://github.com/amdhd/vesselAI/actions/runs/33417399893) | 27 | 7.3 | 7 | ✅ | ✅ | ❌ | $0.28 |
+
+**Claim 1 holds: S-1 is 3/3.** The click-triggered crash that thirteen earlier
+runs never provoked is now caught every time. In run 33417399893 it arrives
+through the deterministic path — `cand-2 confirmed`, a genuine console error
+raised by a click the interaction pass performed — which is the detector and the
+new behaviour working together rather than either alone. Recall moved from 1/3
+to a mean of 5/9.
+
+**Claim 2 holds, generously.** Pace was 6.8–7.3 s/turn against the 7.6 the budget
+assumed, and runs used 22–27 turns of a 62 cap. The wall-clock worry that raising
+the cap would move the binding constraint to the deadline does not survive: the
+worst observed pace needs 453s of a 600s deadline, and a breach would take
+9.7 s/turn. The residual is the opposite — 5.5 budgeted turns per route against
+~2.3 observed makes the ceiling ~2.4x the work, which is safe but loose.
+
+**Claim 3 remains untested.** These were corpus runs; the false-positive claim
+needs healthy `main`. Supporting evidence only: across all three runs every
+non-seed candidate was correctly refuted and no spurious finding appeared.
+
+#### The finding that outranks the recall number
+
+`cand-4` is S-2 — the blank health rings on `/maintenance`. Against identical
+code:
+
+| Run | Detection | Count | Model verdict |
+|---|---|---|---|
+| 33416330680 | fired | 12 | **refuted** |
+| 33416898732 | fired | 13 | confirmed |
+| 33417399893 | fired | 12 | confirmed |
+
+**The detection is deterministic. The assessment is not.** The fifth pass closed
+the S-2 gap by making a mechanical signal impossible to walk past, and that
+worked — the signal was present in all three runs. What varied was the model's
+verdict on it, and a refuted candidate produces no finding.
+
+So "the candidate layer is deterministic" is true of only half of it, and the
+half that reaches the findings list is the model-driven half. That is a sharper
+statement of the fifth pass's own conclusion than the fifth pass made, and it has
+a direct consequence for Phase 3: a convergence loop must compare raw candidate
+DETECTIONS, never findings and never assessments. See `REMEDIATION.md`.

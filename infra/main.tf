@@ -64,4 +64,5 @@ module "qa_agent" {
   kms_key_arn              = aws_kms_key.main.arn
   qa_agent_code_key        = var.qa_agent_code_key
   qa_agent_code_version_id = var.qa_agent_code_version_id
+  qa_corpus_refs           = var.qa_corpus_refs
 }

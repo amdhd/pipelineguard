@@ -716,7 +716,7 @@ keep them from multiplying spend:
 
 - `workflow_dispatch` — manual, with inputs for route set, model rung, and the
   real-vs-dummy AI key (Phase 0.5 #4)
-- `schedule` — periodic regression sweep, reduced route set, cheap rung,
+- `schedule` — periodic regression sweep, reduced route set, default rung,
   **gated by the `QA_SCHEDULE_ENABLED` repo variable** (see below)
 - `pull_request` — gated by the `agent-qa` label (1d)
 

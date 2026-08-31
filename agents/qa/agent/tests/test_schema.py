@@ -152,3 +152,64 @@ class TestFingerprint:
         a = schema.finding_fingerprint(_finding(severity="HIGH"))
         b = schema.finding_fingerprint(_finding(severity="LOW"))
         assert a != b
+
+
+class TestCandidateAssessments:
+    """
+    The mandatory-verdict layer. Shape is validated here; completeness ("every
+    candidate that was seen got a verdict") is the agent's job, because schema
+    cannot know what was seen. The one cross-field rule that BELONGS here: a
+    confirmed assessment must reference a real finding, or an unconfirmed
+    candidate reaches the report by the back door.
+    """
+
+    def _assessments(self, *items):
+        return _payload(candidate_assessments=list(items))
+
+    def _confirmed(self, **overrides):
+        base = {"candidate_id": "cand-1", "verdict": "confirmed", "reason": "blank beside every ring", "finding_id": "F-001"}
+        base.update(overrides)
+        return base
+
+    def _refuted(self, **overrides):
+        base = {"candidate_id": "cand-2", "verdict": "refuted", "reason": "decorative warning"}
+        base.update(overrides)
+        return base
+
+    def test_accepts_confirmed_and_refuted_assessments(self):
+        assert schema.validate(self._assessments(self._confirmed(), self._refuted()))
+
+    def test_accepts_an_empty_assessment_list(self):
+        assert schema.validate(self._assessments())
+
+    def test_assessments_are_optional(self):
+        # A clean run with no candidates seen carries no key at all.
+        assert schema.validate(_payload())
+
+    def test_rejects_confirmed_without_a_finding_id(self):
+        with pytest.raises(schema.SchemaError, match="not a reported finding id"):
+            schema.validate(self._assessments(self._confirmed(finding_id=None)))
+
+    def test_rejects_confirmed_with_an_unknown_finding_id(self):
+        with pytest.raises(schema.SchemaError, match="not a reported finding id"):
+            schema.validate(self._assessments(self._confirmed(finding_id="F-099")))
+
+    def test_rejects_missing_candidate_id(self):
+        with pytest.raises(schema.SchemaError, match="candidate_id"):
+            schema.validate(self._assessments(self._confirmed(candidate_id=None)))
+
+    def test_rejects_invalid_verdict(self):
+        with pytest.raises(schema.SchemaError, match="verdict"):
+            schema.validate(self._assessments(self._confirmed(verdict="maybe")))
+
+    def test_rejects_a_missing_reason(self):
+        with pytest.raises(schema.SchemaError, match="reason"):
+            schema.validate(self._assessments(self._refuted(reason="")))
+
+    def test_rejects_non_list_assessments(self):
+        with pytest.raises(schema.SchemaError, match="must be a list"):
+            schema.validate(_payload(candidate_assessments="cand-1"))
+
+    def test_rejects_a_non_object_assessment(self):
+        with pytest.raises(schema.SchemaError, match="is not an object"):
+            schema.validate(self._assessments("cand-1"))

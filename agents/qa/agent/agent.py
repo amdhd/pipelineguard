@@ -40,7 +40,16 @@ METRIC_NAMESPACE = "PipelineGuard/QAAgent"
 
 # Defaults. Every one is overridable per invoke so the workflow can dial cost
 # without redeploying the agent (PLAN.md 1d).
-DEFAULT_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+#
+# The default rung is SONNET, and that is a measured decision, not a taste one.
+# The discriminator run (docs/agentcore) proved the cheap rung demonstrably
+# cannot connect a pristine mechanical signal to a finding: haiku scored ZERO on
+# a run where two real bugs were present. Sonnet caught the semantic class but
+# still missed the quiet blank -- which the deterministic candidate layer now
+# catches deterministically (candidates.py). Between the candidate layer and the
+# quality rung, the two rungs' earlier misses are both covered. Haiku remains an
+# explicit --model opt-in for cost-constrained runs.
+DEFAULT_MODEL = "global.anthropic.claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS_PER_CALL = 4096  # per Converse call
 DEFAULT_DEADLINE_SECONDS = 600
 DEFAULT_MAX_ROUTES = len(rubric.PRIVATE_ROUTES)
@@ -98,12 +107,12 @@ class Pacer:
 # assumed -- three of its rules shape the implementation below:
 #
 #   1. Checkpoints chain tools -> system -> messages, and the model's MINIMUM is
-#      evaluated against the CUMULATIVE tokens across all three. This agent's
-#      system prompt plus tool specs is ~2k tokens, under Haiku 4.5's 4,096
-#      minimum, so a checkpoint sitting after the static content alone would
-#      silently never cache on the default rung. It caches once the conversation
-#      itself pushes the prefix past the minimum, which a rolling checkpoint at
-#      the end of the messages does automatically.
+#      evaluated against the CUMULATIVE tokens across all three. Rung minima
+#      differ: sonnet (the default) 1,024, haiku 4,096. This agent's system
+#      prompt plus tool specs is ~2k tokens, so on sonnet a checkpoint after the
+#      static content alone now CACHES; on haiku it needs the conversation to
+#      push the prefix past its minimum. Either way the rolling checkpoint at
+#      the end of the messages does the job automatically.
 #   2. For Claude models Bedrock offers SIMPLIFIED cache management: place ONE
 #      checkpoint at the end, and it looks back ~20 content blocks for the
 #      longest matching prefix. That removes the usual need to keep old
@@ -461,32 +470,16 @@ def _extract_json(text: str) -> dict:
         ) from e
 
 
-def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_reason, pacer=None):
+def _one_report_call(bedrock, model, system, messages, budget, max_tokens, nudge, pacer=None):
     """
-    Ask for the report AFTER the budget stops the loop. Returns a validated
+    One text-only, report-shaped Converse call: append the nudge to the history,
+    ask for the JSON report, validate what comes back. Returns a validated
     findings object, or None if nothing usable came back.
 
-    WHY THIS EXISTS. A truncated run used to return `"findings": []` with a
-    label -- so a run that stopped after finding four defects reported none of
-    them. The findings only ever exist in the model's FINAL message, and the old
-    code stopped the loop without ever asking for one, throwing away everything
-    the run had paid for. Budget.reserve() holds back exactly enough for this
-    call, which is why stopping early is what makes reporting possible.
-
-    Called with the browser session already closed: this is a text-only call, and
-    the browser meter bills on wall-clock including idle, so there is no reason
-    to hold the session open across it.
+    Shared by the salvage path (_final_report) and the candidate-assurance retry
+    (_ensure_candidate_assessments), so both burn exactly one paced, budgeted
+    call and both treat a non-report identically.
     """
-    nudge = {
-        "text": (
-            f"STOP -- the run budget is exhausted ({stop_reason}). Do not call "
-            "any more tools; any further tool call is discarded and the run is "
-            "recorded as producing nothing. Emit your findings report NOW, as a "
-            "single JSON object in a ```json fenced block, covering only what "
-            "you have already observed. Set pages_tested to the number of routes "
-            "you actually visited, not the number you intended to."
-        )
-    }
     # Converse requires alternating roles, and the loop always stops with a user
     # message of tool results at the tail -- so this appends a text block to that
     # message rather than adding a second user turn, which would be rejected.
@@ -511,7 +504,7 @@ def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_rea
         )
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "ClientError")
-        logger.error("final report call failed: %s", code)
+        logger.error("report call failed: %s", code)
         return None
 
     budget.record(response.get("usage", {}))
@@ -525,8 +518,127 @@ def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_rea
         text = "".join(b.get("text", "") for b in response["output"]["message"]["content"])
         return schema.validate(_extract_json(text))
     except (schema.SchemaError, KeyError) as e:
-        logger.warning("final report was not usable: %s", e)
+        logger.warning("report was not usable: %s", e)
         return None
+
+
+def _final_report(bedrock, model, system, messages, budget, max_tokens, stop_reason, pacer=None, seen_candidates=None):
+    """
+    Ask for the report AFTER the budget stops the loop. Returns a validated
+    findings object, or None if nothing usable came back.
+
+    WHY THIS EXISTS. A truncated run used to return `"findings": []` with a
+    label -- so a run that stopped after finding four defects reported none of
+    them. The findings only ever exist in the model's FINAL message, and the old
+    code stopped the loop without ever asking for one, throwing away everything
+    the run had paid for. Budget.reserve() holds back exactly enough for this
+    call, which is why stopping early is what makes reporting possible.
+
+    Called with the browser session already closed: this is a text-only call, and
+    the browser meter bills on wall-clock including idle, so there is no reason
+    to hold the session open across it.
+
+    seen_candidates: the session's candidate ids. When any were observed, the
+    nudge also demands a verdict on each -- a salvage report must not walk past
+    the deterministic signals either.
+    """
+    nudge = {
+        "text": (
+            f"STOP -- the run budget is exhausted ({stop_reason}). Do not call "
+            "any more tools; any further tool call is discarded and the run is "
+            "recorded as producing nothing. Emit your findings report NOW, as a "
+            "single JSON object in a ```json fenced block, covering only what "
+            "you have already observed. Set pages_tested to the number of routes "
+            "you actually visited, not the number you intended to."
+        )
+    }
+    if seen_candidates:
+        nudge["text"] += (
+            "\n\nYou observed these candidate findings and must assess each in "
+            "candidate_assessments (confirmed with a matching finding_id, or "
+            "refuted with a one-line reason): "
+            + ", ".join(sorted(seen_candidates))
+        )
+    return _one_report_call(bedrock, model, system, messages, budget, max_tokens, nudge, pacer)
+
+
+def _ensure_candidate_assessments(bedrock, model, system, messages, budget, max_tokens, seen_candidates, findings, pacer=None):
+    """
+    One bounded retry if the final report omitted candidates the session saw.
+
+    The deterministic layer makes "the model must notice" unskippable by
+    REQUIRING a verdict on every candidate. A report whose candidate_assessments
+    misses one is incomplete -- and because a silent false PASS is the worst
+    outcome this system can have, the miss must surface as a pipeline failure,
+    not a clean pass. Ask exactly once more, naming the missing ids; if the
+    retry still omits them (or produces nothing), mark the run incomplete and
+    record what was missed.
+    """
+    if not seen_candidates:
+        return findings
+    assessed = {a.get("candidate_id") for a in findings.get("candidate_assessments", [])}
+    missing = sorted(set(seen_candidates) - assessed)
+    if not missing:
+        return findings
+
+    extra = sorted(assessed - set(seen_candidates))
+    if extra:
+        # The model invented ids. Non-fatal: those cannot satisfy the
+        # completeness check (seen - assessed), and a confirmed invented
+        # candidate still has to validate as a real finding to survive.
+        logger.warning("model assessed candidate ids never emitted: %s", extra)
+
+    detail = "\n".join(
+        f"  - {cid} ({c['type']}, count={c['count']}): {c['evidence'][:200]}"
+        for cid, c in sorted(seen_candidates.items()) if cid in missing
+    )
+    nudge = {
+        "text": (
+            "Your report did not assess every candidate finding you saw. The "
+            "following are still unassessed:\n"
+            f"{detail}\n\n"
+            "Emit the corrected report NOW as a single JSON object in a ```json "
+            "fenced block. Every candidate above must appear in "
+            "candidate_assessments -- confirmed (with a matching finding and "
+            "finding_id set to its exact id) or refuted (one-line reason). "
+            "Keep all your existing findings."
+        )
+    }
+    retried = _one_report_call(bedrock, model, system, messages, budget, max_tokens, nudge, pacer)
+    if retried is None:
+        findings["incomplete"] = True
+        findings["stop_reason"] = "candidate assessment retry failed"
+        findings["unassessed_candidates"] = missing
+        return findings
+
+    still = sorted(set(seen_candidates) - {a.get("candidate_id") for a in retried.get("candidate_assessments", [])})
+    if still:
+        retried["incomplete"] = True
+        retried["stop_reason"] = f"candidate(s) unassessed after retry: {', '.join(still)}"
+        retried["unassessed_candidates"] = still
+    return retried
+
+
+def _attach_candidate_evidence(findings, session):
+    """
+    Deterministically attach the auto-captured candidate screenshot to any
+    confirmed finding.
+
+    The runtime captured the exact viewport at the moment the candidate fired,
+    so that key is the evidence for the finding the model confirms -- the
+    model's own screenshot guess may be absent or aimed elsewhere. Determinism
+    wins over the guess.
+    """
+    by_candidate = {a.get("candidate_id"): a for a in findings.get("candidate_assessments", [])}
+    by_id = {f["id"]: f for f in findings.get("findings", [])}
+    for candidate_id, shot_key in session.candidate_screenshots.items():
+        assessment = by_candidate.get(candidate_id)
+        if not assessment or assessment.get("verdict") != "confirmed":
+            continue
+        finding = by_id.get(assessment.get("finding_id"))
+        if finding is not None:
+            finding["screenshot"] = {"key": shot_key}
+    return findings
 
 
 def run_qa(payload: dict) -> dict:
@@ -694,12 +806,39 @@ def run_qa(payload: dict) -> dict:
         if authenticated is not False and not stop_reason.startswith("model call failed"):
             salvaged = _final_report(
                 bedrock, model, system, messages, budget, max_tokens_per_call,
-                stop_reason, pacer,
+                stop_reason, pacer, seen_candidates=session.seen_candidates,
             )
         findings = salvaged or {"overall": "FAIL", "pages_tested": 0, "findings": []}
         findings["incomplete"] = True
         findings["stop_reason"] = stop_reason
         findings["report_salvaged"] = salvaged is not None
+        if salvaged is not None:
+            # The salvage nudge demanded a verdict on every candidate seen; if
+            # the report still missed some, record what is owed so a partial
+            # report cannot read as a clean PASS over a signal the runtime
+            # measured.
+            missing = sorted(
+                set(session.seen_candidates)
+                - {a.get("candidate_id") for a in salvaged.get("candidate_assessments", [])}
+            )
+            if missing:
+                findings["unassessed_candidates"] = missing
+    else:
+        # Normal finalize: the report is in. The mandatory-verdict contract
+        # still binds -- candidates seen and not assessed make the run
+        # incomplete, not a pass. Gated on the auth probe: if the run never
+        # authenticated, every observation describes the login page and the
+        # findings are discarded below, so a retry would be spend on garbage.
+        if authenticated is not False:
+            findings = _ensure_candidate_assessments(
+                bedrock, model, system, messages, budget, max_tokens_per_call,
+                session.seen_candidates, findings, pacer,
+            )
+
+    # Deterministic evidence: the runtime's own capture of a confirmed candidate
+    # wins over whatever the model guessed. Done before presigning so the key
+    # gets its URL like every other screenshot.
+    findings = _attach_candidate_evidence(findings, session)
 
     keys = [s["key"] for s in session.screenshots]
     urls = _presign(keys, presign_expires)

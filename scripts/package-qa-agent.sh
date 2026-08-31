@@ -80,7 +80,7 @@ python3 -m pip install \
 # --- copy the agent itself ---
 # Flat layout: AgentCore runs `agent.py` from the zip root, so the sibling
 # modules sit beside it rather than in a package.
-for f in agent.py rubric.py schema.py browser_tools.py cdp.py; do
+for f in agent.py rubric.py schema.py browser_tools.py cdp.py candidates.py; do
   cp "${SRC}/${f}" "${BUILD}/"
 done
 

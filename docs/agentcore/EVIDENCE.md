@@ -28,12 +28,13 @@ the CDP idle-socket fix).
 | 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
-| 4 | False-positive rate | ✅ **1 false positive in 5 runs** on healthy code — and its cause is now fixed |
-| 5 | False-negative rate against seeded bugs | ❌ **0/3 at v13** — the repeated-empty-slot relaxation did not move it; see Results |
-| 6 | Two rungs benchmarked | ⛔ **NOT MEASURED** |
+| 4 | False-positive rate | ✅ **0 false positives on the healthy-`main` negative check** (33140664097) — and the candidate layer now turns the phantom into a refuted assessment, not a finding |
+| 5 | False-negative rate against seeded bugs | ⚠️ **1/3 at v2 (fifth pass)** — S-2 caught deterministically; S-1 (click-triggered, never provoked) and S-3 (model variance) still missed; see Results |
+| 6 | Two rungs benchmarked | ✅ **MEASURED** — haiku 0/3, sonnet caught the semantic seed; sonnet is now the default, haiku an explicit opt-in |
 
-**The headline is criterion 5, and it is not good news.** See below — it is also
-the most useful thing this exercise produced.
+**The headline is criterion 5, and it has finally moved.** See below — the
+deterministic candidate layer caught S-2, the miss that no model-rung or rubric
+change had moved across twelve earlier runs.
 
 ### Runs
 
@@ -157,16 +158,19 @@ A starter corpus file is at `agents/qa/harness/corpus.example.json`.
 
 ## Criterion 6 — benchmarking the two rungs
 
-The cheap rung is the default, so the question is whether it clears the bar, not
-which model is best. The reference implementation ran one round on a weaker rung
-and got findings stronger models never reproduced — they were agent noise, and
-noise costs human review time, which is the expensive resource.
+The quality rung is now the default, and that is a measured decision: the
+discriminator run showed the cheap rung cannot connect a pristine mechanical
+signal to a finding — haiku scored zero on a run where two real bugs were
+present — and the quiet-blank class this project exists to catch is exactly the
+one that needs a model that connects. The question is no longer "does the cheap
+rung clear the bar" but "does the quality rung clear it for the price". Haiku
+remains an explicit `--model` opt-in for cost-constrained runs.
 
 Run the **same PR** twice, changing only `--model`:
 
 ```
-global.anthropic.claude-haiku-4-5-20251001-v1:0   # cheap rung, the default
-global.anthropic.claude-sonnet-4-6                # quality rung
+global.anthropic.claude-sonnet-4-6                # quality rung, the default
+global.anthropic.claude-haiku-4-5-20251001-v1:0   # cheap rung, explicit opt-in
 ```
 
 Then:
@@ -429,6 +433,15 @@ slot and still does not, on pages it demonstrably reads. Two plausible causes
 remain, and the cheapest discriminator between them is one run on the quality
 rung (which criterion 6 needs anyway):
 
+> **[resolved]** The discriminator run settled both hypotheses at once. Hypothesis
+> 1 was real but not the whole story: sonnet caught the semantic seed (S-3) that
+> haiku missed, so rung matters — but sonnet ALSO missed S-2 on a pristine
+> harvest (a single `repeated_slots` svg-adjacent group, count 13), which rules
+> out hypothesis 2: the harvest surfaced the shape perfectly. The fix is neither
+> pure model choice nor another prompt edit, but a deterministic candidate layer
+> (agents/qa/agent/candidates.py) that makes the mechanical signal unskippable,
+> with the quality rung as the default.
+
 1. **The cheap rung cannot connect the input to the finding.** Haiku may read
    `empty_slots: [{"context": "...", "count": N}]` and not infer "a dropped
    field." Run the corpus once on `global.anthropic.claude-sonnet-4-6`. If it
@@ -486,12 +499,77 @@ in `innerText`-invisible SVG-adjacent markup, and the empty-slot harvest caps
 at 20 leaves per page. Model choice is necessary but not sufficient; the
 harvest is the remaining blocker for S-2's exact shape.
 
-**Next step (criterion 5, still open):** instrument the harness to log `_state`
-(the `values` + `empty_slots` a page read actually produced) for one run, and
-confirm whether the `/maintenance` health-circle blank appears in it. If it
-does not, fix the harvest to surface SVG-embedded value slots; if it does, the
-fix is in how the rubric asks the agent to weigh `empty_slots`. Also: F-001
-shows the relaxation now produces confident *false* positives on inferred
-semantics, so any further rubric work should tighten the "systematic blank is
-evidence" line against inferred expectations, not just loosen reporting.
+**Next step (criterion 5):** instrument the harness to log `_state` for one run,
+and confirm whether the `/maintenance` health-circle blank appears in it. **[done —
+see the fifth pass below; the harvest was not the blocker]**. The relaxation's
+false-positive finding (F-001 on `/sire`) is addressed in the same pass by the
+candidate layer's mandatory assessment, which refuted the same shape five times
+over on healthy pages.
+
+---
+
+### 2026-08-28 (fifth pass) — deterministic candidate layer + quality-rung default
+
+The discriminator run above left two facts on the table: sonnet catches the
+semantic seed haiku cannot, **and** sonnet still misses S-2 on a pristine harvest
+(a single `repeated_slots` svg-adjacent group, count 13). S-2 recall is therefore
+a *signal-design* problem, not a model-rung problem — the mechanical signal has to
+be unskippable, not merely present. The fix, shipped as runtime v2 (code
+`00b3n…`):
+
+- **`agents/qa/agent/candidates.py`** — deterministic detectors run at every page
+  read: `repeated_svg_empty` (an `svg-adjacent` group with count ≥ 2), `console_error`
+  (warnings excluded), `failed_request`. The runtime emits each candidate once per
+  `(type, url)` with an auto-captured screenshot.
+- **Mandatory assessment.** Every candidate the agent saw must appear in
+  `candidate_assessments` as `confirmed` (→ a real finding, cross-referenced by
+  `finding_id`) or `refuted` (one-line reason). One bounded retry if any are
+  missing; a still-missing candidate marks the run `incomplete`, never a clean PASS.
+- **`DEFAULT_MODEL = global.anthropic.claude-sonnet-4-6`** — the quality rung is the
+  default; haiku stays available as an explicit `--model` opt-in.
+
+**The corpus run (33140269258, `qa-corpus-1`, model blank → sonnet):**
+
+| Run | Model | Auth | Pages | Turns | S-1 | S-2 | S-3 | Findings |
+|---|---|---|---|---|---|---|---|---|
+| 33140269258 | sonnet | ✅ | 8 | 18 | ❌ | ✅ | ❌ | 1 (S-2) |
+
+Six candidates fired; **cand-2 confirmed → F-001 (`/maintenance`, HIGH)** — the
+S-2 blank ring on all 12 equipment cards, screenshot auto-attached. The other five
+were **refuted with correct reasons**: dashboard legend colour swatches, the CII
+chart's SVG container, Leaflet map anchor icons, the knowledge-chat input icon,
+and the analytics bar-chart canvases. No `incomplete`, no `unassessed_candidates`,
+no `stop_reason`. Cost: **~$0.18** (18 turns, 137 s session).
+
+**The negative check (33140664097, healthy `main`, sonnet) — PASS:**
+
+Seven candidates fired and **every one was refuted** — including 20 console errors
+correctly attributed to a browser extension (`chrome-extension://…`), which is the
+CII-phantom guard working as designed. One finding survived, the real "Captain
+Captain" greeting duplicate (MEDIUM, `/`). No false-positive spike. Cost: ~$0.15.
+
+**What this proves, and what it does not.** The deterministic layer closes the
+S-2 recall gap for good — a mechanical signal can no longer be read and ignored,
+because the runtime names it and the schema makes assessing it mandatory. But the
+corpus score is still 1/3 this run:
+
+- **S-1 missed — a coverage miss, not a detection miss.** The seed is
+  *click-triggered* ("voyage history tab crashes when clicked"); the agent read
+  `/voyage` but never performed the click, so the crash never fired — zero genuine
+  console errors and zero failed requests across the whole session. The
+  `console_error`/`failed_request` detectors are in place and would catch it the
+  moment it manifests; the agent just did not provoke it.
+- **S-3 missed — model variance.** Sonnet caught the semantic seed in the
+  discriminator run but not this one. Nothing in this pass makes S-3 deterministic;
+  it remains the model-driven member of the set.
+
+**Consequence for Phase 2.** The honest claim has improved materially: the QA agent
+now *reliably* catches the mechanical class (thrown exceptions, repeated blanks,
+failed requests) and reports zero false positives on healthy pages — the candidate
+layer turns the CII phantom into a refuted assessment instead of a reported
+finding. S-1 still needs an interaction-coverage nudge (click before reading), and
+S-3 remains model-dependent, before Phase 1 is "the agent catches every seed."
+Phase 2 can start on this basis — its first real target is the "Captain Captain"
+MEDIUM, which is a genuine, reproducible, trivially patchable defect that exercises
+the whole loop end to end.
 

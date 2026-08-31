@@ -13,7 +13,9 @@ wall-clock as cost.
 
 import json
 import logging
+import os
 
+import candidates
 from cdp import CDPError, CDPSession
 
 logger = logging.getLogger(__name__)
@@ -108,13 +110,29 @@ _HARVEST = r"""
     if ((el.textContent || '').trim()) continue;
     if (el.getAttribute('aria-hidden') === 'true') continue;
     if (el.closest('svg, img, button[disabled]')) continue;
+    // A decorative marker -- a badge dot, a separator, a status indicator --
+    // renders small but POSITIVE. A genuinely missing figure has NO laid-out
+    // box at all (an empty span is 0x0), so requiring a small positive size in
+    // both dimensions drops the dot while keeping the slot. Without this the
+    // status-badge dots aggregated into a text-kind repeated_slots group on
+    // every page, and the model was told that repetition is evidence -- which
+    // manufactured a phantom "empty column" finding from pure decoration.
+    if (el.offsetWidth > 0 && el.offsetWidth <= 8 && el.offsetHeight > 0 && el.offsetHeight <= 8) continue;
     // Climb for context rather than reading the immediate parent only. The
     // shape this exists to catch defeated the parent-only version: a score
     // rendered as <span/> inside a <div> holding an <svg> and nothing else, so
     // the PARENT's innerText is empty too and the slot was dropped -- by the
     // very filter meant to find it. Walk up until some ancestor has text.
-    let node = el.parentElement, ctx = '', hops = 0;
+    //
+    // Along the way, note whether the blank sits beside an <svg> -- a ring,
+    // chart or icon whose number/label slot renders nothing. That is a figure
+    // that arrived missing, and it is also the key that lets "the same blank
+    // in every item" aggregate even when each item's text differs (see
+    // repeated_slots below): the context-based dedup splits on the differing
+    // text, so without this kind the repetition stays invisible as count:1s.
+    let node = el.parentElement, ctx = '', hops = 0, svgAdjacent = false;
     while (node && hops < 4) {
+      if (!svgAdjacent && node.querySelector('svg')) svgAdjacent = true;
       const t = (node.innerText || '').trim().replace(/\s+/g, ' ');
       if (t) { ctx = t; break; }
       node = node.parentElement;
@@ -125,10 +143,23 @@ _HARVEST = r"""
     // Deduplicated with a count: "every card" is a stronger signal than one
     // card, and twenty copies of it would otherwise eat the whole cap.
     const hit = empty.find(e => e.context === key);
-    if (hit) { hit.count++; } else { empty.push({ context: key, count: 1 }); }
+    if (hit) { hit.count++; } else { empty.push({ context: key, count: 1, kind: svgAdjacent ? 'svg-adjacent' : 'text' }); }
   }
 
-  return { values: values, empty_slots: empty };
+  // Group the blanks by kind so a blank repeated across list items is visible
+  // even when each item's surrounding text differs. A kind with a count above
+  // 1 is the systematic-repetition signal: the same figure slot missing on
+  // every card, which is what a dropped list field looks like.
+  const byKind = {};
+  for (const e of empty) {
+    const k = e.kind;
+    byKind[k] = byKind[k] || { kind: k, count: 0, sample: [] };
+    byKind[k].count += e.count;
+    if (byKind[k].sample.length < 3) byKind[k].sample.push(e.context.slice(0, 80));
+  }
+  const repeated_slots = Object.values(byKind).filter(g => g.count >= 2);
+
+  return { values: values, empty_slots: empty, repeated_slots: repeated_slots };
 })()
 """ % (MAX_VALUES, MAX_EMPTY_SLOTS)
 
@@ -142,7 +173,8 @@ def tool_specs() -> list[dict]:
                 "description": (
                     "Navigate to a path on the target application, e.g. '/voyage'. "
                     "Waits for the network to settle. Returns the final URL and the "
-                    "page's visible text, plus any console errors or failed requests."
+                    "page's visible text, plus any console errors, failed requests, "
+                    "and `candidate_findings` the page mechanically triggered."
                 ),
                 "inputSchema": {
                     "json": {
@@ -163,7 +195,8 @@ def tool_specs() -> list[dict]:
                 "name": "read_page",
                 "description": (
                     "Read the current page without navigating: visible text, console "
-                    "errors since the last read, and failed network requests. Use "
+                    "errors since the last read, failed network requests, and any "
+                    "`candidate_findings` the page mechanically triggered. Use "
                     "this to check whether something actually rendered."
                 ),
                 "inputSchema": {"json": {"type": "object", "properties": {}}},
@@ -287,6 +320,14 @@ class BrowserSession:
         # going. A budget the model can decline is not a budget.
         self.max_routes = max_routes
         self.visited: list[str] = []
+        # Candidate-findings bookkeeping (candidates.py). The session owns the
+        # id space and the (type, url) dedup set: re-reading a buggy page must
+        # not spawn a new candidate for the same observation, or the rubric's
+        # mandatory-assessment contract becomes untractable.
+        self._candidate_counter = 0
+        self._seen_candidate_slots: set[tuple[str, str]] = set()
+        self.seen_candidates: dict[str, dict] = {}
+        self.candidate_screenshots: dict[str, str] = {}
 
     def attach(self, ws_url: str, headers: dict) -> None:
         self.cdp = CDPSession(ws_url, headers)
@@ -337,17 +378,69 @@ class BrowserSession:
         return {
             "values": got.get("values", []),
             "empty_slots": got.get("empty_slots", []),
+            "repeated_slots": got.get("repeated_slots", []),
         }
 
     def _state(self) -> dict:
         text = self.cdp.evaluate("document.body ? document.body.innerText : ''") or ""
-        return {
+        state = {
             "url": self.cdp.evaluate("location.href"),
             "text": text[:MAX_TEXT_CHARS],
             "text_truncated": len(text) > MAX_TEXT_CHARS,
             **self._harvest(),
             **self.cdp.drain_events(),
         }
+        # Deterministic candidates ride on every read. Always present (empty
+        # list on a clean page) -- the rubric promises the field and requires
+        # the model to assess every entry, so an absent key would be a broken
+        # contract rather than a missing signal.
+        state["candidate_findings"] = self._emit_candidates(state, candidates.detect(state))
+        # DIAGNOSTIC LOOK. When LOG_PAGE_STATE is set, every read emits the full
+        # page state -- including empty_slots, the structure innerText cannot
+        # carry. This is how a run's blindness is diagnosed: a QA agent that
+        # misses a blank score might be failing to SEE the blank, and that is
+        # visible here without re-running. Gated so it costs nothing in normal
+        # operation; 20k chars holds the entire state including the 6k text cap.
+        if os.environ.get("LOG_PAGE_STATE"):
+            logger.info("page state: %s", json.dumps(state, default=str)[:20000])
+        return state
+
+    def _emit_candidates(self, state: dict, detected: list[dict]) -> list[dict]:
+        """
+        Assign ids to newly-detected candidates and auto-capture a screenshot
+        for each.
+
+        Emitted once per (type, url): re-reading a buggy page must not spawn
+        cand-2 of the same observation, or the rubric's mandatory-assessment
+        contract becomes untractable and the bounded retry can never converge.
+        The id is the stable handle the report uses to reference a candidate.
+
+        The auto-captured bytes go to S3 only, never back to the model --
+        matching screenshot()'s existing contract (it knows what it just looked
+        at). A capture failure must not kill the read, so it is guarded here:
+        screenshot() is not itself exception-guarded the way dispatch() is.
+        """
+        url = state.get("url", "")
+        emitted: list[dict] = []
+        for c in detected:
+            slot = (c["type"], url)
+            if slot in self._seen_candidate_slots:
+                continue
+            self._seen_candidate_slots.add(slot)
+            self._candidate_counter += 1
+            cid = f"cand-{self._candidate_counter}"
+            self.seen_candidates[cid] = {
+                "type": c["type"],
+                "count": c["count"],
+                "evidence": c["evidence"],
+            }
+            emitted.append({**c, "id": cid})
+            try:
+                shot = self.screenshot(f"candidate-{cid}")
+                self.candidate_screenshots[cid] = shot.get("key")
+            except Exception:  # noqa: BLE001
+                logger.warning("candidate screenshot failed for %s", cid, exc_info=True)
+        return emitted
 
     # --- tool implementations ---
 

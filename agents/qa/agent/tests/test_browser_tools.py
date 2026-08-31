@@ -173,6 +173,10 @@ def test_state_includes_console_errors_and_failed_requests():
     state = session.read_page()
     assert state["console_errors"]
     assert state["failed_requests"]
+    # The same events must have fired deterministic candidates -- this is the
+    # whole point of the layer: the model is required to assess them.
+    cands = state["candidate_findings"]
+    assert {c["type"] for c in cands} == {"console_error", "failed_request"}
 
 
 def test_long_text_is_truncated_with_a_flag():
@@ -181,6 +185,36 @@ def test_long_text_is_truncated_with_a_flag():
     state = session.read_page()
     assert len(state["text"]) == browser_tools.MAX_TEXT_CHARS
     assert state["text_truncated"] is True
+
+
+def test_harvest_forwards_repeated_slots_and_kind():
+    """
+    The JS computes the repeated_slots rollup; the Python wrapper must forward
+    it. Dropping it is exactly the bug that cost a corpus run: the model saw
+    twelve svg-adjacent blanks (kind passed through) but never the aggregate
+    count that makes repetition evidence, so each still read as a lone hint.
+    """
+    fake = FakeCDP(eval_results={
+        "document.querySelectorAll": {
+            "values": [{"label": "Speed", "value": "12", "kind": "input"}],
+            "empty_slots": [
+                {"context": "Main Engine MAN Energy Solutions", "count": 1, "kind": "svg-adjacent"},
+                {"context": "Turbocharger #1 MAN Energy Solutions", "count": 1, "kind": "svg-adjacent"},
+            ],
+            "repeated_slots": [
+                {"kind": "svg-adjacent", "count": 2, "sample": ["Main Engine…", "Turbocharger…"]}
+            ],
+        }
+    })
+    session, _ = _session(fake)
+    got = session._harvest()
+    assert got["repeated_slots"] == [
+        {"kind": "svg-adjacent", "count": 2, "sample": ["Main Engine…", "Turbocharger…"]}
+    ]
+    assert got["empty_slots"][0]["kind"] == "svg-adjacent"
+    assert got["values"][0]["value"] == "12"
+    # And the model-facing read carries it, not just the internal helper.
+    assert session.read_page()["repeated_slots"][0]["count"] == 2
 
 
 class TestDispatch:
@@ -391,6 +425,20 @@ class TestStructuralRead:
         """"Every card" is a stronger signal than one card, and cheaper."""
         assert "e.context === key" in browser_tools._HARVEST
 
+    def test_decorative_dots_are_not_empty_slots(self):
+        """
+        The CII phantom's mechanism: a 5x5 badge dot renders small but POSITIVE,
+        so it passed the empty-leaf filter and aggregated into a text-kind
+        repeated_slots group that the rubric then called evidence -- and the
+        model reported a column as blank that was not. A genuinely missing
+        figure has no laid-out box at all (an empty span is 0x0), so requiring
+        a small positive size in BOTH dimensions drops the dot and keeps the
+        slot.
+        """
+        assert "el.offsetWidth > 0" in browser_tools._HARVEST
+        assert "el.offsetHeight > 0" in browser_tools._HARVEST
+        assert "<= 8" in browser_tools._HARVEST
+
     def test_the_harvest_is_capped(self):
         """It rides on every read; page content is the dominant input cost."""
         assert browser_tools.MAX_VALUES <= 50
@@ -399,3 +447,81 @@ class TestStructuralRead:
 
     def test_passwords_are_never_harvested(self):
         assert "el.type === 'password'" in browser_tools._HARVEST
+
+
+class TestCandidateFindings:
+    """
+    The deterministic-candidate layer. The discriminator run proved the model
+    rung is not the S-2 bottleneck -- sonnet saw the pristine repeated_svg_empty
+    signal and still reported nothing -- so the runtime now emits the mechanical
+    signals itself and REQUIRES the model to assess each one. These pin the
+    session-side bookkeeping: ids, (type, url) dedup, and the auto-captured
+    screenshot that becomes the confirmed finding's evidence.
+    """
+
+    _SVG_HARVEST = {
+        "repeated_slots": [
+            {"kind": "svg-adjacent", "count": 13,
+             "sample": ["Main Engine…", "Turbocharger…", "Shaft Generator…"]}
+        ]
+    }
+
+    def test_repeated_svg_empty_fires_a_candidate(self):
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        cands = session.read_page()["candidate_findings"]
+        assert len(cands) == 1
+        assert cands[0]["type"] == "repeated_svg_empty"
+        assert cands[0]["count"] == 13
+        assert cands[0]["id"] == "cand-1"
+
+    def test_candidate_findings_are_deduplicated_per_url(self):
+        """
+        Re-reading a buggy page must not spawn cand-2 of the same observation,
+        or the mandatory-assessment contract becomes untractable and the bounded
+        retry can never converge.
+        """
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        assert session.read_page()["candidate_findings"][0]["id"] == "cand-1"
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_candidate_screenshot_is_captured_once(self):
+        """Evidence for the confirmed finding, deterministically attached later."""
+        fake = FakeCDP(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, labels = _session(fake)
+        session.read_page()
+        assert labels == ["candidate-cand-1"]
+        assert session.candidate_screenshots["cand-1"] == "screenshots/candidate-cand-1.png"
+        session.read_page()
+        assert labels == ["candidate-cand-1"]  # not captured again
+
+    def test_clean_page_has_an_empty_candidate_list(self):
+        """
+        The field is ALWAYS present -- the rubric requires the model to assess
+        every entry, so an absent key would be a broken contract on the page
+        where nothing fired.
+        """
+        session, _ = _session(FakeCDP())
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_warning_console_errors_do_not_fire_a_candidate(self):
+        """Warnings are decoration noise; never ask the model to explain them."""
+        fake = FakeCDP()
+        fake.events = {"console_errors": ["warning: manifest icon failed"], "failed_requests": []}
+        session, _ = _session(fake)
+        assert session.read_page()["candidate_findings"] == []
+
+    def test_candidate_screenshot_failure_does_not_kill_the_read(self):
+        """A CDP failure mid-_state is data for the read, not a crash for it."""
+        class ScreenshotBroken(FakeCDP):
+            def send(self, method, params=None, timeout=None):
+                if method == "Page.captureScreenshot":
+                    raise CDPError("target crashed")
+                return super().send(method, params, timeout)
+
+        fake = ScreenshotBroken(eval_results={"document.querySelectorAll": self._SVG_HARVEST})
+        session, _ = _session(fake)
+        state = session.read_page()
+        assert state["candidate_findings"][0]["type"] == "repeated_svg_empty"
+        assert session.candidate_screenshots == {}

@@ -45,7 +45,7 @@ enable_manual_approval = false
 #   AWS_PROFILE=pipelineguard ./scripts/package-qa-agent.sh
 #   ./scripts/apply-dev.sh
 qa_agent_code_key        = "agent/qa-agent-dev.zip"
-qa_agent_code_version_id = "00b3n__LCU6ITJSb2oOv5FCcGYfFQw3."
+qa_agent_code_version_id = "GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX"
 
 # --- Phase 2 bug-fix agent ---
 #

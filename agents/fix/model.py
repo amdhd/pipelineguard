@@ -49,7 +49,15 @@ DEFAULT_MODEL = "global.anthropic.claude-sonnet-4-6"
 # this is roughly four full-context findings plus their outputs.
 DEFAULT_TOKEN_BUDGET = 120_000
 
-_FENCE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+# ANY info string, not just `json`. The QA agent's pattern only recognises
+# ```json, which is fine for an agent that reports what it saw and never writes
+# code. A CODE-FIXING agent emits ```tsx and ```ts constantly, and an
+# unrecognised opener does not simply fail to match -- it desynchronises the
+# pairing, so the regex pairs a CLOSING fence with the next OPENING one and
+# captures the prose between two code blocks. Observed on run 33408195295: the
+# model explained the bug in a ```tsx block, and "last fence wins" selected its
+# explanation instead of its answer.
+_FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
 
 
 class BudgetExhausted(Exception):
@@ -111,25 +119,59 @@ def extract_json(text: str) -> dict:
     """
     Parse the model's message as the response object.
 
-    Same treatment as the QA agent's `_extract_json`, and the reasoning
-    transfers verbatim: a ```json fence is an explicit, self-delimiting payload
-    the model chose to mark, so reading it is not inference -- while narration
-    outside the fence is DISCARDED, never parsed. The last fence wins; an
-    earlier one is usually the model quoting the schema back to itself.
+    A fenced block is an explicit, self-delimiting payload the model chose to
+    mark, so reading it is not inference -- while narration outside a fence is
+    DISCARDED, never parsed. That much carries over from the QA agent.
+
+    WHAT DOES NOT CARRY OVER IS "THE LAST FENCE WINS". That heuristic assumes
+    the model emits at most one fenced block, which holds for an agent that
+    reports observations and fails immediately for one that writes code: this
+    model quotes the buggy source in a ```tsx block to explain itself, so the
+    last fence is routinely its reasoning rather than its answer.
+
+    So EVERY fence is a candidate, tried newest-first, and the first one that
+    parses as an object carrying "edits" wins. That is still not inference --
+    each candidate is a block the model delimited itself; the only change is
+    that a wrong guess about WHICH block no longer discards a correct answer.
+
+    A parsed object WITHOUT "edits" is kept as a fallback so schema validation
+    can produce its own precise complaint ("missing required key") rather than
+    this function reporting the less useful "no JSON found".
     """
     fences = _FENCE.findall(text)
-    candidate = fences[-1].strip() if fences else text.strip()
+    # Bare text last: a model that skipped the fence entirely is still readable,
+    # and this costs nothing when the fences already parsed.
+    candidates = [c.strip() for c in reversed(fences)] + [text.strip()]
 
-    if not candidate:
+    if not any(candidates):
         raise fix_schema.FixSchemaError("model returned no text at all")
 
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError as e:
-        raise fix_schema.FixSchemaError(
-            f"model output is not valid JSON: {e}. Received {len(text)} chars, "
-            f"{len(fences)} fenced block(s); candidate starts: {candidate[:300]!r}"
-        ) from e
+    fallback = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and "edits" in parsed:
+            return parsed
+        if isinstance(parsed, dict) and fallback is None:
+            fallback = parsed
+
+    if fallback is not None:
+        return fallback
+
+    error = fix_schema.FixSchemaError(
+        f"no fenced block parsed as the response object. Received {len(text)} "
+        f"chars in {len(fences)} fenced block(s); newest block starts: "
+        f"{candidates[0][:300]!r}"
+    )
+    # The full text, so a failure is diagnosable from the run artefact instead
+    # of by paying for the call again. Run 33408195295 cost $0.09 and left
+    # nothing behind but a 300-character excerpt.
+    error.raw = text
+    raise error
 
 
 def propose(

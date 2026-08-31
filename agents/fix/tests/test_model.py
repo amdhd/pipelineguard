@@ -115,7 +115,7 @@ class TestExtraction:
         narrated, returned nothing, or was cut off mid-JSON -- and those need
         three different fixes.
         """
-        with pytest.raises(fix_schema.FixSchemaError, match="candidate starts"):
+        with pytest.raises(fix_schema.FixSchemaError, match="newest block starts"):
             fix_model.extract_json("I have decided not to answer.")
 
 
@@ -243,3 +243,103 @@ class TestPrompt:
             [{"path": "frontend/src/App.tsx", "text": "x"}],
         )
         assert "F-9" in built and "greeting is duplicated" in built
+
+
+class TestFenceExtractionAgainstTheRealFailure:
+    """
+    Run 33408195295, the first real fix-agent call. It cost $0.09 and produced
+    nothing, because the extractor inherited "the last fence wins" from the QA
+    agent -- a heuristic that assumes at most ONE fenced block.
+
+    That assumption holds for an agent reporting what it saw in a browser. It
+    fails immediately for one that writes code: this model quotes the buggy JSX
+    in a ```tsx block to explain itself, and an unrecognised opener does not
+    merely fail to match -- it desynchronises the pairing, so the regex pairs a
+    CLOSING fence with the next OPENING one and captures the prose between two
+    code blocks.
+    """
+
+    def _reply(self):
+        """The shape the real reply had: a code fence, prose, then the answer."""
+        return (
+            "The dashboard renders:\n\n"
+            "```tsx\n"
+            "<h1>{greeting}, Captain {firstName}</h1>\n"
+            "```\n"
+            'Which produces "Good morning, Captain Captain".\n\n'
+            'The fix is to use the full name and remove the hard-coded prefix.\n\n'
+            "```json\n" + json.dumps(VALID) + "\n```"
+        )
+
+    def test_the_answer_is_found_past_a_code_fence(self):
+        out = fix_model.extract_json(self._reply())
+        assert out["edits"][0]["file"] == "frontend/src/App.tsx"
+
+    def test_the_old_last_fence_heuristic_would_have_failed_here(self):
+        """
+        Pins the regression. Under the old pattern the selected candidate was
+        prose beginning "Which produces", which is not JSON.
+        """
+        import re
+
+        old_pattern = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+        old_candidate = old_pattern.findall(self._reply())[-1].strip()
+        assert old_candidate.startswith("Which produces")
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(old_candidate)
+
+    def test_a_json_block_before_a_code_block_is_still_found(self):
+        """Order must not matter -- newest-first is a preference, not a rule."""
+        reply = (
+            "```json\n" + json.dumps(VALID) + "\n```\n"
+            "For reference the current code is:\n\n"
+            "```tsx\nconst x = 1;\n```"
+        )
+        assert fix_model.extract_json(reply)["edits"]
+
+    def test_a_block_without_edits_is_not_mistaken_for_the_answer(self):
+        """
+        A model that quotes a package.json fragment must not have it read as the
+        response. The real answer wins even though it is not the newest block.
+        """
+        reply = (
+            "```json\n" + json.dumps(VALID) + "\n```\n"
+            "context:\n```json\n{\"name\": \"vesselai\"}\n```"
+        )
+        assert fix_model.extract_json(reply)["edits"]
+
+    def test_a_dict_without_edits_falls_through_to_schema_validation(self):
+        """
+        Better a precise "missing required key 'edits'" from the schema than a
+        vague "no JSON found" from the parser -- they need different fixes.
+        """
+        parsed = fix_model.extract_json('```json\n{"skipped": []}\n```')
+        with pytest.raises(fix_schema.FixSchemaError, match="edits"):
+            fix_schema.validate(parsed)
+
+    def test_the_raw_text_is_attached_for_diagnosis(self):
+        """
+        A failed call has already been paid for. Throwing the evidence away
+        means paying again to learn why.
+        """
+        with pytest.raises(fix_schema.FixSchemaError) as excinfo:
+            fix_model.extract_json("```tsx\nconst x = 1;\n```\nno answer here")
+        assert "const x = 1" in getattr(excinfo.value, "raw", "")
+
+    def test_prose_alone_still_fails_loudly(self):
+        with pytest.raises(fix_schema.FixSchemaError, match="no fenced block parsed"):
+            fix_model.extract_json("I have decided not to answer.")
+
+
+class TestPromptForbidsExtraFences:
+    def test_the_prompt_asks_for_exactly_one_fenced_block(self):
+        """
+        Belt and braces with the parser fix. The repo's own reasoning says a
+        prompt-only rule makes a gate flaky, so the parser tolerates extra
+        fences AND the prompt asks for none.
+        """
+        assert "EXACTLY ONE FENCED BLOCK" in fix_prompt.SYSTEM
+        assert "```tsx" in fix_prompt.SYSTEM
+
+    def test_explanation_is_routed_to_rationale_not_prose(self):
+        assert '"rationale" field, where it is read' in fix_prompt.SYSTEM

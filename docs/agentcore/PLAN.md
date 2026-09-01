@@ -1173,8 +1173,51 @@ data, round N+1 is not testing a clean seed. Either restart the stack between
 rounds (costs the rebuild) or restrict the rubric to read-only exploration.
 Decide explicitly rather than discovering it as a flaky finding.
 
+**[decided]** **Restart the stack every round**, and take the rebuild. The
+choice is not really between the two options above, because the loop already
+takes both: the rubric's interaction pass has forbidden writes since the sixth
+pass ("one database backs everything you do afterwards"), and a round exists to
+test PATCHED SOURCE, which needs a rebuild whatever the database is doing. So
+the "keep the stack up" optimisation above is declined — it saves nothing on the
+rounds that matter and costs a comparability argument on every one of them.
+Each round gets a fresh seed, and the findings stay comparable, which is the
+thing the whole convergence check rests on.
+
 Post a reconciliation table on the final round: a per-finding ledger of what was
 fixed, what was by-design, and what was agent noise.
+
+**[decided]** The ledger reports **what happened**, and refuses to report what
+it cannot know. Fixed / patched-without-effect / not-reproduced / outstanding /
+introduced are all observable from the two artefacts a round leaves behind.
+By-design and agent-noise are human judgements in score.py's vocabulary, so they
+appear as a label column that reads "needs a human" until one writes there —
+score.py's rule ("an unlabelled finding is counted as unlabelled, never as
+correct") applied to a table that would otherwise be marking the agent's
+homework.
+
+### Two states the convergence rule needs that the rule above does not name
+
+**[decided]** Both were found while implementing it, and both are refinements of
+"identical or growing → stall" rather than departures from it.
+
+`REGRESSED` — **a blocking finding present this round and absent last round
+stops the loop, whatever happened to the count.** The rule as stated is about
+the SIZE of the set, and size cannot see a fix that trades one defect for
+another: `{A, B, C} → {A, D}` is smaller, so a size-only reading calls it
+progress and pays for another round while the agent's own patch has just
+introduced D. Where the plan says stall, this still stalls — a set that grew
+necessarily contains something new — but the two want different things from the
+reader, since a stall means the agent cannot fix this and a regression means the
+branch it produced should be treated with suspicion.
+
+`INCONCLUSIVE` — **a round carrying `error` or `incomplete` is never compared
+and never passes.** This is the failure this repo has already been bitten by
+once, made worse by being repeated: a run that died returns an empty findings
+list, which is byte-for-byte what a healthy application returns. In a single run
+that is a PASS nobody should trust (report.py says so under `unauthenticated`).
+In a loop it is worse, because the truncated round's smaller finding set also
+reads as *convergence on the way in* — so a run that broke halfway would report
+progress and then a clean bill of health.
 
 **Cost warning:** this phase multiplies spend by the round count. **[revised]**
 Under the EKS design each round also held a $0.37/hr cluster open, which made
@@ -1330,4 +1373,18 @@ something to discover you are blocked on at step 5.
     PRs* —
 
 **Phase 3 — convergence**
-19. `feat(ci): convergence-based retry loop behind a separate label gate`
+
+**[revised]** One commit became two, for the ordering reason that has now
+applied three times in this plan: the thing that gets referenced must exist
+before the thing that references it. `agent-fix.yml` pins `PIPELINEGUARD_REF` to
+a **main SHA** deliberately — a workflow that writes source and pushes branches
+must not track a moving ref — so a loop workflow in vesselAI cannot pin a
+convergence layer that has not been merged here yet. Package first, merge, then
+pin. The same shape as commits 6–9.
+
+19. `feat(agent): convergence layer — the stopping rule and its ledger`
+    *(PipelineGuard)* — `agents/converge/`, plus the fix harness's token block
+    that the cumulative budget cannot be enforced without
+20. `feat(ci): convergence-based retry loop behind a separate label gate`
+    *(vesselAI)* — pinned to 19's merge commit, gated on a label of its own, off
+    by default

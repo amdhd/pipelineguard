@@ -114,11 +114,18 @@ def run(args) -> int:
     root = Path(args.repo).resolve()
     findings, observed = _load_findings(Path(args.findings))
 
+    # Created BEFORE the staleness check so that every exit from this function
+    # reports token usage, including the ones that spent nothing. Phase 3's
+    # cumulative budget cannot tell "no tokens" from "no answer" unless the zero
+    # is written down, and it stops the loop when it cannot tell.
+    budget = fix_model.Budget(args.token_budget)
+
     stale = staleness(observed, _head_commit(root))
     if stale and not args.allow_stale_findings:
         result = {
             "applied": [], "excluded": [], "errors": [stale],
             "skipped": [{"finding_id": f.get("id", "?"), "reason": stale} for f in findings],
+            "budget": fix_summary.budget_block(budget, args.model),
         }
         rendered = fix_summary.render(result, model=args.model)
         if args.summary_out:
@@ -141,7 +148,6 @@ def run(args) -> int:
     # would make a run's coverage depend on a number nobody was shown.
     attempted, deferred = findings[: args.max_findings], findings[args.max_findings :]
 
-    budget = fix_model.Budget(args.token_budget)
     bedrock = None if args.dry_run else fix_model.client(args.region)
 
     result: dict = {"applied": [], "skipped": [], "excluded": [], "errors": []}
@@ -231,6 +237,8 @@ def run(args) -> int:
                     "rationale": rationale,
                 }
             )
+
+    result["budget"] = fix_summary.budget_block(budget, args.model)
 
     rendered = fix_summary.render(result, budget=budget, model=args.model)
     if args.summary_out:

@@ -1,0 +1,319 @@
+"""
+The stopping rule, exhaustively.
+
+This is the part of Phase 3 that can spend money without anyone watching, and
+every one of its states is reachable only through a sequence of expensive runs.
+So the sequences are constructed here instead: a round is a dict, and the whole
+decision surface is exercised for the price of a unit test.
+"""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import convergence as conv  # noqa: E402
+from rounds import A, B, C, LOW, PRICES, finding, fix, qa, rnd  # noqa: E402
+
+
+class TestRoundRecord:
+    def test_only_blocking_severities_drive_the_comparison(self):
+        """
+        The loop's goal is "zero BLOCKING findings", not "zero findings". A LOW
+        that nobody intends to fix would otherwise stall every run forever: it
+        never resolves, so the set never shrinks.
+        """
+        r = rnd(1, [A, LOW])
+        assert len(r["findings"]) == 2
+        assert len(r["blocking"]) == 1
+
+    def test_patches_are_attributed_to_fingerprints_at_record_time(self):
+        """
+        `applied[].finding_id` is F-001 -- a per-run id that means nothing in any
+        other round. Resolving it while both artefacts are in hand is what lets
+        the ledger say "patched in round 2, gone in round 3".
+        """
+        r = rnd(1, [A, C], fix(applied=["F-001"]))
+        assert r["patched"] == [conv.schema.finding_fingerprint(A)]
+
+    def test_a_patch_naming_an_unknown_finding_is_not_attributed(self):
+        """A stale fix result must not credit a round it did not run against."""
+        assert rnd(1, [A], fix(applied=["F-099"]))["patched"] == []
+
+    def test_a_failed_round_is_flagged_rather_than_folded_in(self):
+        r = rnd(1, [], error="runtime_unavailable")
+        assert r["error"] == "runtime_unavailable"
+
+    def test_the_fix_half_is_priced_from_the_same_table_as_the_qa_half(self):
+        """
+        The fix result carries units and a model name; dollars are computed here.
+        Two programs converting units to money independently is how the two
+        disagree.
+        """
+        r = rnd(1, [A], fix(spent=1_000_000))
+        assert r["meters"]["fix_usd"] == pytest.approx(1.0)
+
+    def test_a_fix_that_never_ran_is_not_an_unpriced_fix(self):
+        r = rnd(1, [A])
+        assert r["meters"]["fix_calls"] == 0
+        assert r["meters"]["fix_usd"] is None
+        assert r["meters"]["fix_tokens_known"] is True
+
+
+class TestTheGoal:
+    def test_zero_blocking_findings_is_a_pass(self):
+        assert conv.decide([rnd(1, [])]).state == conv.PASS
+
+    def test_a_pass_may_still_carry_non_blocking_findings(self):
+        """
+        A LOW is a note for a human, not a reason to pay for another round.
+        """
+        d = conv.decide([rnd(1, [LOW])])
+        assert d.state == conv.PASS
+        assert d.ok is True
+
+    def test_pass_is_the_only_successful_stop(self):
+        for state in (conv.STALL, conv.REGRESSED, conv.MAX_ROUNDS, conv.INCONCLUSIVE):
+            assert conv.succeeded(state) is False
+        assert conv.succeeded(conv.PASS) is True
+
+    def test_every_state_but_continue_stops_the_loop(self):
+        assert conv.stops(conv.CONTINUE) is False
+        for state in (
+            conv.PASS, conv.STALL, conv.REGRESSED, conv.INCONCLUSIVE,
+            conv.MAX_ROUNDS, conv.TOKEN_BUDGET, conv.WALL_CLOCK, conv.ROUND_TIMEOUT,
+        ):
+            assert conv.stops(state) is True
+
+
+class TestTheComparison:
+    def test_the_first_round_has_nothing_to_compare_against(self):
+        d = conv.decide([rnd(1, [A, B])])
+        assert d.state == conv.CONTINUE
+        assert "nothing to compare" in d.reason
+
+    def test_a_shrinking_set_continues(self):
+        rounds = [rnd(1, [A, B], fix(applied=["F-002"])), rnd(2, [A])]
+        assert conv.decide(rounds).state == conv.CONTINUE
+
+    def test_an_identical_set_stalls(self):
+        rounds = [rnd(1, [A, B], fix(applied=["F-001"])), rnd(2, [A, B])]
+        d = conv.decide(rounds)
+        assert d.state == conv.STALL
+        assert "same 2 blocking finding(s)" in d.reason
+
+    def test_a_growing_set_is_a_regression_not_a_stall(self):
+        """
+        PLAN.md says "identical or growing -> stall". A set that GREW contains
+        something that was not there before, and naming that separately is what
+        tells the reader to look at the diff rather than at the findings.
+        """
+        rounds = [rnd(1, [A]), rnd(2, [A, C])]
+        assert conv.decide(rounds).state == conv.REGRESSED
+
+    def test_a_set_that_shrank_while_gaining_a_member_is_a_regression(self):
+        """
+        THE REFINEMENT, and the reason it exists.
+
+        {A, B, C} -> {A, D} is smaller, so a size-only reading of the plan's rule
+        calls it progress and pays for another round -- while the fix agent has
+        just traded two defects for a new one it introduced. Size cannot see
+        that; the set can.
+        """
+        D = finding("/analytics", "CRITICAL", "chart crashes on range change", "F-009")
+        rounds = [rnd(1, [A, B, C]), rnd(2, [A, D])]
+        d = conv.decide(rounds)
+        assert d.state == conv.REGRESSED
+        assert "the patch is the suspect" in d.reason
+
+    def test_a_finding_keeps_its_identity_when_its_run_id_changes(self):
+        """
+        The same defect is F-002 in one round and F-001 in the next. If identity
+        moved with the id, every round would look like a complete turnover:
+        everything "resolved", everything "new", and the loop would report a
+        regression on a run where nothing changed.
+        """
+        renumbered = {**B, "id": "F-001"}
+        rounds = [rnd(1, [A, B]), rnd(2, [A, renumbered])]
+        assert conv.decide(rounds).state == conv.STALL
+
+    def test_a_severity_change_is_a_different_finding(self):
+        """
+        Documenting a real consequence of the fingerprint rather than asserting
+        a preference: severity is part of the identity, so a HIGH that comes back
+        as a CRITICAL reads as one resolved and one introduced. That is the safe
+        direction -- it stops the loop and shows a human both rows.
+        """
+        escalated = {**A, "severity": "CRITICAL"}
+        rounds = [rnd(1, [A]), rnd(2, [escalated])]
+        assert conv.decide(rounds).state == conv.REGRESSED
+
+
+class TestAnIncompleteRoundProvesNothing:
+    def test_a_failed_round_is_inconclusive(self):
+        rounds = [rnd(1, [A, B]), rnd(2, [], error="runtime_unavailable")]
+        d = conv.decide(rounds)
+        assert d.state == conv.INCONCLUSIVE
+        assert "runtime_unavailable" in d.reason
+
+    def test_a_failed_round_reporting_nothing_is_never_a_pass(self):
+        """
+        The failure this state exists for. A run that died returns an empty
+        findings list, which is byte-for-byte what a healthy application returns
+        -- so without this check the loop would end on a green PASS produced by
+        an agent that never reached the app. report.py's `unauthenticated` hint
+        makes the same point about a single run; across rounds it is worse,
+        because the empty set also reads as convergence on the way in.
+        """
+        rounds = [rnd(1, [A, B]), rnd(2, [], error="unauthenticated")]
+        d = conv.decide(rounds)
+        assert d.state != conv.PASS
+        assert d.ok is False
+
+    def test_a_truncated_round_is_inconclusive_even_though_its_set_shrank(self):
+        rounds = [rnd(1, [A, B]), rnd(2, [A], incomplete=True, stop_reason="wall clock")]
+        d = conv.decide(rounds)
+        assert d.state == conv.INCONCLUSIVE
+        assert "wall clock" in d.reason
+
+    def test_a_truncated_round_with_no_findings_is_not_a_pass(self):
+        rounds = [rnd(1, [A]), rnd(2, [], incomplete=True)]
+        assert conv.decide(rounds).state == conv.INCONCLUSIVE
+
+
+class TestBackstops:
+    def test_the_hard_round_cap_stops_a_run_that_is_still_progressing(self):
+        rounds = [rnd(1, [A, B, C]), rnd(2, [A, B]), rnd(3, [A])]
+        d = conv.decide(rounds, {"max_rounds": 3})
+        assert d.state == conv.MAX_ROUNDS
+        assert "still shrinking" in d.reason
+
+    def test_the_cumulative_token_budget_stops_the_next_round(self):
+        rounds = [rnd(1, [A, B], fix(spent=60_000), tokens=50_000), rnd(2, [A], tokens=50_000)]
+        d = conv.decide(rounds, {"token_budget": 100_000})
+        assert d.state == conv.TOKEN_BUDGET
+        assert "160,000 tokens" in d.reason
+
+    def test_the_cumulative_wall_clock_stops_the_next_round(self):
+        rounds = [rnd(1, [A, B], seconds=400), rnd(2, [A], seconds=400)]
+        assert conv.decide(rounds, {"wall_clock_seconds": 600}).state == conv.WALL_CLOCK
+
+    def test_a_round_that_overran_does_not_start_another(self):
+        rounds = [rnd(1, [A, B], seconds=100), rnd(2, [A], seconds=9000)]
+        d = conv.decide(rounds, {"round_timeout_seconds": 1500})
+        assert d.state == conv.ROUND_TIMEOUT
+        assert "9000s" in d.reason
+
+    def test_an_unenforceable_token_budget_stops_the_loop(self):
+        """
+        PLAN.md 1d: a budget checked against a number you do not have is not a
+        budget. A fix run that reported no usage leaves the cumulative total a
+        floor, so the loop stops rather than continuing on the arithmetic it
+        cannot do.
+        """
+        rounds = [rnd(1, [A, B], fix(applied=["F-001"], budget=False)), rnd(2, [A])]
+        d = conv.decide(rounds, {"token_budget": 10_000_000})
+        assert d.state == conv.TOKEN_BUDGET
+        assert "floor, not a count" in d.reason
+
+    def test_a_backstop_never_overturns_a_pass(self):
+        """
+        A run that converged on its third round converged. Reporting MAX_ROUNDS
+        there would describe a success as a cap breach.
+        """
+        rounds = [rnd(1, [A, B], seconds=9000), rnd(2, [A], seconds=9000), rnd(3, [], seconds=9000)]
+        d = conv.decide(rounds, {"max_rounds": 3, "wall_clock_seconds": 60})
+        assert d.state == conv.PASS
+
+    def test_a_backstop_never_hides_a_stall(self):
+        """
+        The stall is the actionable fact -- it names the findings the agent
+        cannot fix. TOKEN_BUDGET would send the reader to raise a cap instead.
+        """
+        rounds = [rnd(1, [A, B], tokens=999_999), rnd(2, [A, B], tokens=999_999)]
+        d = conv.decide(rounds, {"token_budget": 1000})
+        assert d.state == conv.STALL
+
+    def test_defaults_apply_when_no_budgets_are_given(self):
+        rounds = [rnd(1, [A, B, C]), rnd(2, [A, B]), rnd(3, [A])]
+        assert conv.decide(rounds).state == conv.MAX_ROUNDS
+
+    def test_no_rounds_is_a_programming_error_not_a_verdict(self):
+        with pytest.raises(ValueError):
+            conv.decide([])
+
+
+class TestTotals:
+    def test_tokens_sum_across_both_halves_of_every_round(self):
+        rounds = [rnd(1, [A], fix(spent=1000), tokens=5000), rnd(2, [A], fix(spent=2000), tokens=6000)]
+        assert conv.totals(rounds)["tokens"] == 14_000
+
+    def test_one_unpriced_meter_makes_the_whole_total_unpriced(self):
+        """
+        pricing.py's rule, applied to a sum: a dollar total covering two rounds
+        out of three reads as the cost of the run. Units stay exact.
+        """
+        priced = rnd(1, [A], tokens=1000)
+        unpriced = conv.round_record(
+            2, qa([A], tokens=1000), None, seconds=60, prices={"models": {}, "compute": PRICES["compute"]}
+        )
+        agg = conv.totals([priced, unpriced])
+        assert agg["usd"] is None
+        assert agg["tokens"] == 2000
+
+    def test_a_missing_fix_budget_is_recorded_as_unknown_not_zero(self):
+        agg = conv.totals([rnd(1, [A], fix(applied=["F-001"], budget=False))])
+        assert agg["tokens_known"] is False
+        assert agg["unknown_fix_token_rounds"] == 1
+
+
+class TestReconciliation:
+    def test_a_patched_finding_that_went_away_is_fixed(self):
+        rounds = [rnd(1, [A, B], fix(applied=["F-002"])), rnd(2, [A])]
+        rows = {r["summary"]: r for r in conv.reconcile(rounds)}
+        assert rows[B["summary"]]["outcome"] == conv.FIXED
+        assert rows[B["summary"]]["patched_in"] == [1]
+
+    def test_a_patched_finding_that_stayed_says_so(self):
+        """
+        The most useful row in the table: the patch compiled, passed the suite,
+        and did not fix the defect -- which usually means the cause was not in
+        the file the patch reached.
+        """
+        rounds = [rnd(1, [A], fix(applied=["F-001"])), rnd(2, [A])]
+        assert conv.reconcile(rounds)[0]["outcome"] == conv.PATCH_INEFFECTIVE
+
+    def test_a_finding_that_vanished_without_a_patch_is_not_reproduced(self):
+        rounds = [rnd(1, [A, B], fix(applied=["F-001"])), rnd(2, [A])]
+        rows = {r["summary"]: r for r in conv.reconcile(rounds)}
+        assert rows[B["summary"]]["outcome"] == conv.NOT_REPRODUCED
+
+    def test_a_finding_first_seen_in_a_later_round_is_introduced(self):
+        rounds = [rnd(1, [A]), rnd(2, [A, C])]
+        rows = {r["summary"]: r for r in conv.reconcile(rounds)}
+        assert rows[C["summary"]]["outcome"] == conv.INTRODUCED
+
+    def test_a_finding_nobody_touched_is_outstanding(self):
+        rounds = [rnd(1, [A], fix(skipped=[("F-001", "no file matched")])), rnd(2, [A])]
+        assert conv.reconcile(rounds)[0]["outcome"] == conv.OUTSTANDING
+
+    def test_by_design_is_never_inferred(self):
+        """
+        score.py's honesty rule: an unlabelled finding is unlabelled, never
+        correct. "By design" and "agent noise" are human judgements, and a
+        ledger that guessed them would be marking the agent's homework.
+        """
+        rows = conv.reconcile([rnd(1, [A])])
+        assert rows[0]["label"] is None
+
+    def test_a_human_label_is_carried_through(self):
+        fp = conv.schema.finding_fingerprint(A)
+        rows = conv.reconcile([rnd(1, [A])], {fp: "by-design"})
+        assert rows[0]["label"] == "by-design"
+
+    def test_blocking_rows_sort_above_the_rest(self):
+        rows = conv.reconcile([rnd(1, [LOW, A, B])])
+        assert [r["severity"] for r in rows] == ["CRITICAL", "HIGH", "LOW"]

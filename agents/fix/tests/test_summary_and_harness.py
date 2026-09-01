@@ -477,3 +477,91 @@ class TestSeverityDefault:
         fix_harness.run(_args(repo=tree, dry_run=True, summary_out=out,
                               severities="CRITICAL,HIGH,MEDIUM,LOW"))
         assert "would show" in out.read_text()
+
+
+class TestTheBudgetBlock:
+    """
+    The fix half's token meters, in the machine-readable result.
+
+    This is a Phase 3 prerequisite rather than a Phase 2 nicety. The convergence
+    loop enforces a CUMULATIVE token budget across rounds, and it can only add up
+    what the artefacts carry: the QA half has always written its tokens into the
+    findings JSON, while this half rendered them into a markdown line and dropped
+    them from the JSON entirely. A loop that could see one half would compare a
+    floor against its cap and call it a total -- so the convergence layer refuses
+    to continue when the block is missing, and these tests are what stop it being
+    missing.
+    """
+
+    def _result(self, tree, monkeypatch, tmp_path, **overrides):
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: None)
+        out = tmp_path / "result.json"
+        fix_harness.run(_args(repo=tree, dry_run=True, json_out=out, **overrides))
+        return json.loads(out.read_text())
+
+    def test_the_result_carries_units_and_the_model(self, tree, monkeypatch, tmp_path):
+        budget = self._result(tree, monkeypatch, tmp_path)["budget"]
+        assert set(budget) >= {
+            "model", "calls", "input_tokens", "output_tokens",
+            "cache_read", "cache_write", "spent", "token_budget",
+        }
+        assert budget["model"] == fix_model.DEFAULT_MODEL
+
+    def test_it_carries_no_dollars(self, tree, monkeypatch, tmp_path):
+        """
+        Units here, money where the price table lives. agent.py states the rule
+        for the QA half -- "converting units to money in two places is how the
+        two disagree" -- and it holds across programs too.
+        """
+        budget = self._result(tree, monkeypatch, tmp_path)["budget"]
+        assert not any("usd" in key for key in budget)
+
+    def test_a_run_that_spent_nothing_reports_a_zero_not_a_silence(self, tree, monkeypatch, tmp_path):
+        """
+        A dry run makes no model call. Zero is the true answer, and it has to be
+        written down: the convergence loop treats an ABSENT block as "unknown"
+        and stops the loop, which would be the wrong response to a round that
+        genuinely cost nothing.
+        """
+        budget = self._result(tree, monkeypatch, tmp_path)["budget"]
+        assert budget["calls"] == 0
+        assert budget["spent"] == 0
+
+    def test_refused_stale_findings_still_report_a_budget(self, tree, monkeypatch, tmp_path):
+        """
+        The staleness guard returns early, before any model call. That exit used
+        to write a result with no budget at all -- indistinguishable, downstream,
+        from a run whose accounting was lost.
+        """
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: "b" * 40)
+        payload = json.loads(FIXTURE.read_text())
+        payload["observed_at_commit"] = "a" * 40
+        findings = tmp_path / "stale.json"
+        findings.write_text(json.dumps(payload))
+        out = tmp_path / "result.json"
+        parsed = fix_harness.build_parser().parse_args(
+            ["--findings", str(findings), "--repo", str(tree), "--json-out", str(out),
+             "--summary-out", str(tmp_path / "s.md")]
+        )
+        fix_harness.run(parsed)
+        assert json.loads(out.read_text())["budget"]["calls"] == 0
+
+    def test_a_real_call_is_counted(self, tree, monkeypatch, tmp_path):
+        bedrock = _Bedrock({
+            "edits": [{
+                "file": "frontend/src/pages/Dashboard.tsx",
+                "old_string": "const firstName = user.name.split(' ')[0];",
+                "new_string": "const firstName = user.name?.split(' ')[0] ?? '';",
+                "rationale": "guard the split",
+            }],
+            "skipped": [],
+        })
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: bedrock)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: None)
+        out = tmp_path / "result.json"
+        fix_harness.run(_args(repo=tree, json_out=out, summary_out=tmp_path / "s.md"))
+        budget = json.loads(out.read_text())["budget"]
+        assert budget["calls"] == 1
+        assert budget["spent"] == 4300

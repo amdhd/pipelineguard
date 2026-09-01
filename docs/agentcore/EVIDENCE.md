@@ -767,6 +767,35 @@ survive a rubric that is correctly sceptical about fixture surfaces.
 
 ---
 
+### 2026-09-01 (tenth pass) — the rubric change that makes S-3's render breaks reportable
+
+**The prescription above is implemented, but not yet measured.** The ninth pass
+established that S-3's symptom is a RENDER break — the seed speaks `'OPEN'` while
+the frontend compares lowercase — and that the miss was the rubric, which told the
+agent that odd values on `/sire` are "the demo working as intended." That wording
+swallowed the one reportable class along with the seeded statistical noise.
+
+`agents/qa/agent/rubric.py` now draws the line the exemption was always missing:
+
+- **The fixture exemption protects the NUMBERS.** Outliers, spikes, trends — the
+  seeded statistical anomalies — are still explicitly not findings.
+- **It no longer protects how the UI renders them.** Three shapes are now named as
+  reportable even on a fixture surface: a raw enum or key leaking into the text
+  (the `"OPEN"` case), a derived count reading zero while the items carrying that
+  value are on screen (the `0 open` badge), and styling or a status colour that
+  never applies (the lost `text-status-red`). "Report the break, never the numbers."
+
+This is the in-repo half of P1.1. It does **not** close the gap on its own: recall
+is a *measured* number, and this change is unmeasured — a corpus run is required to
+see whether the agent now reports S-3 without the false-positive spike the carve-out
+risks. The seed itself is untouched (it was never the problem; see above).
+
+The next entry, whenever it is written, must be a *measurement* of this change, not
+another claim. The eighth pass is the warning: read the seed's full diff, and don't
+let an entry's confidence outrun its evidence.
+
+---
+
 ### 2026-09-01 (eighth pass) — S-3 was never catchable, and we knew
 
 **S-3 is 0/16.** Not 0/16 because the model is weak. Because there is nothing on

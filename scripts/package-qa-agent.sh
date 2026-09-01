@@ -46,10 +46,12 @@ REGION="${2:-ap-southeast-1}"
 PY_VERSION="${PY_VERSION:-3.12}"
 PY_TAG="cp${PY_VERSION/./}"
 
-# AgentCore Runtime CONTAINERS are documented ARM64-only, so the managed code
-# runtime is assumed to match. That assumption is not confirmed by any API --
-# override with TARGET_ARCH=x86_64 if a deployed runtime turns out to disagree,
-# and record the answer in docs/agentcore/DISCOVERY.md when it is known.
+# AgentCore Runtime CONTAINERS are documented ARM64-only, and the managed code
+# runtime is confirmed to match: docs/agentcore/DISCOVERY.md §13 records a real
+# apply (2026-08-26) where a manylinux2014_aarch64 / cp312 zip loaded and ran,
+# and every corpus run since has invoked it. The arch stays an override in case
+# AWS ever ships an x86_64 code runtime; if it does, change it here and update
+# §13.
 TARGET_ARCH="${TARGET_ARCH:-aarch64}"
 PLATFORM="manylinux2014_${TARGET_ARCH}"
 

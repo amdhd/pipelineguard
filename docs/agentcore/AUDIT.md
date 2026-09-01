@@ -41,8 +41,8 @@ in the runtime path.**
 | `express ^4.18.2` (demo app) | `app/package.json` | `^` resolves to patched 4.20.x. But CI's `npm audit --audit-level=high ... \|\| true` is **informational only**. |
 
 **Caveats:** (a) unpinned floors + no hash lock → rebuilds are not reproducible;
-(b) the `aarch64` vendoring target (`package-qa-agent.sh`, `TARGET_ARCH=aarch64`)
-is the one dependency assumption **not confirmed by any API**.
+(b) ~~the `aarch64` vendoring target is unconfirmed~~ — **resolved**: confirmed
+by `DISCOVERY.md` §13 and every corpus run since (see P0-2).
 
 ## 2. Interface — exact types, error states, and 5 edge cases
 
@@ -73,8 +73,9 @@ discipline is strong; the crash surfaces are where the edges are.
    JSON that is not a JSON object, which previously crashed in `round_record`.
 2. **Default `session_id` label is not unique** — `"qa-run"` becomes the S3
    prefix; two concurrent runs collide on keys. → **P1-5**.
-3. **`TARGET_ARCH=aarch64` is unconfirmed** — if wrong, every invoke after a
-   paid browser session ImportErrors. → **P0-2**.
+3. ~~**`TARGET_ARCH=aarch64` is unconfirmed**~~ — **resolved**: a packaged
+   `aarch64` zip loaded and ran on the managed runtime (`DISCOVERY.md` §13); the
+   arch is empirically confirmed, not guessed.
 4. **`staleness()` goes silent on a non-git checkout** — returns `None` with no
    warning on the local replay path the guard exists for. → **P1-6**.
 5. **`LOG_PAGE_STATE = "1"` is still live** in the runtime's
@@ -187,8 +188,8 @@ stop loses nothing.**
    passes `--runner-minutes`, so the cost table renders `unpriced`. → **P1-2**.
 3. **False-positive rate is unproven** — "0 FP on one labelled finding" is not a
    rate; the plan requires 3 real human-labelled PRs. → **P1-7**.
-4. **`TARGET_ARCH=aarch64` unverified** — one wrong guess makes every run fail
-   after the browser is already paid for. → **P0-2**.
+4. ~~**`TARGET_ARCH=aarch64` unverified**~~ — **resolved**: the audit missed
+   that `DISCOVERY.md` §13 already confirmed aarch64 empirically (see P0-2).
 
 **Phase 2 — CAUTION.** Well-tested; the staleness guard closes the known real
 incident. But **no agent PR has ever been merged CI-green** — the criterion is
@@ -211,7 +212,7 @@ gates).
 | # | Item | Sev | Loc | Effort | Gates |
 |---|------|-----|-----|--------|-------|
 | **P0.1** | Guard `json.loads` in fix harness + converge loader | **HIGH** | `agents/fix/harness.py`, `agents/converge/session.py` | **DONE** | — |
-| **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | 1–2 h | Phase 1 done |
+| **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | **DONE** | Phase 1 done |
 | **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
 | **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | seeds + `rubric.py` | days | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
@@ -236,10 +237,13 @@ gates).
 session (exit 2, corrupt state never silently reset to round 1). +8 tests, 546
 pass.
 
-**P0.2 — arch assumption settled.** Either confirm `aarch64` against the
-runtime's deployment response (recorded in `EVIDENCE.md`) or source
-`TARGET_ARCH` from an env override. Acceptance: a packaged zip invokes cleanly
-in the real runtime.
+**P0.2 — DONE.** `aarch64` was already confirmed, and the audit missed it:
+`DISCOVERY.md` §13 (verified 2026-08-26) records a `manylinux2014_aarch64` /
+`cp312` zip loading and running on the managed runtime, and every corpus run
+since invoked it. Since `package-qa-agent.sh`'s ELF verification rejects any
+build whose native objects do not match `TARGET_ARCH`, a successful load proves
+the arch. The `TARGET_ARCH` env override already existed; the script's stale
+"assumption not confirmed" comment now points at §13.
 
 **P0.3 — DONE.** `LOG_PAGE_STATE` is now behind a `log_page_state` variable
 (default `false`); Terraform **omits** the key when disabled rather than setting
@@ -278,7 +282,7 @@ rate quoted only over labelled findings.
 
 1. **P0-1** JSON-parse guards — **DONE** (30 min, +8 tests)
 2. **P0-3** gate the diagnostic — **DONE** (15 min, +3 tests)
-3. **P0-2** arch verification (1–2 h, needs one deploy)
+3. **P0-2** arch verification — **DONE** (already confirmed by DISCOVERY.md §13; script comment corrected)
 4. **P1-5** unique session label (1–2 h, +1 test)
 5. **P1-6** staleness warning (30 min, +1 test)
 

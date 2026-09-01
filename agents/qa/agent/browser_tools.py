@@ -479,11 +479,22 @@ class BrowserSession:
                 "budget_exhausted": True,
             }
 
+        try:
+            self.cdp.send("Page.navigate", {"url": f"{self.base_url}{path}"})
+            self.cdp.wait_for_network_idle()
+        except CDPError as e:
+            # A navigation that produced nothing must not cost a route: charging
+            # it would silently burn one of the slots the caller asked for, and
+            # the model could be refused a real route because a broken one failed
+            # first. wait_for_network_idle never raises, so the send is the only
+            # realistic failure point -- but catching the pair costs nothing.
+            if new_route:
+                logger.warning(
+                    "navigation to %s failed; route not charged", path, exc_info=True
+                )
+            return {"error": str(e)[:300], **self._state()}
         if new_route:
             self.visited.append(path)
-
-        self.cdp.send("Page.navigate", {"url": f"{self.base_url}{path}"})
-        self.cdp.wait_for_network_idle()
         return self._state()
 
     def read_page(self) -> dict:

@@ -225,6 +225,32 @@ class TestInvoke:
         assert agent.invoke({"target_url": "u", "email": "e", "password": "p"}) is payload
 
 
+class TestAuthProbe:
+    """
+    The auth probe has a named "not configured" outcome, not a silent None.
+
+    With no token key the run cannot tell a healthy app from a login page the
+    agent never got past. That must be recorded as `not_configured` -- distinct
+    from `measured` -- so the report can surface it above the findings instead
+    of letting a PASS hide the fact that auth was never checked.
+    """
+
+    def test_an_empty_token_key_is_a_named_not_configured(self, agent):
+        probe = {"is_authenticated": lambda key: True}  # would say yes if asked
+        assert agent._probe_auth(probe, "") == (None, "not_configured")
+
+    def test_a_configured_key_is_measured_and_passes_the_key_through(self, agent):
+        seen = []
+
+        class Session:
+            def is_authenticated(self, key):
+                seen.append(key)
+                return False
+
+        assert agent._probe_auth(Session(), "vm_token") == (False, "measured")
+        assert seen == ["vm_token"]
+
+
 def test_emit_metrics_never_fails_the_run(agent, monkeypatch):
     """Telemetry is not worth losing a completed run over."""
     client = MagicMock()

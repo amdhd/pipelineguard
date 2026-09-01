@@ -58,6 +58,34 @@ def cost_line(budget, model: str, prices: dict | None = None) -> str:
     )
 
 
+def budget_block(budget, model: str) -> dict:
+    """
+    The same meters as `cost_line`, for the MACHINE-READABLE result.
+
+    Units and the model name; no dollars. Converting units to money happens
+    wherever the price table lives, and doing it in two places is how the two
+    disagree -- the rule agent.py states for the QA half, which holds across
+    programs and not just across the runtime boundary.
+
+    This exists for Phase 3. The convergence loop enforces a CUMULATIVE token
+    budget across rounds, and it cannot enforce what the artefacts do not carry:
+    the QA half's tokens have always been in the findings JSON, while this half
+    rendered its own into a markdown line and dropped them. A loop reading only
+    the half it could see would compare a floor against its cap and call it a
+    total.
+    """
+    return {
+        "model": model,
+        "calls": budget.calls,
+        "input_tokens": budget.input_tokens,
+        "output_tokens": budget.output_tokens,
+        "cache_read": budget.cache_read,
+        "cache_write": budget.cache_write,
+        "spent": budget.spent,
+        "token_budget": budget.token_budget,
+    }
+
+
 def render(result: dict, *, budget=None, model: str = "", prices: dict | None = None) -> str:
     """Render the whole summary. `result` is what main.run assembles."""
     applied = result.get("applied", [])

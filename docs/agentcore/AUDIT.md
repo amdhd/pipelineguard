@@ -71,8 +71,10 @@ discipline is strong; the crash surfaces are where the edges are.
    **FIXED in P0-1** (`FindingsLoadError` → rendered summary, exit 1). Same
    guard added to the converge loader (`StateError` → exit 2), including valid
    JSON that is not a JSON object, which previously crashed in `round_record`.
-2. **Default `session_id` label is not unique** — `"qa-run"` becomes the S3
-   prefix; two concurrent runs collide on keys. → **P1-5**.
+2. ~~**Default `session_id` label is not unique**~~ — **resolved in P1-5**: the
+   harness default is now `new_session_id("qa-run")`, unique per invocation; the
+   agent's own no-session_id fallback is uuid-based. Two concurrent runs no
+   longer collide on keys.
 3. ~~**`TARGET_ARCH=aarch64` is unconfirmed**~~ — **resolved**: a packaged
    `aarch64` zip loaded and ran on the managed runtime (`DISCOVERY.md` §13); the
    arch is empirically confirmed, not guessed.
@@ -149,7 +151,8 @@ CI runs all six test dirs, AWS-free.
 3. Empty-token auth probe → named outcome, not a silent findings discard.
    → **P2-1**.
 4. `LOG_PAGE_STATE` defaults off / gated. → **P0-3**.
-5. Concurrent-runs key isolation under `screenshots/qa-run/`. → **P1-5**.
+5. ~~Concurrent-runs key isolation under `screenshots/qa-run/`.~~ **DONE in
+   P1-5** (default label unique per invocation; +4 tests).
 6. **Convergence has no live multi-round test** — `test_convergence.py`'s own
    docstring says the decision surface is exercised with constructed rounds "for
    the price of a unit test." → **P1-3**.
@@ -218,7 +221,7 @@ gates).
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | 1–2 days | Phase 2 done |
-| **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | 1–2 h | — |
+| **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
 | **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | 30 min | — |
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | 30 min | — |
@@ -266,8 +269,11 @@ round or a tolerance band added to `convergence.py`.
 **P1.4 — Phase 2 live.** A real fix-agent PR (compiles, CI green, no human
 intervention on the agent's side) exists and is referenced, not claimed.
 
-**P1.5 — no evidence collisions.** Concurrent runs cannot overwrite each other's
-`S3` keys; test asserts isolation or a unique default label.
+**P1.5 — DONE.** The `--session-label` default is now `new_session_id("qa-run")`,
+unique per invocation, so concurrent runs cannot overwrite each other's
+`screenshots/` and `reports/` keys; an explicit label still wins. The agent's own
+no-session_id fallback also lost its second-resolution timestamp collision
+(`run-{int(time.time())}` → uuid). +4 tests.
 
 **P1.6 — silent disable becomes loud.** A non-git checkout logs the same
 "staleness could not be checked" warning the unstamped case already has; test
@@ -283,7 +289,7 @@ rate quoted only over labelled findings.
 1. **P0-1** JSON-parse guards — **DONE** (30 min, +8 tests)
 2. **P0-3** gate the diagnostic — **DONE** (15 min, +3 tests)
 3. **P0-2** arch verification — **DONE** (already confirmed by DISCOVERY.md §13; script comment corrected)
-4. **P1-5** unique session label (1–2 h, +1 test)
+4. **P1-5** unique session label — **DONE** (1–2 h, +4 tests)
 5. **P1-6** staleness warning (30 min, +1 test)
 
 Everything P1 upstream of it — S-3, runner-minutes, the live Phase 3 run, the

@@ -78,8 +78,11 @@ discipline is strong; the crash surfaces are where the edges are.
 3. ~~**`TARGET_ARCH=aarch64` is unconfirmed**~~ — **resolved**: a packaged
    `aarch64` zip loaded and ran on the managed runtime (`DISCOVERY.md` §13); the
    arch is empirically confirmed, not guessed.
-4. **`staleness()` goes silent on a non-git checkout** — returns `None` with no
-   warning on the local replay path the guard exists for. → **P1-6**.
+4. ~~**`staleness()` goes silent on a non-git checkout**~~ — **resolved in
+   P1-6**: `run()` warns "not a git repository; staleness could not be checked"
+   when the checkout has no HEAD and the findings carry a provenance stamp.
+   `staleness()` itself still returns `None` (a directory stays a usable replay
+   target); the silence is what was wrong.
 5. **`LOG_PAGE_STATE = "1"` is still live** in the runtime's
    `environment_variables`, emitting up to ~20k chars per read to CloudWatch,
    with a comment saying "remove after the blindness is diagnosed." → **P0-3**.
@@ -146,8 +149,8 @@ CI runs all six test dirs, AWS-free.
 
 1. ~~Malformed findings JSON → clean summary, no traceback~~ **DONE in P0-1**
    (fix harness + converge loader; both files +8 tests).
-2. `staleness()` with a non-git checkout → explicit "cannot check" warning
-   (currently silent `None`). → **P1-6**.
+2. ~~`staleness()` with a non-git checkout → explicit "cannot check" warning~~.
+   **DONE in P1-6** (+1 test).
 3. Empty-token auth probe → named outcome, not a silent findings discard.
    → **P2-1**.
 4. `LOG_PAGE_STATE` defaults off / gated. → **P0-3**.
@@ -222,7 +225,7 @@ gates).
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | 1–2 days | Phase 2 done |
 | **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
-| **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | 30 min | — |
+| **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | **DONE** | — |
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | 30 min | — |
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | 30 min | — |
@@ -275,9 +278,11 @@ unique per invocation, so concurrent runs cannot overwrite each other's
 no-session_id fallback also lost its second-resolution timestamp collision
 (`run-{int(time.time())}` → uuid). +4 tests.
 
-**P1.6 — silent disable becomes loud.** A non-git checkout logs the same
-"staleness could not be checked" warning the unstamped case already has; test
-added.
+**P1.6 — DONE.** `run()` now logs "not a git repository; staleness could not be
+checked against observed commit <sha>" when the checkout has no HEAD and the
+findings carry a stamp — the same loudness the unstamped case already had.
+`staleness()` still returns `None` so a plain directory stays a usable replay
+target; the silent pass is gone. +1 test.
 
 **P1.7 — FP rate is a rate.** ≥3 PRs with human labels scored by `score.py`; the
 rate quoted only over labelled findings.
@@ -290,7 +295,7 @@ rate quoted only over labelled findings.
 2. **P0-3** gate the diagnostic — **DONE** (15 min, +3 tests)
 3. **P0-2** arch verification — **DONE** (already confirmed by DISCOVERY.md §13; script comment corrected)
 4. **P1-5** unique session label — **DONE** (1–2 h, +4 tests)
-5. **P1-6** staleness warning (30 min, +1 test)
+5. **P1-6** staleness warning — **DONE** (30 min, +1 test)
 
 Everything P1 upstream of it — S-3, runner-minutes, the live Phase 3 run, the
 labelled-PR sample — is what actually unlocks a phase being signed off as

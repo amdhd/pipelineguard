@@ -157,7 +157,8 @@ def run(args) -> int:
             Path(args.json_out).write_text(json.dumps(result, indent=2, default=str))
         return fix_summary.exit_code(result)
 
-    stale = staleness(observed, _head_commit(root))
+    head = _head_commit(root)
+    stale = staleness(observed, head)
     if stale and not args.allow_stale_findings:
         result = {
             "applied": [], "excluded": [], "errors": [stale],
@@ -175,6 +176,16 @@ def run(args) -> int:
     if observed is None:
         logger.warning(
             "findings carry no observed_at_commit; staleness could not be checked"
+        )
+    elif head is None:
+        # The stale report that burned us was replayed locally, which is exactly
+        # the path a non-git checkout takes. Refusing is too aggressive -- a
+        # directory is a fine place to replay -- but silent is wrong: the guard's
+        # only value is telling the reader the report may not describe this code.
+        logger.warning(
+            "the checkout at %s is not a git repository; staleness could not be "
+            "checked against observed commit %s",
+            root, observed[:12],
         )
 
     if args.severities:

@@ -7,6 +7,7 @@ thing to the Phase 2 smoke test that can run without credentials.
 """
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -386,6 +387,30 @@ class TestStaleness:
 
     def test_head_of_a_non_repo_is_none(self, tmp_path):
         assert fix_harness._head_commit(tmp_path) is None
+
+    def test_a_non_git_checkout_warns_instead_of_staying_silent(
+        self, tree, tmp_path, monkeypatch, caplog
+    ):
+        """
+        `staleness()` itself must keep returning None for a non-git checkout --
+        refusing would make a directory an unusable replay target. But the run
+        has to SAY so: the guard's only value is warning that the report may not
+        describe this code, and a silent pass is a guard that never fired.
+        """
+        # The committed fixtures carry observed_at_commit, so staleness has
+        # something to have been unable to check.
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: None)
+        monkeypatch.setattr(fix_harness, "_head_commit", lambda root: None)
+        out = tmp_path / "s.md"
+        parsed = fix_harness.build_parser().parse_args(
+            ["--findings", str(FIXTURE), "--repo", str(tree), "--dry-run",
+             "--summary-out", str(out)]
+        )
+        with caplog.at_level(logging.WARNING):
+            fix_harness.run(parsed)
+        assert any(
+            "not a git repository" in r.message for r in caplog.records
+        )
 
     def test_stale_findings_are_all_skipped_and_nothing_is_written(self, tree, tmp_path, monkeypatch):
         called = []

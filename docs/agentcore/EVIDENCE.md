@@ -29,7 +29,7 @@ the CDP idle-socket fix).
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **0 false positives on the healthy-`main` negative check** (33140664097) — and the candidate layer now turns the phantom into a refuted assessment, not a finding |
-| 5 | False-negative rate against seeded bugs | ⚠️ **5/6 on catchable seeds (seventh pass, N=3)** — S-1 3/3, S-2 2/3. **[corrected]** S-3 is excluded: it is not observable through a browser at all, so every `/3` rate in this document before the eighth pass was scored against an impossible denominator |
+| 5 | False-negative rate against seeded bugs | ⚠️ **5/9 (seventh pass, N=3)** — S-1 3/3, S-2 2/3, S-3 0/3. **[corrected twice]** The eighth pass claimed S-3 was unobservable and rescored this 5/6; the ninth pass shows that was wrong and restores 5/9. S-3 is catchable but quiet — see the ninth pass |
 | 6 | Two rungs benchmarked | ✅ **MEASURED** — haiku 0/3, sonnet caught the semantic seed; sonnet is now the default, haiku an explicit opt-in |
 
 **The headline is criterion 5, and it has finally moved.** See below — the
@@ -634,6 +634,81 @@ narrow and falsifiable:
 If (1) holds and (3) does not, the pass is not a win. Re-measure both, three runs
 each per the variance finding above, and pull
 `_INTERACTION_TURNS_PER_ROUTE` down to whatever the interaction actually costs.
+
+---
+
+### 2026-09-01 (ninth pass) — the eighth pass was wrong about S-3
+
+**Read this before the eighth pass below, which is retained unedited because
+deleting a wrong diagnosis is how the S-3 problem happened in the first place.**
+
+The eighth pass claimed S-3 is structurally unobservable — that the seed breaks
+only `summary.open`, that the finding *data* is untouched, and that the page
+never renders the broken field. **Every one of those three claims is false.** It
+was written after reading the seed's diff filtered to one file, `sire.ts`, and
+generalising from it.
+
+#### What the seed actually changes
+
+`backend/src/mock/findings.ts` — the **data and its type**:
+
+```diff
+-  status: 'open' | 'closed';
++  status: 'OPEN' | 'closed';
+-        status: 'open',      (x4 records)
++        status: 'OPEN',
+```
+
+`backend/src/routes/sire.ts` — the summary filter, **to match**:
+
+```diff
+-      open: findings.filter(f => f.status === 'open').length,
++      open: findings.filter(f => f.status === 'OPEN').length,
+```
+
+Data and backend filter were changed **together**, so `summary.open` is
+*correct* on the corpus branch. The eighth pass had this exactly backwards.
+
+#### The real symptom, and it is visible
+
+The break is in the **frontend**, which compares lowercase everywhere:
+
+| `SirePage` | on the corpus branch | visible effect |
+|---|---|---|
+| `findings.filter(f => f.status === 'open')` | 0 | the "N open" badge disappears |
+| `'text-status-red': finding.status === 'open'` | false | open findings lose their red styling |
+| `{finding.status}` | renders `"OPEN"` | raw uppercase enum leaks into the UI |
+
+Three symptoms, all on screen. S-3 is a **catchable** seed. It has been missed
+0/16 for some other reason — most likely that all three symptoms are quiet, and
+the rubric explicitly tells the agent that `/sire` is a fixture surface whose odd
+values are the demo working as intended.
+
+#### The correction to the numbers
+
+Recall is **5/9, not 5/6**. The eighth pass's headline is withdrawn. Every
+`/3` rate in this document stands as originally written.
+
+#### And a change that made it worse
+
+`amdhd/vesselAI#109` moved the page onto the server's `summary.open`. That was
+worth doing on its own merits — one source of truth for a number the backend
+already publishes — but it does **not** make S-3 more catchable, as its PR
+claimed. It makes it **less** so: `summary.open` is correct on the corpus branch,
+so the badge returns and symptom one disappears. Two of the three remain.
+
+#### What actually went wrong here
+
+Twice now, on the same seed. The second pass diagnosed it correctly ("weak seed,
+redesign it"), later passes overwrote that with "model variance", and the eighth
+pass overwrote *that* with a confident structural claim built on a partial diff.
+Each step was more certain than the last and further from the code.
+
+The lesson is narrow and worth keeping: **this document's claims about seeds must
+be checked against the seed's full diff**, not against a filtered view of it, and
+not against what an earlier entry said. The second pass's original prescription
+is still the outstanding one — redesign S-3 so its symptom is loud enough to
+survive a rubric that is correctly sceptical about fixture surfaces.
 
 ---
 

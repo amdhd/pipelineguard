@@ -222,7 +222,7 @@ gates).
 | **P0.1** | Guard `json.loads` in fix harness + converge loader | **HIGH** | `agents/fix/harness.py`, `agents/converge/session.py` | **DONE** | — |
 | **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | **DONE** | Phase 1 done |
 | **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
-| **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | seeds + `rubric.py` | `rubric.py` **DONE** (PR #49); measurement — see [MEASUREMENT-P1-1.md](MEASUREMENT-P1-1.md) | Phase 1 done |
+| **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **MEASURED — OPEN.** Carve-out (PR #49) **withdrawn** per the eleventh-pass measurement: Leg A recall still 6/9 (S-3 0/3, carve-out ineffective) and Leg B regressed the FP baseline (0 → 2 on healthy `main`, both labelled false positives). S-3's miss is in candidate generation, not reporting — see [EVIDENCE.md](EVIDENCE.md) eleventh pass | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | 1–2 days | Phase 2 done |
@@ -263,6 +263,16 @@ no longer silently enables it. +3 tests; takes effect on the next apply.
 the run recorded, *or* a written decision that S-3's quiet symptom is out of
 scope with the miss documented and owned. The ninth-pass flip-flop history means
 the record has to be written first, not the claim.
+
+**P1.1 — MEASURED (2026-09-01), still open.** The eleventh-pass measurement is the
+record. PR #49's rubric carve-out was the in-repo half of P1.1; on measurement it
+failed both legs — Leg A recall stayed 6/9 (S-3 0/3) and Leg B produced 2 findings
+on healthy `main` where the baseline was 0 (F-001 `/voyage` "numbers look odd",
+F-002 `/sire` "0 GREEN" on vessel-002 where 0 GREEN is correct — both labelled
+false positives). The carve-out is withdrawn. The diagnosis has moved the lever:
+24 candidates across the three Leg A runs, none mentioning `/sire`, `OPEN`, the
+badge, or status — S-3's miss is in candidate generation, not the reporting
+rubric. The next attempt belongs in the candidate layer, not in wording.
 
 **P1.2 — criterion 1 complete.** The workflow passes a real `--runner-minutes`;
 a run renders a non-`unpriced` three-meter cost table.

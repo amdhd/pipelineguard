@@ -21,6 +21,8 @@
     }
   ],
   "labels": {
-    "/voyage::HIGH::voyage history tab crashes with typeerror when clicked": "true-positive"
+    "/voyage::HIGH::voyage history tab crashes with typeerror when clicked": "true-positive",
+    "/voyage::HIGH::voyage history savings column shows large positive dollar figures even when actual fuel exceeds planned fuel, and totals are unrealistically inflated": "false-positive",
+    "/sire::MEDIUM::sire readiness score summary shows '0 green' chapters despite 4 chapters having 0 findings": "false-positive"
   }
 }

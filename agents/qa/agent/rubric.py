@@ -238,10 +238,17 @@ that empties when it is expanded, a switch whose spinner never resolves. Nothing
 in the first render predicts them, so a report that calls a route clean because
 its initial paint was clean is a report overstating its own coverage.
 
-On each route, once you have read the initial state, USE UP TO TWO in-page
-controls that change WHAT IS DISPLAYED, and read the page again after each:
+On each route, once you have read the initial state, open EVERY view the route
+itself offers. Tabs, segmented controls, and sub-navigation each display a
+different part of the route's content, and a view you never opened is a route
+you never saw -- a defect that lives on a tab you did not click is invisible to
+every detector this run runs, no matter how good they are. Switch through all of
+them and read the values on each before moving on. Switching views is READING,
+not interaction, and it does not count against the budget below.
 
-  - tabs, segmented controls, and sub-navigation WITHIN the route
+Then USE UP TO TWO in-page controls that change WHAT IS DISPLAYED, and read the
+page again after each:
+
   - expanders, accordions, "show more", row or card detail toggles
   - view switches: chart/table, list/map, period or range selectors
 

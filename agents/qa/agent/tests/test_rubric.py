@@ -400,6 +400,20 @@ class TestInteraction:
         """
         assert "candidate you must assess" in self._prompt()
 
+    def test_opening_every_tab_is_mandatory_reading(self):
+        """
+        P1.2 run record: S-3's leak renders only on a non-default tab, and the
+        agent read the default view and moved on -- the status_case_leak
+        candidate is correct but never had its signal in the DOM. The pass must
+        make opening every view REQUIRED, not optional, or the detectors never
+        see the defect. General rule; no route or tab name may appear.
+        """
+        prompt = self._prompt()
+        assert "open EVERY view" in prompt
+        assert "a view you never opened" in prompt
+        assert "Switching views is READING" in prompt
+        assert "does not count against the budget" in prompt
+
     def test_it_does_not_leak_the_seeded_bugs(self):
         """
         The strongest temptation in this section is to name the control that

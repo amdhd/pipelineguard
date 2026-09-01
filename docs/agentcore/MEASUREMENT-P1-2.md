@@ -1,11 +1,17 @@
 # P1.2 measurement — does the `status_case_leak` candidate close S-3?
 
-**Status: MEASURING — re-measurement of the fixed candidate layer in progress
-(2026-09-02).** Acceptance criteria are written below, before any run, so the
-verdict cannot move after the fact. The first measurement of the merged PR #50
-candidate layer caught a deterministic detector bug (see **Run record**, below);
-PR #51 fixed it and the runs restarted against that fix. After the re-measurement
-this header is rewritten with the verdict, and the twelfth-pass entry in
+**Status: MEASURED — verdict: NO. Leg A fails, Leg B passes. P1.1 closes via the
+written-decision branch of its acceptance criterion (2026-09-02).** Three passes
+ran against the PR #50 candidate layer. Pass one caught a deterministic detector
+bug (PR #51 fixed it); pass two showed S-3's leak renders only on a non-default
+tab, a coverage miss (PR #52 made opening every view required); pass three
+measured the coverage rule: **Leg A recall 6/9, S-3 0/3 — identical to pass two —
+and Leg B 0 findings on healthy `main`.** The candidate is correct and the FP side
+is clean, but the signal is unreachable: the agent visits `/sire` and never
+materializes the Findings tab the leak renders on, so `status_case_leak` has never
+fired (0/7 corpus runs). The human decision scopes S-3's non-default-tab symptom
+out of the browser-driving agent and owns the miss; the detector stays live so any
+future layer that materializes all views closes it. The twelfth-pass entry in
 [EVIDENCE.md](EVIDENCE.md) is the record.
 
 PR #50 (`feat/s3-candidate-layer`) replaces the withdrawn carve-out (PR #49)
@@ -150,16 +156,50 @@ REQUIRED reading (a view you never opened is a route you never saw), which the
 current pass only makes optional ("up to two controls" includes tabs). Drafted
 and 211 tests green; not yet merged.
 
-### Third pass (coverage rule) — pending
+### Third pass (coverage rule, PR #52 merged as `5454e922`) — in progress
+
+The coverage rule is verified live: `main` is `5454e922`, `rubric.py` on `main`
+contains "open EVERY view the route itself offers... a view you never opened is a
+route you never saw... Switching views is READING", and the workflow checks the
+harness out at `PIPELINEGUARD_REF: main` (`ui-qa-agent.yml` line 74), so every
+run below executes it.
+
+Leg A runs (corpus `qa-corpus-1`, sequential):
+
+| Run | S-1 `/voyage` | S-2 `/maintenance` | S-3 `/sire` |
+|---|---|---|---|
+| run 1 (`33533100509`) | ✅ | ✅ | ❌ |
+| run 2 (`33533958227`) | ✅ | ✅ | ❌ |
+| run 3 (`33534532566`) | ✅ | ✅ | ❌ |
+| Leg B (healthy `main`) | `33535141706` — **0 findings, PASS** | | |
+
+**Leg A verdict: recall 6/9, S-3 0/3 — Leg A FAILS, same as the second pass.** The
+coverage rule changed nothing measurable: S-1 and S-2 held (3/3 and 3/3, no
+regression) and S-3 is again 0/3. The mandatory open-every-view rule did not make
+the agent render the `/sire` Findings tab in any of the three runs. Across the
+second and third passes combined, S-3 is **0/6** on the fixed candidate layer.
+
+**Run 1 is still 2/3 — S-3 still missed, still at the coverage level.** The run
+visited `/sire` and produced 9 candidates, NONE a `status_case_leak`. The
+`_HARVEST` pass-4 walk (`browser_tools.py` lines 162-181) is provably live in
+production — the same harvest's `repeated_slots` fired elsewhere in this run —
+and it reads `nodeValue`, the SOURCE case that the `capitalize` CSS class never
+touches, so `OPEN` enters `case_words` if and only if the `/sire` Findings tab is
+in the DOM. It was not. The mandatory open-every-view rule did not make the agent
+open the Findings tab in run 1.
 
 ## What "done" looks like
 
-- [ ] Three corpus runs scored; S-3 ≥2/3, S-1 and S-2 not regressed.
-- [ ] One healthy-`main` run with 0 false positives on fixture surfaces and no
-      `status_case_leak` candidates anywhere.
-- [ ] Twelfth-pass entry in `EVIDENCE.md` with run IDs, tables, and verdicts.
-- [ ] Then — and only then — `AUDIT.md` P1.1 row flips to **DONE** per its
-      acceptance criterion (≥8/9 *measured*, or a written decision).
+- [x] Three corpus runs scored: S-3 **0/3** (6/9 recall), S-1 and S-2 not
+      regressed. **Leg A fails** the ≥2/3 bar.
+- [x] One healthy-`main` run with **0 findings** on fixture surfaces and no
+      `status_case_leak` candidates anywhere. **Leg B passes.**
+- [x] Twelfth-pass entry in `EVIDENCE.md` with run IDs, tables, and verdicts.
+- [x] `AUDIT.md` P1.1 row **flips to DONE via the written-decision branch**
+      (2026-09-02). Leg A fails the ≥2/3 measured bar, so the closure rests on
+      the written decision that S-3's non-default-tab symptom is out of scope for
+      the browser-driving agent, with the miss documented and owned and the
+      detector retained for any future layer that materializes all views.
 
 ## Non-goals
 

@@ -222,7 +222,7 @@ gates).
 | **P0.1** | Guard `json.loads` in fix harness + converge loader | **HIGH** | `agents/fix/harness.py`, `agents/converge/session.py` | **DONE** | — |
 | **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | **DONE** | Phase 1 done |
 | **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
-| **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **MEASURED — OPEN.** Carve-out (PR #49) **withdrawn** per the eleventh-pass measurement: Leg A recall still 6/9 (S-3 0/3, carve-out ineffective) and Leg B regressed the FP baseline (0 → 2 on healthy `main`, both labelled false positives). S-3's miss is in candidate generation, not reporting — see [EVIDENCE.md](EVIDENCE.md) eleventh pass | Phase 1 done |
+| **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **DONE — written scope decision (2026-09-02).** Carve-out (PR #49) withdrawn (eleventh pass); candidate layer (PR #50) merged + measured (twelfth pass): detector correct, Leg B clean, but S-3 0/7 — the raw-`OPEN` signal renders only on the `/sire` Findings tab the agent never materializes. Per the written-decision branch of P1.1's criterion, S-3's symptom (a raw enum rendering only behind a non-default tab) is declared OUT OF SCOPE for the browser-driving agent while the runtime harvests only the DOM the model materializes; the miss is documented and owned, and the detector stays live so any future layer that materializes all views closes it — see [EVIDENCE.md](EVIDENCE.md) twelfth pass | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | 1–2 days | Phase 2 done |
@@ -269,10 +269,43 @@ record. PR #49's rubric carve-out was the in-repo half of P1.1; on measurement i
 failed both legs — Leg A recall stayed 6/9 (S-3 0/3) and Leg B produced 2 findings
 on healthy `main` where the baseline was 0 (F-001 `/voyage` "numbers look odd",
 F-002 `/sire` "0 GREEN" on vessel-002 where 0 GREEN is correct — both labelled
-false positives). The carve-out is withdrawn. The diagnosis has moved the lever:
+false positives). The carve-out is withdrawn. The diagnosis moved the lever:
 24 candidates across the three Leg A runs, none mentioning `/sire`, `OPEN`, the
 badge, or status — S-3's miss is in candidate generation, not the reporting
-rubric. The next attempt belongs in the candidate layer, not in wording.
+rubric.
+
+**P1.1 — MEASURED again (2026-09-02, P1.2 twelfth pass), still open.** The
+candidate layer (PR #50) is the measured attempt the eleventh pass prescribed, and
+it is now measured to the same answer from the other direction. The
+`status_case_leak` detector is correct (unit-tested on the exact `OPEN`/`Closed`
+DOM shape; its harvest provably live — `repeated_slots` fires every run), Leg B is
+clean (0 findings on healthy `main`), and S-1/S-2 hold at 3/3. But S-3 is **0/7**
+corpus runs across the merged, fixed, and coverage passes: the leak renders only on
+the `/sire` Findings tab, the agent visits `/sire` in every run yet never
+materializes that tab, and the mandatory open-every-view rule (PR #52) changed
+nothing. The candidate is unreachable — the miss sits at *materialization*, one
+step before the harvest.
+
+**P1.1 — CLOSED via written decision (2026-09-02).** The P1.2 measurement is the
+final measured attempt under the current architecture, and the human decision
+exercises the written-decision branch of the acceptance criterion above:
+
+- **What is scoped out.** A defect whose symptom renders ONLY on a non-default
+  view of a route — content a tab, segmented control or sub-nav hides until a
+  user opens it — is out of scope for this browser-driving agent as long as the
+  runtime harvests only the DOM the model materializes. S-3 is exactly that shape:
+  the raw `OPEN`/`closed` leak exists only on the `/sire` Findings tab, and two
+  rubric designs (optional interaction pass, then mandatory open-every-view) both
+  failed to make the agent open it (0/6 on the fixed detector, 0/7 overall).
+- **What remains in scope.** A defect visible on a route's default view, or on a
+  view the agent does open, remains fully reportable. S-3's mechanical half — the
+  `status_case_leak` detector — stays in the harness: it is correct, unit-tested,
+  and will fire the moment any layer (the current model, or a future harness that
+  provokes view-switchers itself) materializes the Findings tab.
+- **What is owned.** The miss is measured (recall 6/9, S-3 0/7), named (a
+  materialization gate, one step before the harvest), and recorded with run IDs
+  in the twelfth-pass EVIDENCE entry. It is a known limitation with a named
+  reopening condition, not a silent one.
 
 **P1.2 — criterion 1 complete.** The workflow passes a real `--runner-minutes`;
 a run renders a non-`unpriced` three-meter cost table.

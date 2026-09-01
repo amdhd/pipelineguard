@@ -131,71 +131,6 @@ def test_empty_findings_is_described_as_a_valid_result():
     assert "valid, good result" in prompt
 
 
-class TestFixtureExemptionCarveOut:
-    """
-    The S-3 recall gap (P1.1). The fixture exemption is meant to protect
-    SEEDED STATISTICAL ANOMALIES -- outliers, spikes, trends in the numbers.
-    It must not also protect RENDER breaks, which is what S-3 is: the seed
-    speaks 'OPEN', the frontend compares against 'open', so a raw enum leaks
-    into the text, a derived count reads zero while the rows are on screen,
-    and styling never applies. All three are visible in the agent's input but
-    the old wording ("odd-looking values ... are the demo working as intended")
-    told it to dismiss them.
-    """
-
-    def _prompt(self):
-        return rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
-
-    def test_the_exemption_is_stated_to_be_about_numbers_not_rendering(self):
-        assert "about the NUMBERS, not how the UI renders them" in self._prompt()
-
-    def test_a_render_break_is_reportable_even_on_a_fixture_surface(self):
-        prompt = self._prompt()
-        assert "RENDER break is reportable even on a fixture surface" in prompt
-        assert "a crash is not the only way the UI breaks" in prompt
-
-    def test_a_raw_enum_leak_is_named_as_a_render_break(self):
-        """The S-3 shape: seed data says 'OPEN', the page compares 'open'."""
-        prompt = self._prompt()
-        assert "raw enum" in prompt
-        assert "leaks into the text" in prompt
-
-    def test_a_zero_count_while_items_exist_is_named_as_a_render_break(self):
-        """
-        S-3's badge: `findings.filter(f => f.status === 'open').length` reads 0
-        while the four 'OPEN' rows are rendered. A count that says 0 when the
-        items carrying that value are on screen is the UI failing, not the demo.
-        """
-        assert "reads zero while items carrying that value are" in self._prompt()
-
-    def test_styling_that_never_applies_is_named_as_a_render_break(self):
-        assert "styling or a status colour that never applies" in self._prompt()
-
-    def test_the_exemption_still_protects_seeded_statistical_anomalies(self):
-        """
-        The carve-out is not a repeal. The whole point of the exemption is that
-        /sire's surprising numbers ARE the demo -- only the rendering of them is
-        reportable. Both must survive in the same sentence.
-        """
-        prompt = self._prompt()
-        assert "seeded anomalies" in prompt.lower()
-        assert "Outliers, spikes, and odd-looking values" in prompt
-        assert "Report the break, never the numbers" in prompt
-
-    def test_it_does_not_leak_the_s3_seed_vocabulary(self):
-        """
-        Same guard as everywhere else in this file. The seed's own fingerprint
-        -- the uppercase literal 'OPEN', the 'uncategorised' severity value, the
-        exact CSS class 'text-status-red' -- must not appear, or the next
-        measurement is teaching to the test and measures nothing. The word
-        'open' itself is NOT a leak term: the rubric already uses it in the
-        designed-empty-state example ("No open findings").
-        """
-        lowered = self._prompt().lower()
-        for leak in ("uncategorised", "text-status-red", "'open'", '"open"', "status-red"):
-            assert leak not in lowered, f"rubric leaks the S-3 seed: {leak}"
-
-
 class TestReadTheValues:
     """
     The rubric change the first real measurement earned.
@@ -307,6 +242,52 @@ class TestReadTheValues:
         lowered = prompt.lower()
         for leak in ("healthscore", "health score", "actualfuel", "actual_fuel", "tofixed"):
             assert leak not in lowered, f"rubric leaks the corpus: {leak}"
+
+
+class TestFixtureSurfaceExemption:
+    """
+    The carve-out the P1.1 measurement withdrew (PR #49) made THREE render-break
+    shapes reportable on fixture surfaces; Leg B showed that was too wide -- the
+    'count reads zero' shape regressed the healthy-`main` FP baseline (F-002).
+    What the measurement did NOT implicate is the narrowest shape: a status
+    VALUE leaking raw into the text. That is kept reportable here, because it is
+    the one half of S-3 that is mechanical, and without it the
+    `status_case_leak` candidate would be refuted as "the demo working as
+    intended" and S-3 could never land.
+    """
+
+    def _prompt(self):
+        return rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+
+    def test_status_value_render_break_is_reportable_on_fixture_surfaces(self):
+        prompt = self._prompt()
+        assert "ONE RENDER BREAK IS REPORTABLE EVEN ON A FIXTURE SURFACE" in prompt
+        assert "status VALUE" in prompt
+        assert "leaking raw into the text" in prompt
+        assert "Report the leaked value" in prompt
+
+    def test_the_leaked_value_is_anchored_to_casing_not_to_numbers(self):
+        """
+        The line between this exception and the FP it must not invite: it names
+        a casing mismatch (the stored spelling showing), never a surprising
+        figure. 'Report the leaked value; never a figure' is what keeps F-001
+        (numbers) and F-002 (count-zero) out.
+        """
+        prompt = self._prompt()
+        assert "casing it is stored in" in prompt
+        assert "storage is a defect" in prompt
+        assert "not a seeded anomaly" in prompt
+
+    def test_the_exception_does_not_leak_the_seed_vocabulary(self):
+        """
+        The exception names the SHAPE, not the seed. Teaching to the test would
+        make the next measurement meaningless. 'open' is intentionally NOT a
+        leak term -- the empty-state line already says "No open findings" -- so
+        the guard uses the quoted/value forms and the class names.
+        """
+        lowered = self._prompt().lower()
+        for leak in ("'open'", '"open"', "uncategorised", "text-status-red", "status-red"):
+            assert leak not in lowered, f"rubric leaks the S-3 seed: {leak}"
 
 
 class TestCandidates:

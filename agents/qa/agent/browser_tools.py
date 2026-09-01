@@ -49,10 +49,14 @@ MAX_TEXT_CHARS = 6000
 # whole point of MAX_TEXT_CHARS is that page content is the dominant input cost.
 MAX_VALUES = 50
 MAX_EMPTY_SLOTS = 20
+# All-caps source-spelling words the harvest will collect (see pass 4 in
+# _HARVEST). Capped like the others: this rides on every read, and the count is
+# the evidence -- one candidate never needs a wall of context text.
+MAX_CAPS_WORDS = 20
 
 _HARVEST = r"""
 (function () {
-  const MAX = %d, MAX_EMPTY = %d;
+  const MAX = %d, MAX_EMPTY = %d, MAX_CAPS = %d;
   const values = [], empty = [];
 
   function labelFor(el) {
@@ -146,6 +150,36 @@ _HARVEST = r"""
     if (hit) { hit.count++; } else { empty.push({ context: key, count: 1, kind: svgAdjacent ? 'svg-adjacent' : 'text' }); }
   }
 
+  // 4. Words stored ALL-CAPS in the source. A text node's value is the SOURCE
+  //    case -- CSS text-transform:uppercase is applied at render, never to the
+  //    text node -- so this walk sees "Active" where a CSS-uppercased badge
+  //    shows ACTIVE, and "OPEN" where a status value was stored all-caps. A
+  //    status value rendered in the casing it is stored in, on a page that
+  //    renders that class of value lowercase elsewhere, is an enum leaking raw
+  //    into the text. Acronyms (IMO, MT) and hardcoded labels survive the walk
+  //    but are filtered in Python against the status vocabulary; script, style
+  //    and svg text is skipped outright (charts would be pure noise).
+  const capWords = {}, capsSeen = [];
+  // querySelector('body') rather than the body property, so this expression
+  // string does not collide with the harness's own innerText read; either
+  // resolves to the same root.
+  const walker = document.createTreeWalker(document.querySelector('body') || document.documentElement, NodeFilter.SHOW_TEXT);
+  let tn;
+  while ((tn = walker.nextNode()) && capsSeen.length < MAX_CAPS) {
+    const par = tn.parentElement;
+    if (!par || par.closest('script, style, svg, code, pre, textarea, select, option')) continue;
+    if (par.getAttribute('aria-hidden') === 'true') continue;
+    const t = (tn.nodeValue || '').replace(/\s+/g, ' ').trim();
+    if (!t) continue;
+    for (const w of t.match(/[A-Z]{3,12}/g) || []) {
+      if (capsSeen.length >= MAX_CAPS) break;
+      const rec = capWords[w];
+      if (rec) { rec.count++; if (rec.sample.length < 2) rec.sample.push(t.slice(0, 120)); continue; }
+      capWords[w] = { word: w, count: 1, sample: [t.slice(0, 120)] };
+      capsSeen.push(w);
+    }
+  }
+
   // Group the blanks by kind so a blank repeated across list items is visible
   // even when each item's surrounding text differs. A kind with a count above
   // 1 is the systematic-repetition signal: the same figure slot missing on
@@ -159,9 +193,9 @@ _HARVEST = r"""
   }
   const repeated_slots = Object.values(byKind).filter(g => g.count >= 2);
 
-  return { values: values, empty_slots: empty, repeated_slots: repeated_slots };
+  return { values: values, empty_slots: empty, repeated_slots: repeated_slots, case_words: Object.values(capWords) };
 })()
-""" % (MAX_VALUES, MAX_EMPTY_SLOTS)
+""" % (MAX_VALUES, MAX_EMPTY_SLOTS, MAX_CAPS_WORDS)
 
 
 def tool_specs() -> list[dict]:
@@ -392,6 +426,7 @@ class BrowserSession:
             "values": got.get("values", []),
             "empty_slots": got.get("empty_slots", []),
             "repeated_slots": got.get("repeated_slots", []),
+            "case_words": got.get("case_words", []),
         }
 
     def _state(self) -> dict:

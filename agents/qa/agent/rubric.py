@@ -275,17 +275,8 @@ of a tab is a missing feature, and missing features are product decisions.
    data containing deliberate trends, noise, and anomalies:
 {_fixtures_block()}
    Outliers, spikes, and odd-looking values here are the demo working as
-   intended. The exemption is about the NUMBERS, not how the UI renders them.
-   Never report a figure because the values look surprising.
-
-   A RENDER break is reportable even on a fixture surface -- a crash is not the only way the UI breaks:
-     - a value shown in a spelling the page elsewhere normalises, so a raw enum
-       or key leaks into the text (the same class as "user.name" above);
-     - a derived count that reads zero while items carrying that value are on
-       screen, because the comparison never matches;
-     - styling or a status colour that never applies for the same reason.
-   Those are the UI failing against its own data, not a seeded anomaly.
-   Report the break, never the numbers.
+   intended. Report them only if the UI itself breaks -- a crash, a NaN, an
+   unresolved spinner -- never because the numbers look surprising.
 
 3. {ai_clause}
 

@@ -22,8 +22,9 @@ The classes are deliberately the MECHANICAL ones only. One half of S-3 -- the
 wrong colour that renders a plausible-looking number -- is not a deterministic
 shape and stays model-driven; but the other half IS mechanical: a status VALUE
 whose stored spelling leaks into the text, detectable as an all-caps word on a
-page that renders the same class of value lowercase. That is
-`status_case_leak`. Stdlib only, so the deployment zip stays pure Python.
+page that renders the same class of value in a normal (non-uppercase) case.
+That is `status_case_leak`. Stdlib only, so the deployment zip stays pure
+Python.
 """
 
 import re
@@ -52,10 +53,14 @@ STATUS_WORDS = frozenset({
     "healthy", "degraded", "critical", "normal", "congested", "missing",
 })
 
-# Underscored statuses render with a space in innerText ("in transit"), so they
-# can never appear as a single lowercase token; they stay part of the all-caps
-# vocabulary but not of the twin check.
-_LOWERCASE_TWIN_WORDS = tuple(sorted(w for w in STATUS_WORDS if "_" not in w))
+# Status words that can appear as a single NON-uppercase innerText token. The
+# underscored forms are excluded: innerText renders them with a space ("in
+# transit"), so they can never appear as one token. This is the twin vocabulary
+# -- the contrast that makes an all-caps source word a leak -- and it is
+# deliberately broader than the fully-lowercase form: a `capitalize` class turns
+# a lowercase source into "Closed" in innerText, so requiring "closed" verbatim
+# would make the candidate impossible to fire on the page it exists for.
+_TWIN_WORDS = tuple(sorted(w for w in STATUS_WORDS if "_" not in w))
 
 # Samples are capped so one candidate never carries a wall of context text into
 # the context window. The count is the evidence; the samples are for the model
@@ -66,14 +71,15 @@ MAX_SAMPLES = 3
 def _status_case_leak(state: dict) -> list[dict]:
     """
     An enum value leaking raw into the text: a status word rendered ALL-CAPS on
-    a page that renders the same class of value lowercase elsewhere. The
+    a page that renders the same class of value in a normal case elsewhere. The
     harvest collects all-caps words from the SOURCE case (CSS text-transform
     never reaches a text node), so this can never fire on a CSS-uppercased
     label. It fires only on an INCONSISTENCY: if every status on the page is
-    stored uppercase, uppercase is the convention, not a leak -- hence the
-    lowercase-twin requirement. Acronyms (IMO, CII, MT) are filtered by the
-    vocabulary; `state["text"]` is innerText, so a lowercase twin there is a
-    status the page really renders lowercase.
+    stored uppercase, uppercase is the convention, not a leak -- hence the twin
+    requirement. The twin is any NON-uppercase rendering of a status word:
+    'closed' or 'Closed' both qualify, because a `capitalize` class renders a
+    lowercase source as "Closed" in innerText. Acronyms (IMO, CII, MT) are
+    filtered by the vocabulary.
     """
     cap_words = state.get("case_words") or []
     if not cap_words:
@@ -81,12 +87,14 @@ def _status_case_leak(state: dict) -> list[dict]:
     leaked = [w for w in cap_words if (w.get("word") or "").lower() in STATUS_WORDS]
     if not leaked:
         return []
-    # Tokenise the RAW innerText (no .lower()): innerText reflects text-transform,
-    # and CSS only ever uppercases, so a lowercase token there is a status the
-    # page genuinely renders lowercase.
-    tokens = set(re.findall(r"[a-z]+", state.get("text") or ""))
-    lower_twins = {w for w in _LOWERCASE_TWIN_WORDS if w in tokens}
-    if not lower_twins:
+    # Tokenise the RAW innerText (no blanket .lower()): innerText reflects
+    # text-transform, and CSS only ever uppercases, so a token that is NOT
+    # entirely uppercase there is a status the page genuinely renders in a normal
+    # case -- the contrast that makes the all-caps source word a leak.
+    tokens = re.findall(r"[A-Za-z]+", state.get("text") or "")
+    non_upper = {t for t in tokens if t != t.upper()}
+    twins = {w for w in _TWIN_WORDS if w in {t.lower() for t in non_upper}}
+    if not twins:
         return []
     out = []
     for w in leaked:
@@ -98,7 +106,7 @@ def _status_case_leak(state: dict) -> list[dict]:
             "evidence": (
                 f"status value {w['word']!r} renders raw ALL-CAPS "
                 f"({count} occurrence(s)) while the same page renders status "
-                f"values lowercase ({', '.join(sorted(lower_twins))}) -- the "
+                f"values in normal case ({', '.join(sorted(twins))}) -- the "
                 "stored spelling is leaking into the text unnormalised"
             ),
         })

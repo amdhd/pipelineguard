@@ -170,6 +170,15 @@ class TestScreenshotSink:
         monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
         assert agent._screenshot_sink("run-1")("x", b"png") == "screenshots/run-1/x.png"
 
+    def test_the_fallback_session_id_is_unique(self, agent):
+        """
+        A payload without a session_id must not inherit the old second-resolution
+        timestamp collision, where two runs in the same second wrote the same
+        screenshots/ and reports/ prefixes.
+        """
+        assert agent._default_session_id() != agent._default_session_id()
+        assert agent._default_session_id().startswith("run-")
+
 
 class TestPresign:
     def test_no_bucket_yields_no_urls(self, agent, monkeypatch):

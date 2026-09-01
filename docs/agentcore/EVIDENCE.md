@@ -29,7 +29,7 @@ the CDP idle-socket fix).
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **0 false positives on the healthy-`main` negative check** (33140664097) — and the candidate layer now turns the phantom into a refuted assessment, not a finding |
-| 5 | False-negative rate against seeded bugs | ⚠️ **1/3 at v2 (fifth pass)** — S-2 caught deterministically; S-1 (click-triggered, never provoked) and S-3 (model variance) still missed; see Results |
+| 5 | False-negative rate against seeded bugs | ⚠️ **5/9 (seventh pass, N=3)** — S-1 3/3, S-2 2/3, S-3 0/3. **[corrected twice]** The eighth pass claimed S-3 was unobservable and rescored this 5/6; the ninth pass shows that was wrong and restores 5/9. S-3 is catchable but quiet — see the ninth pass |
 | 6 | Two rungs benchmarked | ✅ **MEASURED** — haiku 0/3, sonnet caught the semantic seed; sonnet is now the default, haiku an explicit opt-in |
 
 **The headline is criterion 5, and it has finally moved.** See below — the
@@ -141,7 +141,7 @@ audit found — the class this project exists to catch, and one that mostly does
 |---|---|---|---|
 | **S-1** | `GET /api/voyage/history` | Returns `actual_fuel`; the client reads `actualFuel` | `formatFuel` calls `.toFixed()` on `undefined` → the Voyage History tab throws and hits the error boundary |
 | **S-2** | equipment list response | `healthScore` dropped entirely | Blank health score and miscoloured ring on every `/maintenance` card |
-| **S-3** | SIRE findings fixture | Status is `OPEN`; frontend still compares `=== 'open'` | *Only* a CSS colour class stops applying — **too subtle, see Results** |
+| **S-3** | SIRE findings fixture | **[corrected]** The backend's `summary.open` filter compares `=== 'OPEN'` against data that is still lowercase. The finding *data* is untouched. | **NOTHING renders.** `SirePage` never reads `summary` — it recomputes the count itself from the findings list, correctly. See the eighth pass |
 
 Seeded on branch `qa-corpus-1` (vesselAI PR #95), which must never be merged.
 The backend stays internally type-consistent in each case; the drift is at the
@@ -689,3 +689,170 @@ half that reaches the findings list is the model-driven half. That is a sharper
 statement of the fifth pass's own conclusion than the fifth pass made, and it has
 a direct consequence for Phase 3: a convergence loop must compare raw candidate
 DETECTIONS, never findings and never assessments. See `REMEDIATION.md`.
+
+---
+
+### 2026-09-01 (ninth pass) — the eighth pass was wrong about S-3
+
+**Read this before the eighth pass below, which is retained unedited because
+deleting a wrong diagnosis is how the S-3 problem happened in the first place.**
+
+The eighth pass claimed S-3 is structurally unobservable — that the seed breaks
+only `summary.open`, that the finding *data* is untouched, and that the page
+never renders the broken field. **Every one of those three claims is false.** It
+was written after reading the seed's diff filtered to one file, `sire.ts`, and
+generalising from it.
+
+#### What the seed actually changes
+
+`backend/src/mock/findings.ts` — the **data and its type**:
+
+```diff
+-  status: 'open' | 'closed';
++  status: 'OPEN' | 'closed';
+-        status: 'open',      (x4 records)
++        status: 'OPEN',
+```
+
+`backend/src/routes/sire.ts` — the summary filter, **to match**:
+
+```diff
+-      open: findings.filter(f => f.status === 'open').length,
++      open: findings.filter(f => f.status === 'OPEN').length,
+```
+
+Data and backend filter were changed **together**, so `summary.open` is
+*correct* on the corpus branch. The eighth pass had this exactly backwards.
+
+#### The real symptom, and it is visible
+
+The break is in the **frontend**, which compares lowercase everywhere:
+
+| `SirePage` | on the corpus branch | visible effect |
+|---|---|---|
+| `findings.filter(f => f.status === 'open')` | 0 | the "N open" badge disappears |
+| `'text-status-red': finding.status === 'open'` | false | open findings lose their red styling |
+| `{finding.status}` | renders `"OPEN"` | raw uppercase enum leaks into the UI |
+
+Three symptoms, all on screen. S-3 is a **catchable** seed. It has been missed
+0/16 for some other reason — most likely that all three symptoms are quiet, and
+the rubric explicitly tells the agent that `/sire` is a fixture surface whose odd
+values are the demo working as intended.
+
+#### The correction to the numbers
+
+Recall is **5/9, not 5/6**. The eighth pass's headline is withdrawn. Every
+`/3` rate in this document stands as originally written.
+
+#### And a change that made it worse
+
+`amdhd/vesselAI#109` moved the page onto the server's `summary.open`. That was
+worth doing on its own merits — one source of truth for a number the backend
+already publishes — but it does **not** make S-3 more catchable, as its PR
+claimed. It makes it **less** so: `summary.open` is correct on the corpus branch,
+so the badge returns and symptom one disappears. Two of the three remain.
+
+#### What actually went wrong here
+
+Twice now, on the same seed. The second pass diagnosed it correctly ("weak seed,
+redesign it"), later passes overwrote that with "model variance", and the eighth
+pass overwrote *that* with a confident structural claim built on a partial diff.
+Each step was more certain than the last and further from the code.
+
+The lesson is narrow and worth keeping: **this document's claims about seeds must
+be checked against the seed's full diff**, not against a filtered view of it, and
+not against what an earlier entry said. The second pass's original prescription
+is still the outstanding one — redesign S-3 so its symptom is loud enough to
+survive a rubric that is correctly sceptical about fixture surfaces.
+
+---
+
+### 2026-09-01 (eighth pass) — S-3 was never catchable, and we knew
+
+**S-3 is 0/16.** Not 0/16 because the model is weak. Because there is nothing on
+the screen to see.
+
+#### What the seed actually does
+
+The corpus branch changes one line in `backend/src/routes/sire.ts`:
+
+```diff
+-      open: findings.filter(f => f.status === 'open').length,
++      open: findings.filter(f => f.status === 'OPEN').length,
+```
+
+That breaks the API's `summary.open`, which becomes 0. The finding **data** is
+untouched — every record still carries lowercase `'open'`.
+
+And `summary.open` is never rendered. `frontend/src/lib/api.ts` discards it:
+
+```ts
+const { data } = await api.get<{ findings: SireFinding[] }>(`/sire/findings/${vesselId}`)
+return data.findings          // summary thrown away
+```
+
+…and `SirePage.tsx` computes its own count from the list, with the correct
+comparison:
+
+```tsx
+const open = findings?.filter((f) => f.status === 'open').length ?? 0
+{open > 0 && <span>{open} open</span>}
+```
+
+So the page is correct, because it *is* correct. No crash, no blank, no wrong
+number. A browser-driving agent cannot observe this defect by any means, and
+sixteen runs have scored it as a miss.
+
+#### The part that stings
+
+**The second pass already found this and said so:**
+
+> **S-3 — MISSED, but the seed was weak and should not count cleanly.** … That
+> is close to unobservable through a browser, so this measures the *seed's*
+> design more than the agent's eyesight. **Redesign S-3** … and re-run before
+> quoting a 3-seed rate.
+
+It was not redesigned. Five subsequent passes quoted 3-seed rates anyway, and
+the label decayed from "weak seed, redesign it" to "**model variance**" — a
+phrase this document uses twice, most recently in the seventh pass, written by
+someone who had not read the seed and inherited the wrong explanation.
+
+Two failures, and the second is worse. Missing something is ordinary. Recording
+it, prescribing the fix, and then overwriting the diagnosis with a plausible
+wrong one is how a document stops being evidence.
+
+Even the seed table's own description was wrong: it said the status *data* was
+`OPEN` and the frontend compared `'open'`, which would at least break a colour
+class. The real seed touches only an unrendered backend field.
+
+#### What the numbers actually are
+
+| Seed | Symptom in the browser | Catchable | Result (N=3) |
+|---|---|---|---|
+| S-1 | tab crashes — console error | yes, deterministic | **3/3** |
+| S-2 | 12 blank rings — repeated empty slot | yes, deterministic | **2/3** |
+| S-3 | none | **no** | n/a |
+
+**Recall on catchable seeds is 5/6, not 5/9.** Every rate in this document
+before this pass is scored against a denominator containing an impossible test —
+which made the agent look worse than it is, consistently, in a number that has
+been used to argue about readiness.
+
+#### The fix, and why this shape
+
+`SirePage` should display the API's `summary.open` rather than recomputing it.
+That is the better application regardless: the backend already computes the
+figure, and having the frontend derive it independently is duplicated logic whose
+first drift is exactly this bug. On `main` the rendered output is unchanged,
+because both computations agree.
+
+On the corpus branch it turns S-3 into a real semantic test — a plausible-looking
+`0 open` beside a list of findings the page itself styles as open. That
+contradiction is visible, is not a crash or a blank, and belongs to no
+deterministic detector. It is precisely the class the candidate layer cannot
+reach and the model must judge, which is what S-3 was always supposed to measure.
+
+The count must also render unconditionally. `{open > 0 && …}` hides the badge
+when the number is zero, so the seeded symptom would be an *absence* — and the
+rubric correctly tells the agent that an absent element is a missing feature, not
+a defect. A wrong number is reportable; a missing badge is not.

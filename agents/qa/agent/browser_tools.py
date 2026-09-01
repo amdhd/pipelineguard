@@ -299,6 +299,19 @@ _CLICK = """
 """
 
 
+def _log_page_state_enabled() -> bool:
+    """
+    Whether the full-page-state diagnostic is ON.
+
+    Value-aware rather than presence-aware: Python's truthiness would treat
+    `LOG_PAGE_STATE=0` as enabled, so a stray "0" in an env file would silently
+    start emitting page state on every read. Only '1', 'true', or 'yes' enable
+    it; the key being absent -- the Terraform default -- or any other value
+    leaves it off.
+    """
+    return os.environ.get("LOG_PAGE_STATE", "").strip().lower() in ("1", "true", "yes")
+
+
 class BrowserSession:
     """
     Drives the remote browser and collects the passive signals.
@@ -401,7 +414,7 @@ class BrowserSession:
         # misses a blank score might be failing to SEE the blank, and that is
         # visible here without re-running. Gated so it costs nothing in normal
         # operation; 20k chars holds the entire state including the 6k text cap.
-        if os.environ.get("LOG_PAGE_STATE"):
+        if _log_page_state_enabled():
             logger.info("page state: %s", json.dumps(state, default=str)[:20000])
         return state
 

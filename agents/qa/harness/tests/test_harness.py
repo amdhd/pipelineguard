@@ -551,3 +551,27 @@ class TestReachableKnobs:
 
         args = harness.build_parser().parse_args(["--runtime-arn", "a", "--target-url", "u"])
         assert args.max_tokens_per_call is None and args.presign_expires is None
+
+
+class TestSessionLabel:
+    """
+    The payload's session_id becomes the S3 evidence prefix (screenshots/ and
+    reports/), so the DEFAULT must be unique per invocation. The old constant
+    "qa-run" meant two concurrent runs overwrote each other's screenshots and
+    findings under the same prefix. An explicit --session-label is a deliberate
+    override and still wins.
+    """
+
+    def _parse(self, *extra):
+        import main as harness
+
+        return harness.build_parser().parse_args(["--runtime-arn", "a", "--target-url", "u", *extra])
+
+    def test_the_default_is_unique_per_invocation(self):
+        assert self._parse().session_label != self._parse().session_label
+
+    def test_the_default_is_not_the_old_constant(self):
+        assert self._parse().session_label != "qa-run"
+
+    def test_an_explicit_label_still_wins(self):
+        assert self._parse("--session-label", "pr-123").session_label == "pr-123"

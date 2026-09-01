@@ -1,0 +1,507 @@
+"""
+Phase 3's decision layer -- does the loop run another round, or stop?
+
+NAMED convergence.py, and the package is `converge`, for the same reason
+`agents/fix/harness.py` is not main.py: source module names are global in the
+shared pytest session and --import-mode=importlib only rescues identically-named
+TEST files. `state`, `report`, `summary`, `main` and `harness` are all taken.
+
+WHAT THIS PROGRAM IS
+--------------------
+Three programs already exist: the agent (drives a browser, in AgentCore), the QA
+harness (invokes it, prices it, renders the comment) and the fix harness
+(patches what the QA run found). This is the fourth, and it owns exactly one
+question: given every round so far, what happens next?
+
+It makes no model calls, drives no browser, and writes to no repository. It
+reads two artefacts a round leaves behind -- the findings JSON and the fix
+result JSON -- and returns a state. That narrowness is the point: the loop's
+stopping rule is the part of Phase 3 that can burn money silently, so it lives
+in a program that can be unit-tested exhaustively without spending a cent.
+
+THE RULE, AND ONE DELIBERATE REFINEMENT OF IT
+---------------------------------------------
+PLAN.md Phase 3 states it as:
+
+    Finding set shrinking            -> continue
+    Finding set identical or growing -> stall, hand to a human
+    Zero blocking findings           -> done, PASS
+
+This module implements that, with one refinement it is worth being explicit
+about because it is a deviation from the letter of the plan.
+
+The plan's rule is about the SIZE of the set. Size alone cannot see a fix that
+trades one defect for another: {A, B, C} -> {A, D} is a set that shrank, and
+under a size-only reading the loop would call that progress and keep going --
+while the agent's own patch has just introduced D. So a blocking finding present
+in this round and absent from the previous one stops the loop as `REGRESSED`,
+whatever happened to the count.
+
+This is a strict refinement, not a contradiction. Where the plan says stall, so
+does this: a set that grew necessarily contains something new, and an identical
+set has nothing resolved. `REGRESSED` only splits the sharpest case out of
+`STALL` and names it, because the two want different things from the human who
+reads the report -- a stall means the agent cannot fix this, while a regression
+means the agent broke something and the branch it produced should be treated
+accordingly.
+
+A ROUND THAT DID NOT FINISH DECIDES NOTHING
+-------------------------------------------
+`INCONCLUSIVE` exists because of a failure mode this repo has already been bitten
+by once: an agent run that reports nothing looks exactly like a healthy
+application (report.py's `unauthenticated` hint says so in as many words). The
+convergence check makes that worse, because a truncated round's finding set is
+SMALLER than the previous round's -- so a run that died halfway reads as
+convergence, twice over: as progress on the way in, and as a PASS at the end.
+
+So a round carrying `error` or `incomplete` is never compared and never passes.
+It stops the loop and says why.
+
+BACKSTOPS STOP THE NEXT ROUND; THEY NEVER OVERTURN A VERDICT
+-------------------------------------------------------------
+The hard round cap, the cumulative token budget and the two wall-clock caps are
+checked only on the path that would otherwise CONTINUE. A round that passed
+still passed even if it was the third; a stall is still a stall even if the
+budget also ran out. Reporting `MAX_ROUNDS` for a run that actually converged
+would be a lie in the direction that makes the loop look worse than it is, and
+`TOKEN_BUDGET` for a run that stalled hides the finding that stalled it.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa" / "agent"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa" / "harness"))
+
+import pricing  # noqa: E402
+import schema  # noqa: E402
+
+# --- The states -----------------------------------------------------------
+#
+# One string per reason the loop can be in, because "stopped" on its own tells
+# the reader nothing about whether to celebrate, review a branch, or go and look
+# at CloudWatch.
+
+CONTINUE = "CONTINUE"        # the set shrank and nothing new appeared
+PASS = "PASS"                # zero blocking findings -- the loop's goal
+STALL = "STALL"              # nothing resolved this round
+REGRESSED = "REGRESSED"      # a blocking finding appeared that was not there before
+INCONCLUSIVE = "INCONCLUSIVE"  # the round failed or was truncated; it proves nothing
+MAX_ROUNDS = "MAX_ROUNDS"
+TOKEN_BUDGET = "TOKEN_BUDGET"
+WALL_CLOCK = "WALL_CLOCK"
+ROUND_TIMEOUT = "ROUND_TIMEOUT"
+
+# Everything except CONTINUE ends the loop. Derived rather than listed, so a
+# state added above cannot be forgotten here and silently keep the loop running.
+def stops(state: str) -> bool:
+    return state != CONTINUE
+
+
+# Only one of the stop states is a success. `PASS` is not "the loop finished" --
+# it is "there are no blocking findings left", which is the only outcome that
+# should leave a green check on a PR.
+def succeeded(state: str) -> bool:
+    return state == PASS
+
+
+# PLAN.md Phase 3: "Hard max rounds (3)". The other three are not given numbers
+# in the plan, so these are derived from measurement rather than invented: a
+# round is a QA run (~$0.03, ~50s of session, measured in EVIDENCE.md) plus a
+# fix run (~$0.11 per finding, 5 findings max). Three rounds of that sits far
+# under these caps, which is what a backstop should do -- catch a run that has
+# gone wrong, not shape a run that has not.
+DEFAULT_BUDGETS = {
+    "max_rounds": 3,
+    "token_budget": 2_000_000,
+    "wall_clock_seconds": 3600,
+    "round_timeout_seconds": 1500,
+}
+
+
+class Decision:
+    """A state, the sentence explaining it, and whether the loop ends here."""
+
+    def __init__(self, state: str, reason: str):
+        self.state = state
+        self.reason = reason
+
+    @property
+    def stop(self) -> bool:
+        return stops(self.state)
+
+    @property
+    def ok(self) -> bool:
+        return succeeded(self.state)
+
+    def as_dict(self) -> dict:
+        return {"state": self.state, "reason": self.reason, "stop": self.stop}
+
+    def __repr__(self) -> str:  # pragma: no cover -- debugging aid
+        return f"Decision({self.state}, {self.reason!r})"
+
+
+# --- Recording a round ----------------------------------------------------
+
+
+def _fingerprints(findings: dict) -> dict:
+    """
+    Map each finding to its cross-round identity, keeping the fields the ledger
+    needs to render a row.
+
+    `schema.finding_fingerprint` is deliberately reused rather than reimplemented:
+    it already excludes `id` (renumbered every run) and `evidence` (free text
+    that varies between runs describing the same defect), and a second
+    implementation that drifted from it would make every round look like
+    progress -- which is precisely the failure test_schema.py warns about.
+    """
+    out = {}
+    for f in findings.get("findings", []):
+        out[schema.finding_fingerprint(f)] = {
+            "id": f.get("id", "?"),
+            "severity": f.get("severity", "?"),
+            "page": f.get("page", "?"),
+            "summary": f.get("summary", ""),
+        }
+    return out
+
+
+def _patched_fingerprints(fix_result: dict, by_id: dict) -> list:
+    """
+    Which of THIS round's findings the fix agent actually patched.
+
+    Attribution happens here, at record time, because it is only possible here:
+    `applied[].finding_id` is a per-run id (F-001), which means nothing outside
+    the round that produced it. Resolving it to a fingerprint while both
+    artefacts are in hand is what lets the final ledger say "patched in round 2,
+    gone in round 3" instead of "gone".
+    """
+    patched = []
+    for applied in fix_result.get("applied", []):
+        fp = by_id.get(applied.get("finding_id"))
+        if fp and fp not in patched:
+            patched.append(fp)
+    return patched
+
+
+def round_record(
+    number: int,
+    findings: dict,
+    fix_result: dict | None = None,
+    *,
+    seconds: int = 0,
+    prices: dict | None = None,
+) -> dict:
+    """
+    Everything the loop needs to remember about one round.
+
+    Both artefacts are folded in at once because a round is one unit: the QA run
+    and the fix run that consumed its findings. Keeping them apart would leave
+    the attribution above impossible to do later.
+    """
+    prices = prices if prices is not None else pricing.load_prices()
+    fps = _fingerprints(findings)
+    by_id = {meta["id"]: fp for fp, meta in fps.items()}
+    fix = fix_result or {}
+    budget = fix.get("budget") or {}
+    cost = pricing.summarise(findings, prices)
+
+    # The fix half reports UNITS and its model name; dollars are computed here,
+    # from the same price table the QA half uses. agent.py states the rule this
+    # follows -- "converting units to money in two places is how the two
+    # disagree" -- and it applies across programs, not just across a runtime
+    # boundary.
+    fix_usd = (
+        pricing.model_cost_usd(
+            budget.get("model", ""),
+            int(budget.get("input_tokens", 0)),
+            int(budget.get("output_tokens", 0)),
+            prices,
+            cache_read=int(budget.get("cache_read", 0)),
+            cache_write=int(budget.get("cache_write", 0)),
+        )
+        if budget.get("calls")
+        else None
+    )
+
+    return {
+        "round": number,
+        # A failed or truncated round is flagged, not silently folded in. See
+        # the INCONCLUSIVE note at the top of this module.
+        "error": findings.get("error"),
+        "incomplete": bool(findings.get("incomplete")),
+        "stop_reason": findings.get("stop_reason"),
+        "observed_at_commit": findings.get("observed_at_commit"),
+        "findings": fps,
+        "blocking": sorted(
+            fp for fp, meta in fps.items() if meta["severity"] in schema.BLOCKING
+        ),
+        "patched": _patched_fingerprints(fix, by_id),
+        "fix_skipped": [
+            {"finding_id": s.get("finding_id", "?"), "reason": s.get("reason", "")}
+            for s in fix.get("skipped", [])
+        ],
+        "fix_errors": list(fix.get("errors") or []),
+        "seconds": int(seconds),
+        "meters": {
+            "qa_tokens": cost["total_input_tokens"] + cost["output_tokens"],
+            "qa_usd": cost["estimated_total_usd"],
+            "qa_model": cost["model"],
+            "session_seconds": cost["session_seconds"],
+            "fix_tokens": int(budget.get("spent", 0)),
+            "fix_calls": int(budget.get("calls", 0)),
+            "fix_model": budget.get("model", ""),
+            "fix_usd": fix_usd,
+            # A fix ran but reported no budget: its tokens are UNKNOWN, not zero.
+            # Same honesty rule as pricing.py's `unpriced` -- a silent zero here
+            # would understate the cumulative total, which is the one number the
+            # token backstop is enforcing against.
+            "fix_tokens_known": bool(budget) or not fix,
+        },
+    }
+
+
+def totals(rounds: list) -> dict:
+    """
+    Cumulative meters across every round.
+
+    Dollars go to None the moment ANY round is unpriced, rather than summing the
+    rounds that happened to have a price table. A total that quietly covers two
+    rounds out of three is the kind of number PRICING.md exists to prevent.
+    """
+    usd_parts = []
+    unpriced = 0
+    for r in rounds:
+        for key in ("qa_usd", "fix_usd"):
+            value = r["meters"].get(key)
+            if value is None:
+                # A fix run that never happened is not an unpriced fix run.
+                if key == "fix_usd" and not r["meters"].get("fix_calls"):
+                    continue
+                unpriced += 1
+            else:
+                usd_parts.append(value)
+
+    unknown_fix_tokens = sum(1 for r in rounds if not r["meters"].get("fix_tokens_known", True))
+    return {
+        "rounds": len(rounds),
+        "tokens": sum(r["meters"]["qa_tokens"] + r["meters"]["fix_tokens"] for r in rounds),
+        "tokens_known": unknown_fix_tokens == 0,
+        "unknown_fix_token_rounds": unknown_fix_tokens,
+        "usd": sum(usd_parts) if unpriced == 0 else None,
+        "unpriced_meters": unpriced,
+        "seconds": sum(r["seconds"] for r in rounds),
+        "session_seconds": sum(r["meters"]["session_seconds"] for r in rounds),
+    }
+
+
+# --- The decision ---------------------------------------------------------
+
+
+def _backstop(rounds: list, budgets: dict) -> Decision | None:
+    """
+    The four caps, checked only on the path that would otherwise continue.
+
+    The per-round timeout is enforced by the workflow's own step timeout -- a
+    hung round cannot be stopped by a program that only runs after it. What
+    happens here is the other half: a round that overran is not allowed to start
+    another one, and the report says which cap was hit rather than leaving the
+    reader to infer it from a job that simply ended.
+    """
+    current = rounds[-1]
+    agg = totals(rounds)
+    limits = {**DEFAULT_BUDGETS, **(budgets or {})}
+
+    if len(rounds) >= limits["max_rounds"]:
+        return Decision(
+            MAX_ROUNDS,
+            f"the finding set is still shrinking, but this was round "
+            f"{len(rounds)} of a hard maximum of {limits['max_rounds']}.",
+        )
+    if current["seconds"] > limits["round_timeout_seconds"]:
+        return Decision(
+            ROUND_TIMEOUT,
+            f"round {current['round']} took {current['seconds']}s, over the "
+            f"{limits['round_timeout_seconds']}s per-round cap.",
+        )
+    if agg["seconds"] > limits["wall_clock_seconds"]:
+        return Decision(
+            WALL_CLOCK,
+            f"{agg['seconds']}s spent across {agg['rounds']} round(s), over the "
+            f"{limits['wall_clock_seconds']}s cumulative cap.",
+        )
+    if agg["tokens"] >= limits["token_budget"]:
+        return Decision(
+            TOKEN_BUDGET,
+            f"{agg['tokens']:,} tokens spent across {agg['rounds']} round(s), at "
+            f"or over the {limits['token_budget']:,} cumulative budget.",
+        )
+    # An unknown cannot be compared against a cap, and a budget that cannot be
+    # enforced must not be reported as enforced -- PLAN.md 1d. So the loop stops
+    # rather than continuing on an accounting hole.
+    if not agg["tokens_known"]:
+        return Decision(
+            TOKEN_BUDGET,
+            f"the cumulative token budget cannot be enforced: "
+            f"{agg['unknown_fix_token_rounds']} round(s) ran the fix agent but "
+            "reported no token usage, so the total above is a floor, not a count.",
+        )
+    return None
+
+
+def decide(rounds: list, budgets: dict | None = None) -> Decision:
+    """
+    The whole stopping rule, in the order the reasons take precedence.
+
+    `rounds` is every round so far, oldest first, as built by `round_record`.
+    """
+    if not rounds:
+        raise ValueError("decide() needs at least one round")
+
+    current = rounds[-1]
+    previous = rounds[-2] if len(rounds) > 1 else None
+
+    # 1. A round that did not finish is not evidence of anything.
+    if current["error"]:
+        return Decision(
+            INCONCLUSIVE,
+            f"round {current['round']} failed ({current['error']}), so its finding "
+            "set cannot be compared and cannot be a PASS.",
+        )
+    if current["incomplete"]:
+        return Decision(
+            INCONCLUSIVE,
+            f"round {current['round']} was truncated "
+            f"({current.get('stop_reason') or 'budget exhausted'}). A partial run "
+            "reports a smaller finding set for reasons that have nothing to do "
+            "with the application, so it reads as convergence when it is not.",
+        )
+
+    # 2. The goal.
+    if not current["blocking"]:
+        return Decision(
+            PASS,
+            f"round {current['round']} reported no blocking findings.",
+        )
+
+    # 3. The comparison. Nothing to compare against on the first round.
+    if previous is not None:
+        before, after = set(previous["blocking"]), set(current["blocking"])
+        appeared = after - before
+        resolved = before - after
+
+        if appeared:
+            return Decision(
+                REGRESSED,
+                f"round {current['round']} reports {len(appeared)} blocking "
+                f"finding(s) that round {previous['round']} did not "
+                f"({len(resolved)} resolved). A set that gained a member is not "
+                "converging, and when the only thing that changed between the "
+                "rounds was the agent's own patch, the patch is the suspect.",
+            )
+        if not resolved:
+            return Decision(
+                STALL,
+                f"round {current['round']} reports the same "
+                f"{len(after)} blocking finding(s) as round {previous['round']}. "
+                "Another round would run the same agent against the same defects "
+                "and cost the same money.",
+            )
+
+    # 4. Shrinking (or the first round) -- continue, unless a cap says otherwise.
+    hit = _backstop(rounds, budgets or {})
+    if hit is not None:
+        return hit
+
+    if previous is None:
+        return Decision(
+            CONTINUE,
+            f"round {current['round']} found {len(current['blocking'])} blocking "
+            "finding(s); nothing to compare against yet.",
+        )
+    resolved = set(previous["blocking"]) - set(current["blocking"])
+    return Decision(
+        CONTINUE,
+        f"round {current['round']} resolved {len(resolved)} of round "
+        f"{previous['round']}'s blocking finding(s) and introduced none.",
+    )
+
+
+# --- The reconciliation ledger --------------------------------------------
+
+# PLAN.md Phase 3: "a per-finding ledger of what was fixed, what was by-design,
+# and what was agent noise". Two of those three are human judgements, so this
+# splits the question in half and refuses to answer the half it cannot:
+#
+#   * WHAT HAPPENED is observable from the artefacts, and is computed here.
+#   * WHAT IT MEANS -- by-design, false positive, real defect -- is a label a
+#     human writes, in score.py's vocabulary. Unlabelled stays unlabelled.
+#
+# score.py already states the rule this follows: "An unlabelled finding is
+# counted as unlabelled, never as correct."
+
+FIXED = "fixed"                       # patched, and gone in the next round
+PATCH_INEFFECTIVE = "patch did not fix it"
+NOT_REPRODUCED = "not reproduced"     # went away without a patch
+OUTSTANDING = "outstanding"           # still there in the final round
+INTRODUCED = "introduced"             # first seen after round 1
+
+
+def reconcile(rounds: list, labels: dict | None = None) -> list:
+    """
+    The per-finding ledger, across every round, in one table.
+
+    A finding is followed by fingerprint, so the same defect reported as F-002
+    in one round and F-001 in the next is one row rather than two.
+    """
+    labels = labels or {}
+    final = rounds[-1]
+    seen: dict = {}
+
+    for r in rounds:
+        for fp, meta in r["findings"].items():
+            row = seen.setdefault(
+                fp,
+                {
+                    "fingerprint": fp,
+                    "severity": meta["severity"],
+                    "page": meta["page"],
+                    "summary": meta["summary"],
+                    "first_round": r["round"],
+                    "rounds_seen": [],
+                    "patched_in": [],
+                },
+            )
+            row["rounds_seen"].append(r["round"])
+        for fp in r["patched"]:
+            if fp in seen:
+                seen[fp]["patched_in"].append(r["round"])
+
+    for row in seen.values():
+        present_at_end = row["fingerprint"] in final["findings"]
+        patched = bool(row["patched_in"])
+
+        if present_at_end and patched:
+            row["outcome"] = PATCH_INEFFECTIVE
+        elif present_at_end and row["first_round"] > rounds[0]["round"]:
+            row["outcome"] = INTRODUCED
+        elif present_at_end:
+            row["outcome"] = OUTSTANDING
+        elif patched:
+            row["outcome"] = FIXED
+        else:
+            # Gone, and nothing patched it. Either the first round's report was
+            # noise or the defect is intermittent -- both are the agent's
+            # problem rather than the application's, and neither can be told
+            # apart from here.
+            row["outcome"] = NOT_REPRODUCED
+
+        row["label"] = labels.get(row["fingerprint"])
+
+    # Blocking severities first, then by the round they appeared, so the rows a
+    # human has to act on are the rows at the top.
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    return sorted(
+        seen.values(),
+        key=lambda r: (order.get(r["severity"], 9), r["first_round"], r["page"]),
+    )

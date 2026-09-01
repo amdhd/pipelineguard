@@ -680,6 +680,21 @@ def _default_session_id() -> str:
     return f"run-{uuid.uuid4().hex}"
 
 
+def _probe_auth(session, token_key: str) -> tuple[bool | None, str]:
+    """
+    Measure whether the agent authenticated, and how confident we are.
+
+    Returns `(authenticated, probe)`. `probe` is `"measured"` when a token key
+    was configured and the check ran; `"not_configured"` when no key was set, so
+    the run cannot tell a healthy app from a login page the agent never got
+    past. That case is a named outcome, not a silent pass -- the run records it
+    and the report surfaces it above the findings, where a PASS cannot hide it.
+    """
+    if not token_key:
+        return None, "not_configured"
+    return session.is_authenticated(token_key), "measured"
+
+
 def run_qa(payload: dict) -> dict:
     session_id = payload.get("session_id") or _default_session_id()
     base_url = payload["target_url"]
@@ -828,7 +843,7 @@ def run_qa(payload: dict) -> dict:
             # an earlier version put this after the `with` block and every run
             # died on "socket is already closed", including the comment claiming
             # it ran before teardown.
-            authenticated = session.is_authenticated(auth_token_key)
+            authenticated, auth_probe = _probe_auth(session, auth_token_key)
             session.close()
 
     if stop_reason is not None:
@@ -915,6 +930,9 @@ def run_qa(payload: dict) -> dict:
     # want opposite responses: raise the quota, or shorten the run.
     findings["paced_seconds"] = round(pacer.total_waited, 1)
     findings["authenticated"] = authenticated
+    # "measured" / "not_configured". The report keys off this: a run whose auth
+    # state is UNKNOWN must not read like one whose probe actually ran.
+    findings["auth_probe"] = auth_probe
 
     # pages_tested is the model's own count and it has been wrong: a real run
     # reported 4 while the enforced counter recorded 3. Prefer the measured

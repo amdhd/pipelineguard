@@ -151,8 +151,10 @@ CI runs all six test dirs, AWS-free.
    (fix harness + converge loader; both files +8 tests).
 2. ~~`staleness()` with a non-git checkout → explicit "cannot check" warning~~.
    **DONE in P1-6** (+1 test).
-3. Empty-token auth probe → named outcome, not a silent findings discard.
-   → **P2-1**.
+3. ~~Empty-token auth probe → named outcome, not a silent findings discard~~.
+   **DONE in P2-1**: an empty `auth_token_key` now records
+   `auth_probe: "not_configured"` (distinct from `"measured"`) and the report
+   prints an "Auth was not verified" caveat above the findings; +5 tests.
 4. `LOG_PAGE_STATE` defaults off / gated. → **P0-3**.
 5. ~~Concurrent-runs key isolation under `screenshots/qa-run/`.~~ **DONE in
    P1-5** (default label unique per invocation; +4 tests).
@@ -227,7 +229,7 @@ gates).
 | **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
 | **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | **DONE** | — |
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
-| **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | 30 min | — |
+| **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | **DONE** | — |
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | 30 min | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | 1–2 h | — |
 | **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | 1–2 h | — |
@@ -286,6 +288,14 @@ target; the silent pass is gone. +1 test.
 
 **P1.7 — FP rate is a rate.** ≥3 PRs with human labels scored by `score.py`; the
 rate quoted only over labelled findings.
+
+**P2.1 — DONE.** An empty `auth_token_key` is now a named outcome: `_probe_auth`
+returns `(None, "not_configured")` (vs `"measured"`), the findings record
+`auth_probe`, and `report.render` prints "Auth was not verified" above the
+findings — a PASS cannot hide the fact that the run never checked whether the
+agent got past the login page. Unknown is deliberately not a hard fail (a public
+target with no token-key auth is legitimate); only a measured `False` discards.
++5 tests.
 
 **P2.x / P3.x** — each gets its named outcome + test.
 

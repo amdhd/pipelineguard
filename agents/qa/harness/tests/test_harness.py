@@ -325,6 +325,36 @@ class TestUnauthenticatedRun:
         assert report.exit_code({"error": "unauthenticated", "findings": []}) == 2
 
 
+class TestAuthNotConfigured:
+    """
+    A run whose auth probe never ran is not a failure, but it must not read like
+    a clean pass either. `auth_probe: "not_configured"` means the run could not
+    tell a healthy app from a login page the agent never got past, and the
+    report has to say so ABOVE the findings, where a PASS headline cannot hide
+    it.
+    """
+
+    def test_it_prints_the_caveat_above_the_findings(self):
+        out = report.render(_findings(auth_probe="not_configured"))
+        assert "Auth was not verified" in out
+        assert "login page" in out
+        assert "not_configured" not in out  # machine field, not reader-facing
+
+    def test_a_measured_probe_stays_quiet(self):
+        out = report.render(_findings(auth_probe="measured"))
+        assert "Auth was not verified" not in out
+
+    def test_the_caveat_does_not_downgrade_the_exit_code(self):
+        # Unknown is not unauthenticated: a public target with no token-key auth
+        # is a legitimate pass. Only a measured False hard-fails.
+        assert (
+            report.exit_code(
+                _findings(auth_probe="not_configured", findings=[], overall="PASS")
+            )
+            == 0
+        )
+
+
 def _agent_default(name: str):
     """
     Read a constant out of agent.py without importing it.

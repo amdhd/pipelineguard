@@ -173,6 +173,20 @@ def render(findings: dict, *, runner_minutes: int | None = None) -> str:
     # its own plan should not be broken by its own reporting.
     parts += [f"{findings.get('pages_tested', 0)} routes tested", ""]
 
+    if findings.get("auth_probe") == "not_configured":
+        # Auth was never measured, so the run cannot tell a healthy app from a
+        # login page the agent never got past. That caveat belongs ABOVE the
+        # findings, where a PASS headline cannot hide it. Distinct from the
+        # `unauthenticated` error: this run is not known to have failed login,
+        # it just never checked.
+        parts += [
+            "**Auth was not verified.** No auth token key was configured, so the "
+            "run could not check whether the agent ever got past the login page. "
+            "Every private route redirects when unauthenticated — read any "
+            "finding (or the absence of one) with that in mind.",
+            "",
+        ]
+
     if not items and findings.get("incomplete") and not findings.get("report_salvaged"):
         # An empty list on a truncated run is not the same claim as an empty
         # list on a complete one, and must not read like it.

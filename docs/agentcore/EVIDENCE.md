@@ -28,8 +28,8 @@ the CDP idle-socket fix).
 | 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
-| 4 | False-positive rate | ✅ **0 false positives on the healthy-`main` negative check** (33140664097) — and the candidate layer now turns the phantom into a refuted assessment, not a finding |
-| 5 | False-negative rate against seeded bugs | ⚠️ **5/9 (seventh pass, N=3)** — S-1 3/3, S-2 2/3, S-3 0/3. **[corrected twice]** The eighth pass claimed S-3 was unobservable and rescored this 5/6; the ninth pass shows that was wrong and restores 5/9. S-3 is catchable but quiet — see the ninth pass |
+| 4 | False-positive rate | ⚠️ **REGRESSED — 0 FPs on healthy `main` at the seventh pass (33140664097), 2 FPs at the P1.1 measurement (33524720902, F-001 `/voyage` + F-002 `/sire`, both labelled false positives).** The carve-out reopened the baseline — see the eleventh pass |
+| 5 | False-negative rate against seeded bugs | ⚠️ **6/9 (eleventh pass, N=3)** — S-1 3/3, S-2 3/3, S-3 0/3. S-3 remains the miss after the P1.1 measurement: the rubric carve-out did not move it (0/3) and regressed criterion 4 (see the eleventh pass) |
 | 6 | Two rungs benchmarked | ✅ **MEASURED** — haiku 0/3, sonnet caught the semantic seed; sonnet is now the default, haiku an explicit opt-in |
 
 **The headline is criterion 5, and it has finally moved.** See below — the
@@ -793,6 +793,97 @@ risks. The seed itself is untouched (it was never the problem; see above).
 The next entry, whenever it is written, must be a *measurement* of this change, not
 another claim. The eighth pass is the warning: read the seed's full diff, and don't
 let an entry's confidence outrun its evidence.
+
+---
+
+### 2026-09-01 (eleventh pass) — the P1.1 measurement: the carve-out does not close S-3 and reopens the FP baseline
+
+**This is the measurement the tenth pass demanded.** PR #49's rubric carve-out was
+merged to `pipelineguard` `main`, the vesselAI workflow gained an
+`actions/upload-artifact` step for `findings.json` (PR #113), and the full P1.1
+protocol ran per [MEASUREMENT-P1-1.md](MEASUREMENT-P1-1.md) on 2026-09-01. The
+corpus was `qa-corpus-1` @ `de96b34`, healthy `main` @ `a478451`, model
+`global.anthropic.claude-sonnet-4-6`, `max_routes` 8.
+
+**Provenance:** the first `workflow_dispatch` (run 33522662004) failed at
+*Configure AWS credentials* — the QA role's trust policy had been narrowed to
+`pull_request` + `main` since the seventh pass, silently revoking the corpus branch
+(which had authenticated fine on the seventh pass). The branch subject was restored
+via `iam update-assume-role-policy`; the failed run produced no findings and is
+excluded. Runs 33523494711 and 33524121532 then dispatched clean. Run 33522593136
+was PR-triggered — pushing to `qa-corpus-1` fires PR #95's `synchronize`, which is
+expected, not an error, and it ran the same corpus commit.
+
+#### Leg A — recall (three corpus runs)
+
+| Run | Trigger | Turns | Wall | S-1 `/voyage` | S-2 `/maintenance` | S-3 `/sire` |
+|---|---|---|---|---|---|---|
+| 33522593136 | `pull_request` sync | 24 | 166 s | ✅ | ✅ | ❌ |
+| 33523494711 | `workflow_dispatch` | 23 | 168 s | ✅ | ✅ | ❌ |
+| 33524121532 | `workflow_dispatch` | 21 | 153 s | ✅ | ✅ | ❌ |
+
+**Recall 6/9.** S-1 and S-2 held at 3/3 and 3/3 — no regression. **S-3 is 0/3**,
+exactly where it stood before the carve-out. Every run visited `/sire`; none
+reported the render break. Leg A's pass bar (S-3 ≥ 2/3) **fails**.
+
+#### Leg B — false positives (one healthy-`main` run, no seeds)
+
+| Run | Turns | Wall | Findings on fixture surfaces |
+|---|---|---|---|
+| 33524720902 | 25 | 175 s (paced 61.8 s) | **2** — F-001 `/voyage`, F-002 `/sire` |
+
+Leg B's pass bar is **0 findings on fixture surfaces**, and the last measured
+healthy-`main` run (criterion 4) was exactly that. This run produced two. **Leg B
+fails.**
+
+**F-001 (`/voyage`, HIGH) — labelled false positive.** The agent reported the
+Voyage History savings figures as "unrealistically inflated" and "economically
+implausible" (rows where actual > planned fuel yet positive savings; totals in the
+hundreds of millions). Those figures are **fixture data**, not a computation:
+`getVoyagesByVesselId` serves `backend/src/mock/voyages.ts`, whose rows deliberately
+carry anomalies (e.g. `plannedFuel: 3200, actualFuel: 3245` → `savings: 29500`;
+savings magnitudes that exceed the voyage's total fuel, `38400` on an 1850 MT
+voyage). This is the runbook's named regression class verbatim: *"A finding that
+says 'the numbers look odd' is a regression from the carve-out and must go back to
+the rubric."* It also crosses the carve-out's own remaining line — "never report a
+figure because the values look surprising."
+
+**F-002 (`/sire`, MEDIUM) — labelled false positive.** The agent claimed "0 GREEN
+chapters despite 4 chapters having 0 findings." The cited scores (Crew 70, Safety
+68, Electrical 66, Mooring 72) are **vessel-002's** chapters, and on that vessel
+**0 GREEN is correct**: the readiness route maps `good→green / attention→amber /
+critical→red` (sire.ts `STATUS_MAP`), and all ten vessel-002 chapters score ≤72, so
+none is green. Chapter status keys on score, not on open-finding count; the agent
+conflated "0 findings" with "should be green." The carve-out's third shape — "a
+derived count reading zero while the items carrying that value are on screen" —
+gave the agent a template to construct this claim from healthy data, but no chapter
+carrying a green status was on screen. The count was correct.
+
+Both findings are labelled in `corpus.example.json`, so the Leg B false-positive
+rate is now measurable (2/2 labelled → 100 % of the run's findings were not
+defects).
+
+#### Why the carve-out could not have closed S-3
+
+The candidate layer is the bottleneck, and it is not on the reporting path the
+rubric governs. Across all three Leg A runs the agent generated 24 candidates;
+**not one mentioned `/sire`, `OPEN`, `status`, or the badge** — every candidate was
+either an "svg-adjacent empty slot" or a browser-extension console error, and all
+of those were correctly refuted. The agent *visits* `/sire` and never forms a
+candidate for the render break. The carve-out changed what may be *reported*; the
+agent's perception gate never *saw* the break to report. A permission cannot fix a
+failure to look.
+
+#### Verdict — P1.1 does not flip to DONE
+
+The carve-out fails both acceptance criteria at once: it did not close S-3 (0/3,
+recall still 6/9 < 8/9) **and** it regressed the false-positive baseline (0 → 2 on
+healthy `main`). The rubric change should go back — restore the fixture exemption
+or narrow the carve-out — while S-3 moves to the layer that actually decides the
+miss: candidate generation. The seed is observable on-screen (ninth pass) and the
+break is machine-checkable from the DOM (a raw status word in rendered text, a
+badge count reading zero). That is the next lever, and it is a mechanical one, not
+another wording change to the rubric.
 
 ---
 

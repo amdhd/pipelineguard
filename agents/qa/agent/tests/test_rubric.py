@@ -244,6 +244,52 @@ class TestReadTheValues:
             assert leak not in lowered, f"rubric leaks the corpus: {leak}"
 
 
+class TestFixtureSurfaceExemption:
+    """
+    The carve-out the P1.1 measurement withdrew (PR #49) made THREE render-break
+    shapes reportable on fixture surfaces; Leg B showed that was too wide -- the
+    'count reads zero' shape regressed the healthy-`main` FP baseline (F-002).
+    What the measurement did NOT implicate is the narrowest shape: a status
+    VALUE leaking raw into the text. That is kept reportable here, because it is
+    the one half of S-3 that is mechanical, and without it the
+    `status_case_leak` candidate would be refuted as "the demo working as
+    intended" and S-3 could never land.
+    """
+
+    def _prompt(self):
+        return rubric.build_system_prompt(ai_fallback_mode=True, max_routes=8)
+
+    def test_status_value_render_break_is_reportable_on_fixture_surfaces(self):
+        prompt = self._prompt()
+        assert "ONE RENDER BREAK IS REPORTABLE EVEN ON A FIXTURE SURFACE" in prompt
+        assert "status VALUE" in prompt
+        assert "leaking raw into the text" in prompt
+        assert "Report the leaked value" in prompt
+
+    def test_the_leaked_value_is_anchored_to_casing_not_to_numbers(self):
+        """
+        The line between this exception and the FP it must not invite: it names
+        a casing mismatch (the stored spelling showing), never a surprising
+        figure. 'Report the leaked value; never a figure' is what keeps F-001
+        (numbers) and F-002 (count-zero) out.
+        """
+        prompt = self._prompt()
+        assert "casing it is stored in" in prompt
+        assert "storage is a defect" in prompt
+        assert "not a seeded anomaly" in prompt
+
+    def test_the_exception_does_not_leak_the_seed_vocabulary(self):
+        """
+        The exception names the SHAPE, not the seed. Teaching to the test would
+        make the next measurement meaningless. 'open' is intentionally NOT a
+        leak term -- the empty-state line already says "No open findings" -- so
+        the guard uses the quoted/value forms and the class names.
+        """
+        lowered = self._prompt().lower()
+        for leak in ("'open'", '"open"', "uncategorised", "text-status-red", "status-red"):
+            assert leak not in lowered, f"rubric leaks the S-3 seed: {leak}"
+
+
 class TestCandidates:
     """
     The mandatory-verdict contract. The discriminator run proved the model rung

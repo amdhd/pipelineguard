@@ -90,3 +90,72 @@ def test_warning_and_errors_mixed_only_errors_are_candidates():
     })
     assert out[0]["count"] == 1
     assert "TypeError" in out[0]["samples"][0]
+
+
+class TestStatusCaseLeak:
+    """
+    The S-3 mechanical half. The seed's leak is a status value whose STORED
+    spelling is all-caps ("OPEN") on a page that renders the same class of value
+    lowercase elsewhere ("closed"). The harvest walks text nodes -- the SOURCE
+    case, which CSS text-transform never touches -- so CSS-uppercased labels
+    ("ACTIVE", "GREEN") can never reach `case_words`. Fires only on the
+    inconsistency; if every status is uppercase, uppercase is the convention.
+    """
+
+    def test_a_status_value_leaking_raw_is_detected(self):
+        """The corpus /sire shape exactly: OPEN all-caps, closed lowercase."""
+        out = candidates.detect({
+            "case_words": [
+                {"word": "OPEN", "count": 4, "sample": ["OPEN", "closed"]},
+                {"word": "IMO", "count": 2, "sample": ["IMO 9432521"]},
+            ],
+            "text": "Readiness\nOPEN\nclosed\nOPEN\nOPEN\nOPEN",
+        })
+        assert len(out) == 1
+        cand = out[0]
+        assert cand["type"] == "status_case_leak"
+        assert cand["count"] == 4
+        assert "OPEN" in cand["evidence"]
+        assert "closed" in cand["evidence"]
+
+    def test_acronyms_are_not_statuses(self):
+        """IMO/CII/MT survive the walk but are filtered by the vocabulary."""
+        out = candidates.detect({
+            "case_words": [{"word": "IMO", "count": 2, "sample": []}],
+            "text": "MT Aurora, IMO 9432521. Status: closed.",
+        })
+        assert out == []
+
+    def test_all_caps_is_the_convention_when_no_lowercase_status_renders(self):
+        """A page that stores every status uppercase is consistent, not leaking."""
+        out = candidates.detect({
+            "case_words": [{"word": "OPEN", "count": 4, "sample": []}],
+            "text": "OPEN CLOSED OPEN",
+        })
+        assert out == []
+
+    def test_css_uppercased_labels_never_reach_case_words(self):
+        """
+        The harvest only reports all-caps from the SOURCE case, so a page whose
+        uppercase is text-transform (badges, headers) yields no case_words at
+        all -- nothing to compare, nothing to fire on.
+        """
+        out = candidates.detect({
+            "text": "ACTIVE  GREEN  CHAPTERS  OPEN FINDINGS",
+        })
+        assert out == []
+
+    def test_a_page_with_no_all_caps_words_yields_nothing(self):
+        out = candidates.detect({
+            "case_words": [],
+            "text": "open, closed, active",
+        })
+        assert out == []
+
+    def test_case_leak_coexists_with_other_candidate_classes(self):
+        out = candidates.detect({
+            "case_words": [{"word": "OPEN", "count": 1, "sample": []}],
+            "text": "closed",
+            "console_errors": ["uncaught: boom"],
+        })
+        assert {c["type"] for c in out} == {"status_case_leak", "console_error"}

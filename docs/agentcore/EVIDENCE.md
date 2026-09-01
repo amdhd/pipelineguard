@@ -28,13 +28,16 @@ the CDP idle-socket fix).
 | 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
-| 4 | False-positive rate | ⚠️ **REGRESSED — 0 FPs on healthy `main` at the seventh pass (33140664097), 2 FPs at the P1.1 measurement (33524720902, F-001 `/voyage` + F-002 `/sire`, both labelled false positives).** The carve-out reopened the baseline — see the eleventh pass |
-| 5 | False-negative rate against seeded bugs | ⚠️ **6/9 (eleventh pass, N=3)** — S-1 3/3, S-2 3/3, S-3 0/3. S-3 remains the miss after the P1.1 measurement: the rubric carve-out did not move it (0/3) and regressed criterion 4 (see the eleventh pass) |
+| 4 | False-positive rate | ✅ **BEST MEASURED — 0 findings on healthy `main` (twelfth pass, 33535141706); the merged-pass Leg B (33529796841) produced only the known `/voyage` savings fixture FP, labelled false positive.** The carve-out that reopened the baseline is withdrawn; the candidate layer + coverage rule measure clean on the FP side — see the twelfth pass |
+| 5 | False-negative rate against seeded bugs | ⚠️ **6/9 (twelfth pass, N=3)** — S-1 3/3, S-2 3/3, S-3 0/3. S-3 is **0/7** across all candidate-layer passes: the `status_case_leak` detector is correct but its signal renders only on the `/sire` Findings tab, which the agent never materializes even under the mandatory open-every-view rule (PR #52). **P1.1 closed via the written-decision branch** — see the twelfth pass |
 | 6 | Two rungs benchmarked | ✅ **MEASURED** — haiku 0/3, sonnet caught the semantic seed; sonnet is now the default, haiku an explicit opt-in |
 
-**The headline is criterion 5, and it has finally moved.** See below — the
-deterministic candidate layer caught S-2, the miss that no model-rung or rubric
-change had moved across twelve earlier runs.
+**The headline is criterion 5, and the candidate layer finally moved it — but not
+all the way.** The deterministic candidate layer caught S-2 (which no model-rung or
+rubric change had moved across earlier runs) and turned S-3's miss from perceptual
+into mechanical-and-unreachable: the `status_case_leak` detector is right, and its
+signal sits behind a tab the agent will not open. Twelfth pass: S-3 0/3 again,
+recall still 6/9 — see below.
 
 ### Runs
 
@@ -884,6 +887,86 @@ miss: candidate generation. The seed is observable on-screen (ninth pass) and th
 break is machine-checkable from the DOM (a raw status word in rendered text, a
 badge count reading zero). That is the next lever, and it is a mechanical one, not
 another wording change to the rubric.
+
+---
+
+### 2026-09-02 (twelfth pass) — the P1.2 measurement: the S-3 candidate layer closes neither half of S-3
+
+**This is the measurement the tenth pass demanded.** PR #50 (`feat/s3-candidate-layer`)
+merged the `status_case_leak` detector into the harness; the first measurement of it
+caught a deterministic detector bug, fixed by PR #51 (`fix/s3-twin-check`); and the
+coverage diagnosis (S-3's leak renders only on a non-default tab) produced PR #52
+(`feat/open-every-view`), which made opening every view a route offers REQUIRED
+reading. The P1.2 protocol ran per [MEASUREMENT-P1-2.md](MEASUREMENT-P1-2.md): three
+corpus runs on `qa-corpus-1` @ `de96b34` and one healthy-`main` run @ `a478451`,
+model `global.anthropic.claude-sonnet-4-6`, `max_routes` 8. The workflow checks the
+harness out at `PIPELINEGUARD_REF: main` (`ui-qa-agent.yml` line 74), so every run
+below executed `main` @ `5454e922` — the coverage rule was live.
+
+#### Leg A — recall (three corpus runs)
+
+| Run | Turns | Wall | S-1 `/voyage` | S-2 `/maintenance` | S-3 `/sire` |
+|---|---|---|---|---|---|
+| 33533100509 | 28 | 186 s | ✅ | ✅ | ❌ |
+| 33533958227 | 24 | 165 s | ✅ | ✅ | ❌ |
+| 33534532566 | 24 | 166 s | ✅ | ✅ | ❌ |
+
+**Recall 6/9, Leg A FAILS — identical to the second pass.** S-1 and S-2 held at 3/3
+and 3/3 (no regression); S-3 is again 0/3. The coverage rule changed nothing
+measurable on any seed.
+
+#### Leg B — false positives (one healthy-`main` run, no seeds)
+
+| Run | Turns | Wall | Findings on fixture surfaces |
+|---|---|---|---|
+| 33535141706 | 21 | 138 s | **0** — clean, overall PASS |
+
+**Leg B PASSES.** The fixed detector plus the open-every-view rule produced **zero
+findings on healthy `main`**, including zero `status_case_leak` candidates. The
+coverage rule did not reopen the FP baseline the carve-out (PR #49) had regressed.
+
+#### Why the coverage rule could not close S-3
+
+The miss is a coverage-within-route failure, now pinned down from every side:
+
+- **The detector is correct and provably live.** `_HARVEST` pass 4
+  (`browser_tools.py` lines 162-181) collects all-caps words from `nodeValue` — the
+  SOURCE case, which the `/sire` status span's `capitalize` CSS class never touches —
+  into `case_words`, and `detect()` is unit-tested to emit `status_case_leak` on the
+  exact `OPEN`/`Closed` DOM shape. The same harvest's `repeated_slots` fired in all
+  three runs, so the machinery is running; if the Findings tab were in the DOM,
+  `OPEN` would deterministically reach `case_words` and the candidate would fire.
+- **`/sire` was visited in all three runs** (`routes_visited` includes it in each),
+  yet **no `status_case_leak` candidate has EVER fired in any corpus run** — 0/7
+  across the merged, fixed, and coverage passes, and 0/6 on the fixed detector.
+- **The `/sire` Findings tab — the only view that renders the raw `OPEN` — was never
+  materialized.** The leak's signal never entered the DOM, so the detector had
+  nothing to see. This is the eleventh pass's perception-gate failure one level
+  deeper: not "the agent visited `/sire` and did not notice the break" but "the agent
+  visited `/sire` and did not render the view the break lives on."
+- **The mandatory open-every-view rule did not move it.** The agent read the Readiness
+  default tab and moved on in every run. The rubric lever is exhausted: two designs —
+  optional "up to two controls", then mandatory "open EVERY view ... Switching views
+  is READING" — both produced S-3 0/3.
+
+#### Verdict — P1.1 closes via the written-decision branch
+
+Leg A fails (S-3 0/3, recall 6/9 < 8/9) and Leg B passes (0 findings on healthy
+`main`). The candidate layer is correct and the FP side is clean, but **the candidate
+is unreachable: the raw-enum signal renders only on a non-default tab the agent will
+not open, so `status_case_leak` can never fire.** The candidate layer moved the miss
+out of the model's *judgment* and into the runtime's *harvest* — but the harvest only
+sees the DOM the model chooses to materialize, so the miss re-emerged at the
+*materialization* step.
+
+The human decision (2026-09-02) exercises the written-decision branch of P1.1's
+acceptance criterion: **a defect whose symptom renders only behind a non-default
+view is declared OUT OF SCOPE for this browser-driving agent while the runtime
+harvests only the DOM the model materializes.** The miss is owned: recall 6/9,
+S-3 0/7, the materialization gate named, the `status_case_leak` detector retained
+in the harness, and the reopening condition recorded — any layer, current or future,
+that materializes the `/sire` Findings tab will fire it. S-3 is a named limitation,
+not a silent one.
 
 ---
 

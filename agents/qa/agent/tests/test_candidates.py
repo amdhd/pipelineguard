@@ -118,6 +118,26 @@ class TestStatusCaseLeak:
         assert "OPEN" in cand["evidence"]
         assert "closed" in cand["evidence"]
 
+    def test_a_capitalize_css_twin_still_fires(self):
+        """
+        The corpus /sire status span carries a `capitalize` class, so innerText
+        shows 'Closed', not 'closed'. A twin is any NON-uppercase rendering of a
+        status word -- requiring the fully-lowercase form verbatim would make the
+        candidate impossible to fire on the exact page it exists for (this shape
+        caused the S-3 miss in P1.2 run 1).
+        """
+        out = candidates.detect({
+            "case_words": [
+                {"word": "OPEN", "count": 4, "sample": ["OPEN", "Closed"]},
+            ],
+            "text": "SIRE findings\nOPEN\nClosed\nOPEN\nOPEN\nOPEN\nCh.1\nCh.2",
+        })
+        assert len(out) == 1
+        cand = out[0]
+        assert cand["type"] == "status_case_leak"
+        assert cand["count"] == 4
+        assert "closed" in cand["evidence"]
+
     def test_acronyms_are_not_statuses(self):
         """IMO/CII/MT survive the walk but are filtered by the vocabulary."""
         out = candidates.detect({
@@ -126,7 +146,7 @@ class TestStatusCaseLeak:
         })
         assert out == []
 
-    def test_all_caps_is_the_convention_when_no_lowercase_status_renders(self):
+    def test_all_caps_is_the_convention_when_no_normal_case_status_renders(self):
         """A page that stores every status uppercase is consistent, not leaking."""
         out = candidates.detect({
             "case_words": [{"word": "OPEN", "count": 4, "sample": []}],

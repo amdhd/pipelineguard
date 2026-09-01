@@ -319,6 +319,41 @@ class TestRouteBudget:
         for r in ("/a", "/b", "/c", "/d", "/e"):
             assert "error" not in s.navigate(r)
 
+    def test_a_failed_navigation_does_not_charge_the_route(self):
+        """
+        A navigation that produced nothing must not consume a budget slot.
+        Charging it would silently cost one of the routes the caller asked for,
+        and the model could be refused a real route because a broken one failed
+        first.
+        """
+        class _Broken(FakeCDP):
+            def send(self, method, params=None, timeout=None):
+                if method == "Page.navigate" and params.get("url", "").endswith("/voyage"):
+                    raise CDPError("navigation failed: net::ERR_CONNECTION_REFUSED")
+                return super().send(method, params, timeout)
+
+        s = browser_tools.BrowserSession("https://x.test", lambda l, p: f"k/{l}", max_routes=1)
+        s.cdp = _Broken()
+        failed = s.navigate("/voyage")
+        assert "error" in failed
+        assert s.visited == []
+        # The slot is still available, so a real route can still be visited.
+        assert "error" not in s.navigate("/ports")
+        assert s.visited == ["/ports"]
+
+    def test_a_failed_navigation_reports_the_browser_error(self):
+        """The model needs the CDP reason, not an empty failure."""
+        class _Broken(FakeCDP):
+            def send(self, method, params=None, timeout=None):
+                if method == "Page.navigate" and params.get("url", "").endswith("/voyage"):
+                    raise CDPError("net::ERR_CONNECTION_REFUSED")
+                return super().send(method, params, timeout)
+
+        s = browser_tools.BrowserSession("https://x.test", lambda l, p: f"k/{l}", max_routes=3)
+        s.cdp = _Broken()
+        result = s.navigate("/voyage")
+        assert "ERR_CONNECTION_REFUSED" in result["error"]
+
 
 class TestAuthProbe:
     """

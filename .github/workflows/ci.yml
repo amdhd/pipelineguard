@@ -113,6 +113,9 @@ jobs:
         run: npm test --prefix app
 
       # SCA on the app's dependency tree — the one scan the pipeline's image +
-      # IaC gates don't cover. Informational for now (does not block the PR).
+      # IaC gates don't cover. A real gate at high+: the current tree passes
+      # (its only finding is a LOW body-parser awaiting `npm audit fix`), so a
+      # new HIGH/CRITICAL prod dependency blocks the PR instead of being swept
+      # under `|| true` — a step that always goes green tells nobody anything.
       - name: npm audit (high+)
-        run: npm audit --omit=dev --audit-level=high --prefix app || true
+        run: npm audit --omit=dev --audit-level=high --prefix app

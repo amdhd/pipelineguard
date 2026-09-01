@@ -233,9 +233,9 @@ gates).
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | 1–2 h | — |
 | **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | 1–2 h | — |
-| **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | 30 min | — |
-| **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | 30 min | — |
-| **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | 15 min | — |
+| **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
+| **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
+| **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | **DONE** | — |
 | **P3.4** | Add a Terraform-level switch to disable the whole QA-on-PR pipeline | LOW/MED | `infra/modules/qa_agent/` | half-day | — |
 
 ## Acceptance criteria per item
@@ -303,6 +303,21 @@ instead of a hardcoded 900. A caller who raised `--deadline-seconds` toward the
 ceiling was previously cut off mid-flight — discarding the same report the
 timeout exists to protect. The 900 default is drift-checked against
 `agent.DEFAULT_DEADLINE_SECONDS`. +6 tests.
+
+**P3.1 — DONE.** `navigate()` charges a route only after the CDP navigation
+succeeds. A failed `Page.navigate` returns the browser error with current page
+state and does NOT consume a budget slot — a broken route can no longer refuse
+the model a real one. +2 tests.
+
+**P3.2 — DONE.** `agents/fix/requirements.txt` declares `boto3` (this half runs
+on the GitHub runner, not the managed runtime); `agents/converge/requirements.txt`
+is a comment-only declaration — the convergence session is deliberately pure
+stdlib (reads JSON, applies the stopping rule, writes the ledger).
+
+**P3.3 — DONE.** `npm audit --omit=dev --audit-level=high` is now a real gate.
+The old `|| true` swept failures under a step that always went green; the tree
+currently passes (its only finding is a LOW `body-parser`), so a new HIGH/CRITICAL
+prod dependency now blocks the PR.
 
 **P2.x / P3.x** — each gets its named outcome + test.
 

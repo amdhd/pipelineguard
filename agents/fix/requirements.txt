@@ -1,0 +1,7 @@
+# Runtime deps for the fix half of AgentCore.
+#
+# This half runs on the GitHub runner (it edits a checked-out tree and calls
+# Bedrock directly), NOT inside the managed AgentCore runtime -- so unlike the
+# QA agent it cannot rely on the runtime providing boto3 and must declare its
+# own AWS SDK. botocore arrives transitively with boto3.
+boto3>=1.34.0

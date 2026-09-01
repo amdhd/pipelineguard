@@ -1,0 +1,4 @@
+# The convergence session is deliberately pure Python (standard library only):
+# it reads findings JSON, applies the stopping rule, and writes the ledger. No
+# model calls, no AWS SDK, nothing to install -- an empty declaration is the
+# declaration. If this ever grows a dependency, list it here with a reason.

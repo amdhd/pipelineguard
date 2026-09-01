@@ -230,7 +230,7 @@ gates).
 | **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | **DONE** | — |
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | **DONE** | — |
-| **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | 30 min | — |
+| **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | 1–2 h | — |
 | **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | 1–2 h | — |
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | 30 min | — |
@@ -296,6 +296,13 @@ findings — a PASS cannot hide the fact that the run never checked whether the
 agent got past the login page. Unknown is deliberately not a hard fail (a public
 target with no token-key auth is legitimate); only a measured `False` discards.
 +5 tests.
+
+**P2.2 — DONE.** The invoke read timeout is derived from the deadline the caller
+actually configured (`_read_timeout`: `min(900, deadline + 60s startup slack)`)
+instead of a hardcoded 900. A caller who raised `--deadline-seconds` toward the
+ceiling was previously cut off mid-flight — discarding the same report the
+timeout exists to protect. The 900 default is drift-checked against
+`agent.DEFAULT_DEADLINE_SECONDS`. +6 tests.
 
 **P2.x / P3.x** — each gets its named outcome + test.
 

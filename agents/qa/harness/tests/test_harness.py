@@ -583,7 +583,62 @@ class TestReachableKnobs:
         assert args.max_tokens_per_call is None and args.presign_expires is None
 
 
-class TestSessionLabel:
+class TestReadTimeout:
+    """
+    The invoke read timeout must be derived from the agent's own deadline, not a
+    magic number. The old hardcoded 900s was sized to the synchronous-invocation
+    ceiling, so a caller who raised --deadline-seconds toward the ceiling was cut
+    off mid-flight -- discarding the same report the timeout exists to protect.
+    """
+
+    def test_it_tracks_the_agent_deadline_default(self):
+        import main as harness
+
+        assert harness._INVOKE_DEADLINE_DEFAULT == _agent_default("DEFAULT_DEADLINE_SECONDS")
+
+    def test_the_default_is_deadline_plus_slack(self):
+        import main as harness
+
+        assert harness._read_timeout({}) == 600 + harness._INVOKE_STARTUP_SLACK
+
+    def test_a_longer_deadline_raises_the_timeout_with_it(self):
+        import main as harness
+
+        assert harness._read_timeout({"deadline_seconds": 840}) == 900
+
+    def test_a_shorter_deadline_lowers_the_timeout(self):
+        import main as harness
+
+        assert harness._read_timeout({"deadline_seconds": 120}) == 180
+
+    def test_the_ceiling_clamps_even_a_longer_deadline(self):
+        import main as harness
+
+        # A caller who asks for more than the synchronous ceiling gets the
+        # ceiling: timing out at 900s is the truth, not a premature cutoff.
+        assert harness._read_timeout({"deadline_seconds": 1000}) == 900
+
+    def test_the_computed_timeout_reaches_the_client(self, monkeypatch):
+        import main as harness
+
+        seen = {}
+
+        class FakeConfig:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+        class FakeResponse:
+            def read(self):
+                return b'{"overall": "PASS", "pages_tested": 0, "findings": []}'
+
+        class FakeClient:
+            def invoke_agent_runtime(self, **kw):
+                return {"response": FakeResponse()}
+
+        monkeypatch.setattr(harness, "Config", FakeConfig)
+        monkeypatch.setattr(harness.boto3, "client", lambda *a, **kw: FakeClient())
+        harness.invoke("arn", {"deadline_seconds": 120}, region="ap-southeast-1")
+        assert seen["read_timeout"] == 180
     """
     The payload's session_id becomes the S3 evidence prefix (screenshots/ and
     reports/), so the DEFAULT must be unique per invocation. The old constant

@@ -40,6 +40,23 @@ DEFAULT_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 # InvokeAgentRuntime requires a session id of at least 33 characters.
 _MIN_SESSION_ID = 33
 
+# The harness waits for the agent's response, which arrives only when the run
+# finishes. InvokeAgentRuntime is synchronous and the agent may legitimately
+# take minutes -- it drives a browser and paces itself against a 10 requests-per
+# -minute quota. The agent's own wall-clock deadline (600s default) is the
+# largest amount of time a conforming run takes to produce its response, so the
+# read timeout is derived from the deadline the caller actually configured plus
+# a fixed startup allowance, clamped to 900s -- the ceiling for a synchronous
+# invocation, past which nothing useful can arrive.
+_INVOKE_DEADLINE_DEFAULT = 600  # mirrors agent.DEFAULT_DEADLINE_SECONDS (drift-tested)
+_INVOKE_STARTUP_SLACK = 60
+_INVOKE_CEILING = 900
+
+
+def _read_timeout(payload: dict) -> int:
+    deadline = int(payload.get("deadline_seconds", _INVOKE_DEADLINE_DEFAULT))
+    return min(_INVOKE_CEILING, deadline + _INVOKE_STARTUP_SLACK)
+
 
 def new_session_id(prefix: str = "qa") -> str:
     """A session id that satisfies the API's minimum length."""
@@ -67,7 +84,7 @@ def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, ses
     caller can tell "the agent produced nonsense" from "the harness crashed" --
     the same distinction the agent's own entrypoint preserves.
     """
-    # READ TIMEOUT SIZED TO THE AGENT, NOT TO BOTOCORE'S DEFAULT.
+    # READ TIMEOUT DERIVED FROM THE AGENT'S DEADLINE, NOT A MAGIC NUMBER.
     #
     # InvokeAgentRuntime is synchronous and the agent may legitimately take
     # minutes -- it drives a browser and paces itself against a 10 requests-per
@@ -76,8 +93,12 @@ def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, ses
     # timeout on endpoint URL". That is the wrong diagnosis pointing at the
     # wrong place, and it discards a report the agent had already produced.
     #
-    # 900s is the ceiling for a synchronous invocation, so timing out past it
-    # tells the truth: nothing useful can arrive after that.
+    # The old hardcoded 900s was sized to the ceiling, not to the run: a caller
+    # who raised --deadline-seconds toward the ceiling was cut off mid-flight --
+    # discarding the very report this timeout exists to protect. The timeout now
+    # tracks the deadline the caller actually configured (default 600) plus a
+    # startup allowance, and clamps at 900s -- the synchronous ceiling, past
+    # which timing out tells the truth: nothing useful can arrive after that.
     #
     # retries are disabled deliberately. A retry would start a SECOND agent
     # session -- a second browser, a second set of model calls, billed again --
@@ -86,7 +107,10 @@ def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, ses
     client = boto3.client(
         "bedrock-agentcore",
         region_name=region,
-        config=Config(read_timeout=900, connect_timeout=15, retries={"max_attempts": 0}),
+        config=Config(
+            read_timeout=_read_timeout(payload), connect_timeout=15,
+            retries={"max_attempts": 0},
+        ),
     )
     try:
         response = client.invoke_agent_runtime(

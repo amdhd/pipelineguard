@@ -41,23 +41,60 @@ import convergence as conv  # noqa: E402
 import ledger  # noqa: E402
 
 
+class StateError(ValueError):
+    """
+    A JSON input the session was handed -- the state file, this round's findings,
+    or the fix result -- could not be read.
+
+    The session answers "another round, or stop?" from these files, so an
+    unreadable one is a program failure (exit 2), reported cleanly rather than
+    as a traceback. The state file gets special attention: a CORRUPT state file
+    is not a missing one. Treating it as round 1 would silently reset the
+    cumulative caps the loop exists to enforce, and spend money the loop was not
+    authorized to spend.
+    """
+
+
 def load_state(path: Path, budgets: dict) -> dict:
     """The state so far, or a fresh one. A missing file is round 1, not an error."""
-    if path.exists() and path.read_text().strip():
-        state = json.loads(path.read_text())
-        # Budgets are re-read from the flags every round rather than trusted from
-        # the file. The caps belong to the workflow that is spending the money;
-        # a state file that carried its own would let a stale artefact quietly
-        # raise them.
-        state["budgets"] = budgets
-        return state
-    return {"budgets": budgets, "rounds": [], "decisions": []}
+    if not path.exists():
+        return {"budgets": budgets, "rounds": [], "decisions": []}
+    text = path.read_text()
+    if not text.strip():
+        # An empty file carries no history, which is what a missing one carries.
+        return {"budgets": budgets, "rounds": [], "decisions": []}
+    try:
+        state = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise StateError(
+            f"{path.name} exists but is not valid JSON ({e}). Refusing to "
+            "guess rather than silently restarting the loop from round 1."
+        ) from e
+    # Budgets are re-read from the flags every round rather than trusted from
+    # the file. The caps belong to the workflow that is spending the money;
+    # a state file that carried its own would let a stale artefact quietly
+    # raise them.
+    state["budgets"] = budgets
+    return state
 
 
 def _read_json(path: str | None) -> dict:
     if not path:
         return {}
-    return json.loads(Path(path).read_text())
+    p = Path(path)
+    try:
+        payload = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise StateError(f"{p.name} is not valid JSON ({e})") from e
+    if not isinstance(payload, dict):
+        # The session's contract is a JSON object on every input -- a findings
+        # artefact, a fix-result artefact. Valid JSON of another shape (a list,
+        # a string) would crash downstream in round_record with an attribute
+        # error; refuse it here instead.
+        raise StateError(
+            f"{p.name} does not carry a JSON object (found {type(payload).__name__})"
+        )
+    return payload
 
 
 def run(args) -> int:
@@ -68,10 +105,15 @@ def run(args) -> int:
         "round_timeout_seconds": args.round_timeout_seconds,
     }
     state_path = Path(args.state)
-    state = load_state(state_path, budgets)
-
-    findings = _read_json(args.findings)
-    fix_result = _read_json(args.fix_result)
+    try:
+        state = load_state(state_path, budgets)
+        findings = _read_json(args.findings)
+        fix_result = _read_json(args.fix_result)
+    except StateError as e:
+        # A clean exit-2, not a traceback: the caller needs to see why, and the
+        # loop must not proceed -- or be restarted -- on inputs it cannot read.
+        print(f"converge session: {e}", file=sys.stderr)
+        return 2
 
     # The round number comes from the state, not from a flag. A workflow that
     # passed the wrong one -- easy, in a loop written in YAML -- would compare a

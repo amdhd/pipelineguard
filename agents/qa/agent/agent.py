@@ -19,6 +19,7 @@ import math
 import re
 import os
 import time
+import uuid
 
 import boto3
 from botocore.config import Config
@@ -666,8 +667,21 @@ def _attach_candidate_evidence(findings, session):
     return findings
 
 
+def _default_session_id() -> str:
+    """
+    Fallback session id for a payload that carries none.
+
+    UUID, NOT a timestamp: `run-{int(time.time())}` had second resolution, so
+    two runs starting in the same second wrote to the same screenshots/ and
+    reports/ prefixes and overwrote each other's evidence. The harness always
+    sends a session_id now, but a future caller that omits it must not silently
+    inherit that collision.
+    """
+    return f"run-{uuid.uuid4().hex}"
+
+
 def run_qa(payload: dict) -> dict:
-    session_id = payload.get("session_id") or f"run-{int(time.time())}"
+    session_id = payload.get("session_id") or _default_session_id()
     base_url = payload["target_url"]
     email = payload["email"]
     password = payload["password"]

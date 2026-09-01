@@ -54,12 +54,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEVERITIES = "CRITICAL,HIGH"
 
 
+class FindingsLoadError(ValueError):
+    """
+    The findings file could not be read as a findings payload -- unparseable
+    JSON, or JSON without a `findings` list.
+
+    This is a REPORTABLE failure, not a crash. The harness turns inputs into a
+    summary a reviewer can act on, and a run that could not even read its input
+    is still a run the reviewer needs the reason for. A traceback is none of
+    those things.
+    """
+
+
 def _load_findings(path: Path) -> tuple[list[dict], str | None]:
     """Returns (findings, observed_at_commit). The commit is None when unstamped."""
-    payload = json.loads(path.read_text())
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        raise FindingsLoadError(f"{path.name} is not valid JSON: {e}") from e
     findings = payload.get("findings", [])
     if not isinstance(findings, list):
-        raise ValueError("findings JSON does not carry a 'findings' list")
+        raise FindingsLoadError(f"{path.name} does not carry a 'findings' list")
     observed = payload.get("observed_at_commit")
     return findings, observed if isinstance(observed, str) else None
 
@@ -112,15 +127,38 @@ def run(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     root = Path(args.repo).resolve()
-    findings, observed = _load_findings(Path(args.findings))
 
-    # Created BEFORE the staleness check so that every exit from this function
-    # reports token usage, including the ones that spent nothing. Phase 3's
-    # cumulative budget cannot tell "no tokens" from "no answer" unless the zero
-    # is written down, and it stops the loop when it cannot tell.
+    # Created BEFORE anything that can fail so that every exit from this
+    # function reports token usage, including the ones that spent nothing.
+    # Phase 3's cumulative budget cannot tell "no tokens" from "no answer"
+    # unless the zero is written down, and it stops the loop when it cannot
+    # tell.
     budget = fix_model.Budget(args.token_budget)
 
-    stale = staleness(observed, _head_commit(root))
+    try:
+        findings, observed = _load_findings(Path(args.findings))
+    except FindingsLoadError as e:
+        # An input the harness cannot read is a run that produced nothing, and
+        # it is reported the way the staleness guard reports a run it refuses
+        # to act on: a summary, a reason, an exit code -- never a traceback.
+        # The message sits in `errors` for the machine-readable result and the
+        # exit code, and on a skipped row so the markdown says why.
+        result = {
+            "applied": [], "excluded": [], "errors": [str(e)],
+            "skipped": [{"finding_id": "—", "reason": str(e)}],
+            "budget": fix_summary.budget_block(budget, args.model),
+        }
+        rendered = fix_summary.render(result, model=args.model)
+        if args.summary_out:
+            Path(args.summary_out).write_text(rendered)
+        else:
+            print(rendered)
+        if args.json_out:
+            Path(args.json_out).write_text(json.dumps(result, indent=2, default=str))
+        return fix_summary.exit_code(result)
+
+    head = _head_commit(root)
+    stale = staleness(observed, head)
     if stale and not args.allow_stale_findings:
         result = {
             "applied": [], "excluded": [], "errors": [stale],
@@ -138,6 +176,16 @@ def run(args) -> int:
     if observed is None:
         logger.warning(
             "findings carry no observed_at_commit; staleness could not be checked"
+        )
+    elif head is None:
+        # The stale report that burned us was replayed locally, which is exactly
+        # the path a non-git checkout takes. Refusing is too aggressive -- a
+        # directory is a fine place to replay -- but silent is wrong: the guard's
+        # only value is telling the reader the report may not describe this code.
+        logger.warning(
+            "the checkout at %s is not a git repository; staleness could not be "
+            "checked against observed commit %s",
+            root, observed[:12],
         )
 
     if args.severities:

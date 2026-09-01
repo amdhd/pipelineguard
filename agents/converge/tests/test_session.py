@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -161,3 +163,47 @@ class TestTheWholeLoop:
         call(tmp_path, qa([A]))
         _, _, comment = call(tmp_path, qa([A]), extra=["--labels", labels])
         assert "by-design" in comment
+
+
+class TestUnreadableInputs:
+    """
+    The session's inputs are files, and a file the session cannot read as JSON
+    is a program failure (exit 2), reported cleanly -- never a traceback. The
+    state file is the critical case: a CORRUPT state file is not a missing one,
+    and it must not be silently treated as round 1, which would reset the
+    cumulative caps the loop exists to enforce.
+    """
+
+    def _run(self, tmp_path, state_text, findings_text):
+        state = tmp_path / "state.json"
+        state.write_text(state_text)
+        findings = tmp_path / "findings.json"
+        findings.write_text(findings_text)
+        argv = [
+            "--state", str(state),
+            "--findings", str(findings),
+            "--comment-out", str(tmp_path / "comment.md"),
+        ]
+        return session.run(session.build_parser().parse_args(argv)), state
+
+    def test_a_corrupt_state_file_is_a_clean_program_error(self, tmp_path, capsys):
+        code, state = self._run(tmp_path, "{truncated", json.dumps(qa([A])))
+        assert code == 2
+        assert "state.json" in capsys.readouterr().err
+
+    def test_a_corrupt_state_file_is_not_silently_reset(self, tmp_path):
+        _, state = self._run(tmp_path, "{truncated", json.dumps(qa([A])))
+        # The loop's memory survives, untouched, for a human to inspect -- the
+        # session did not overwrite it with a fresh round-1 state.
+        assert state.read_text() == "{truncated"
+
+    def test_malformed_findings_json_is_a_clean_program_error(self, tmp_path, capsys):
+        code, _ = self._run(tmp_path, "", "[]")
+        assert code == 2
+        assert "findings.json" in capsys.readouterr().err
+
+    def test_load_state_raises_instead_of_resetting_on_a_corrupt_file(self, tmp_path):
+        state = tmp_path / "state.json"
+        state.write_text("{truncated")
+        with pytest.raises(session.StateError):
+            session.load_state(state, {})

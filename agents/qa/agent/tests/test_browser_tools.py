@@ -525,3 +525,28 @@ class TestCandidateFindings:
         state = session.read_page()
         assert state["candidate_findings"][0]["type"] == "repeated_svg_empty"
         assert session.candidate_screenshots == {}
+
+
+class TestLogPageStateGate:
+    """
+    The full-page-state diagnostic must be OFF unless explicitly enabled.
+
+    The Terraform default omits LOG_PAGE_STATE entirely, which this helper
+    reads as off. The value-awareness exists because Python truthiness would
+    treat a stray LOG_PAGE_STATE=0 as ON, silently emitting page state on
+    every read -- the exact metered tax the gate exists to avoid.
+    """
+
+    def test_absent_means_off(self, monkeypatch):
+        monkeypatch.delenv("LOG_PAGE_STATE", raising=False)
+        assert browser_tools._log_page_state_enabled() is False
+
+    def test_zero_and_false_are_off_not_on(self, monkeypatch):
+        for value in ("0", "false", "False", "no", ""):
+            monkeypatch.setenv("LOG_PAGE_STATE", value)
+            assert browser_tools._log_page_state_enabled() is False, value
+
+    def test_one_true_and_yes_are_on(self, monkeypatch):
+        for value in ("1", "true", "True", "yes", " 1 "):
+            monkeypatch.setenv("LOG_PAGE_STATE", value)
+            assert browser_tools._log_page_state_enabled() is True, value

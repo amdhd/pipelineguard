@@ -205,7 +205,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--secret-arn", help="Secrets Manager ARN holding the QA target login")
     p.add_argument("--email")
     p.add_argument("--password")
-    p.add_argument("--session-label", default="qa-run")
+    p.add_argument(
+        "--session-label",
+        default=new_session_id("qa-run"),
+        help="Name the run's S3 evidence prefix (screenshots/ and reports/). The "
+        "default is unique per invocation, so two concurrent runs cannot "
+        "overwrite each other's keys under screenshots/qa-run/; pass an explicit "
+        "label only to override deliberately.",
+    )
     p.add_argument("--model")
     p.add_argument("--max-turns", type=int)
     p.add_argument("--token-budget", type=int)

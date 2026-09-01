@@ -212,7 +212,7 @@ gates).
 |---|------|-----|-----|--------|-------|
 | **P0.1** | Guard `json.loads` in fix harness + converge loader | **HIGH** | `agents/fix/harness.py`, `agents/converge/session.py` | **DONE** | — |
 | **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | 1–2 h | Phase 1 done |
-| **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | 15 min | — |
+| **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
 | **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | seeds + `rubric.py` | days | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
@@ -241,8 +241,11 @@ runtime's deployment response (recorded in `EVIDENCE.md`) or source
 `TARGET_ARCH` from an env override. Acceptance: a packaged zip invokes cleanly
 in the real runtime.
 
-**P0.3 — diagnostic off by default.** `LOG_PAGE_STATE` only set when an env flag
-says so.
+**P0.3 — DONE.** `LOG_PAGE_STATE` is now behind a `log_page_state` variable
+(default `false`); Terraform **omits** the key when disabled rather than setting
+`"0"` (which Python truthiness would still treat as on). The agent's gate is
+value-aware (`1`/`true`/`yes` only), so a stray `LOG_PAGE_STATE=0` in an env file
+no longer silently enables it. +3 tests; takes effect on the next apply.
 
 **P1.1 — recall.** ≥8/9 on the seeded corpus (3/3 each for S-1, S-2, S-3) with
 the run recorded, *or* a written decision that S-3's quiet symptom is out of
@@ -274,7 +277,7 @@ rate quoted only over labelled findings.
 ## Suggested first sprint (all in-repo, all cheap)
 
 1. **P0-1** JSON-parse guards — **DONE** (30 min, +8 tests)
-2. **P0-3** gate the diagnostic (15 min)
+2. **P0-3** gate the diagnostic — **DONE** (15 min, +3 tests)
 3. **P0-2** arch verification (1–2 h, needs one deploy)
 4. **P1-5** unique session label (1–2 h, +1 test)
 5. **P1-6** staleness warning (30 min, +1 test)

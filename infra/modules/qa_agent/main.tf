@@ -612,13 +612,16 @@ resource "aws_bedrockagentcore_agent_runtime" "qa" {
     max_lifetime                 = var.max_session_lifetime
   }]
 
-  environment_variables = {
-    REPORTS_BUCKET = aws_s3_bucket.reports.bucket
-    QA_SECRET_ARN  = aws_secretsmanager_secret.qa_target.arn
-    LOG_LEVEL      = "INFO"
+  environment_variables = merge(
+    {
+      REPORTS_BUCKET = aws_s3_bucket.reports.bucket
+      QA_SECRET_ARN  = aws_secretsmanager_secret.qa_target.arn
+      LOG_LEVEL      = "INFO"
+    },
     # Diagnostic: emit the full page state (incl. empty_slots) on every read.
-    # Costs a log line per navigation/read; remove after the blindness is
-    # diagnosed.
-    LOG_PAGE_STATE = "1"
-  }
+    # Costs a log line per navigation/read, so it is behind a variable that
+    # defaults OFF. The key is OMITTED (not set to "0") when disabled, because
+    # the agent's check reads truthiness and "0" would silently leave it on.
+    var.log_page_state ? { LOG_PAGE_STATE = "1" } : {},
+  )
 }

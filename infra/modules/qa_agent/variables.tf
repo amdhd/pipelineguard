@@ -96,6 +96,12 @@ variable "max_session_lifetime" {
   default     = 1800
 }
 
+variable "log_page_state" {
+  description = "Emit the full page state (incl. empty_slots) on every read, to diagnose a run's blindness. OFF by default: it costs a log line per navigation/read, so it is an explicit opt-in for debugging, not a permanent metered tax."
+  type        = bool
+  default     = false
+}
+
 # --- Phase 2 bug-fix harness ---
 #
 # Off by default. Until the harness in agents/fix/ exists there is nothing to

@@ -1,10 +1,7 @@
 # P1.1 measurement — does the rubric carve-out close S-3?
 
-**Status: EXECUTED 2026-09-01 — verdict: FAIL on both legs.** The carve-out did
-not close S-3 (Leg A recall still 6/9, S-3 0/3) and regressed the false-positive
-baseline (Leg B: 2 findings on healthy `main`, both labelled false positives). The
-carve-out is withdrawn; the next lever is candidate generation, not the rubric.
-Run IDs, tables and verdicts are in [EVIDENCE.md](EVIDENCE.md) — eleventh pass.
+**Status: DRAFT — the runbook for measuring PR #49.** This is not a claim. Recall
+is a *measured* number; this document is how the measurement gets taken.
 
 PR #49 (`fix/s3-recall-rubric-carveout`) narrows the rubric's fixture-surface
 exemption so S-3's render breaks — a raw `"OPEN"` leaking into the text, the `0

@@ -1,16 +1,38 @@
+# LAYER 2 — the demo/live stack (networking + ECR + ECS + pipeline + gates).
+# Exists only while demoing or live. Bring it up with scripts/demo-up.sh, tear it
+# down with scripts/demo-down.sh. While it is down it bills ~$0.
+#
+# This is the layer that held the ~$50/mo idle burn (NAT + ALB are hourly-rate
+# and cannot scale to zero). It is in its OWN state, so destroying it can never
+# touch the QA core in layer1_persistent — the runtime-destroy hazard that
+# routine demo teardown used to carry is gone by construction.
+#
+# The QA agent (layer1) is deliberately NOT here: it is PUBLIC-mode (no VPC),
+# independent of this VPC/NAT, and keeps working while this layer is destroyed.
+
+data "terraform_remote_state" "layer1" {
+  backend = "s3"
+  config = {
+    bucket  = var.layer1_state_bucket
+    key     = var.layer1_state_key
+    region  = var.layer1_state_region
+    encrypt = true
+  }
+}
+
 module "networking" {
-  source      = "./modules/networking"
+  source      = "../modules/networking"
   environment = var.environment
-  kms_key_arn = aws_kms_key.main.arn
+  kms_key_arn = data.terraform_remote_state.layer1.outputs.kms_key_arn
 }
 
 module "ecr" {
-  source      = "./modules/ecr"
+  source      = "../modules/ecr"
   environment = var.environment
 }
 
 module "ecs" {
-  source          = "./modules/ecs"
+  source          = "../modules/ecs"
   environment     = var.environment
   vpc_id          = module.networking.vpc_id
   private_subnets = module.networking.private_subnet_ids
@@ -22,12 +44,12 @@ module "ecs" {
   memory          = var.ecs_memory
   desired_count   = var.ecs_desired_count
   log_retention   = var.log_retention_days
-  kms_key_arn     = aws_kms_key.main.arn
+  kms_key_arn     = data.terraform_remote_state.layer1.outputs.kms_key_arn
 }
 
 # The pipeline module owns the artifact bucket, so gates depends on it for the ARN.
 module "pipeline" {
-  source                 = "./modules/pipeline"
+  source                 = "../modules/pipeline"
   environment            = var.environment
   aws_region             = var.aws_region
   github_repo            = var.github_repo
@@ -41,29 +63,14 @@ module "pipeline" {
   security_gate_name     = module.gates.security_gate_name
   enable_manual_approval = var.enable_manual_approval
   log_retention          = var.log_retention_days
-  kms_key_arn            = aws_kms_key.main.arn
+  kms_key_arn            = data.terraform_remote_state.layer1.outputs.kms_key_arn
 }
 
 module "gates" {
-  source              = "./modules/gates"
+  source              = "../modules/gates"
   environment         = var.environment
   cost_threshold      = var.cost_gate_threshold
   artifact_bucket_arn = module.pipeline.artifact_bucket_arn
   log_retention       = var.log_retention_days
-  kms_key_arn         = aws_kms_key.main.arn
-}
-
-# The QA agent's own infrastructure: reports bucket, target credentials, and the
-# AgentCore runtime execution role. The runtime itself is added separately --
-# it needs an image in ECR before it can be created.
-module "qa_agent" {
-  source                   = "./modules/qa_agent"
-  environment              = var.environment
-  aws_region               = var.aws_region
-  log_retention            = var.log_retention_days
-  kms_key_arn              = aws_kms_key.main.arn
-  qa_agent_code_key        = var.qa_agent_code_key
-  qa_agent_code_version_id = var.qa_agent_code_version_id
-  qa_corpus_refs           = var.qa_corpus_refs
-  fix_agent_enabled        = var.fix_agent_enabled
+  kms_key_arn         = data.terraform_remote_state.layer1.outputs.kms_key_arn
 }

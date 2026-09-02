@@ -1,24 +1,11 @@
-aws_region             = "ap-southeast-1"
-environment            = "dev"
-owner_tag              = "amad"
-github_repo            = "amdhd/pipelineguard"
-github_branch          = "main"
-cost_gate_threshold    = 50
-log_retention_days     = 7
-app_port               = 3000
-ecs_cpu                = 256
-ecs_memory             = 512
-ecs_desired_count      = 1
-enable_manual_approval = false
-
-# No secrets belong in this file, or in any Terraform variable.
-# `terraform show -json` does not redact sensitive values, so anything passed to
-# Terraform is written in plaintext into plan.json — a pipeline artifact stored in
-# S3. The gate API keys therefore live only in Secrets Manager, seeded with:
-#
-#   export INFRACOST_API_KEY=... ANTHROPIC_API_KEY=... SLACK_WEBHOOK_URL=...
-#   export GITHUB_TOKEN=...        # optional; enables the security gate PR comment
-#   ./scripts/seed-gate-secrets.sh dev ap-southeast-1
+# LAYER 1 = the QA core (KMS + module.qa_agent). This root's only job is to keep
+# the vesselAI QA workflow alive. There are no app/pipeline vars here — those
+# belong to layer2_ephemeral, which reads this layer's KMS key via
+# terraform_remote_state.
+aws_region         = "ap-southeast-1"
+environment        = "dev"
+owner_tag          = "amad"
+log_retention_days = 7
 
 # --- QA agent deployment artifact ---
 #
@@ -49,10 +36,13 @@ qa_agent_code_version_id = "GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX"
 
 # --- Phase 2 bug-fix agent ---
 #
-# Here for the same reason as the two values above, and the omission would have
-# been the identical bug: the variable defaults to false, so a plain apply would
-# have destroyed the role the fix workflow assumes — one day after creating it.
+# Same incident-shape as the two values above: the variable defaults to false,
+# so a plain apply would have destroyed the role the fix workflow assumes — one
+# day after creating it.
 #
 # This IS the Phase 2 kill switch (PLAN.md Phase 2). Flip to false and apply to
 # revoke the fix agent's identity at the account, with no change in vesselAI.
 fix_agent_enabled = true
+
+# qa_corpus_refs stays unset here (strict main-only). Open/close a corpus branch
+# via scripts/reopen-corpus.sh, which passes the var on the CLI.

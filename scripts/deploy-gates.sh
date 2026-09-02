@@ -6,10 +6,12 @@
 #      unzipped zip limit, so it runs as an image). See gates/security_gate/Dockerfile.
 #
 # The security gate ECR repo must already exist before this pushes the image, so
-# the first-time flow is two-phase (see docs/runbook.md):
-#   terraform apply -target=module.gates.aws_ecr_repository.security_gate
+# the first-time flow is two-phase (see docs/runbook.md). In the two-layer
+# layout this runs against layer2_ephemeral (the demo stack); scripts/demo-up.sh
+# orchestrates the full cold start:
+#   cd infra/layer2_ephemeral && terraform apply -target=module.gates.aws_ecr_repository.security_gate
 #   ./scripts/deploy-gates.sh
-#   terraform apply -var-file=environments/dev.tfvars
+#   cd infra/layer2_ephemeral && terraform apply -var-file=dev.tfvars
 #
 # Usage: AWS_PROFILE=... ./scripts/deploy-gates.sh [environment] [region]
 set -euo pipefail
@@ -45,7 +47,7 @@ ECR_URL="$(aws ecr describe-repositories \
 if [ -z "${ECR_URL}" ] || [ "${ECR_URL}" = "None" ]; then
   echo "ERROR: ECR repo pipelineguard-security-gate-${ENVIRONMENT} not found." >&2
   echo "       Create it first, then re-run this script:" >&2
-  echo "       cd infra && terraform apply -target=module.gates.aws_ecr_repository.security_gate" >&2
+  echo "       cd infra/layer2_ephemeral && terraform apply -var-file=dev.tfvars -target=module.gates.aws_ecr_repository.security_gate" >&2
   exit 1
 fi
 REGISTRY="${ECR_URL%%/*}"
@@ -74,4 +76,4 @@ docker buildx build --builder pg-builder --platform linux/amd64 \
   "${ROOT}/gates/security_gate"
 echo "    -> ${ECR_URL}:${IMAGE_TAG}"
 
-echo "==> Done. Now run: cd infra && terraform apply -var-file=environments/dev.tfvars"
+echo "==> Done. Now finish the apply: cd infra/layer2_ephemeral && terraform apply -var-file=dev.tfvars"

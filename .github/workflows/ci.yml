@@ -33,13 +33,17 @@ jobs:
           terraform_version: "1.7.5"
 
       - name: terraform fmt
-        run: terraform -chdir=infra fmt -check -recursive
+        # infra/ holds two roots (layer1_persistent + layer2_ephemeral) plus the
+        # shared modules/; fmt walks the whole tree from the infra dir.
+        run: terraform fmt -check -recursive infra
 
-      - name: terraform init (no backend)
-        run: terraform -chdir=infra init -backend=false
-
-      - name: terraform validate
-        run: terraform -chdir=infra validate
+      - name: terraform init + validate (each layer root)
+        run: |
+          for dir in infra/layer1_persistent infra/layer2_ephemeral; do
+            echo "== $dir =="
+            terraform -chdir="$dir" init -backend=false
+            terraform -chdir="$dir" validate
+          done
 
       - uses: terraform-linters/setup-tflint@v4
         with:
@@ -48,6 +52,7 @@ jobs:
       - name: tflint
         # Report all findings, but only FAIL the job on errors — style warnings
         # (per-module version constraints, unused declarations) are advisory.
+        # --recursive from infra/ covers both layer roots and the shared modules.
         run: |
           tflint --init
           tflint --chdir=infra --recursive --format compact --minimum-failure-severity=error

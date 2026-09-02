@@ -1,0 +1,7 @@
+# Copy to backend.conf in this directory before running terraform init/plan.
+# backend.conf is gitignored (see .gitignore) — it carries no secrets, but the
+# state key per layer is deployment-specific enough that each root keeps its own.
+bucket = "pipelineguard-tfstate-149751500899-ap-southeast-1"
+key    = "pipelineguard/layer1/dev/terraform.tfstate"
+region = "ap-southeast-1"
+encrypt = true

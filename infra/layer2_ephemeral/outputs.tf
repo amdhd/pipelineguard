@@ -1,3 +1,6 @@
+# LAYER 2 outputs — the demo/live stack's reachable endpoints and the names the
+# CI pipeline / demo scripts print.
+
 output "alb_dns_name" {
   description = "Public DNS name of the application load balancer"
   value       = module.ecs.alb_dns_name
@@ -41,39 +44,4 @@ output "security_gate_function" {
 output "security_gate_ecr_url" {
   description = "ECR repository URL for the security gate container image"
   value       = module.gates.security_gate_ecr_url
-}
-
-output "qa_reports_bucket" {
-  description = "S3 bucket for QA agent screenshots and findings JSON"
-  value       = module.qa_agent.reports_bucket_name
-}
-
-output "qa_secret_name" {
-  description = "QA target credentials secret — seed with scripts/seed-qa-secret.sh"
-  value       = module.qa_agent.qa_secret_name
-}
-
-output "qa_runtime_role_arn" {
-  description = "Execution role ARN for the AgentCore QA runtime"
-  value       = module.qa_agent.runtime_role_arn
-}
-
-output "qa_github_role_arn" {
-  description = "Role ARN for the vesselAI QA workflow's aws-actions/configure-aws-credentials step"
-  value       = module.qa_agent.github_role_arn
-}
-
-output "qa_runtime_arn" {
-  description = "AgentCore QA runtime ARN — null until the agent zip is packaged and passed in"
-  value       = module.qa_agent.runtime_arn
-}
-
-output "qa_code_bucket" {
-  description = "S3 bucket for the QA agent deployment zip"
-  value       = module.qa_agent.code_bucket_name
-}
-
-output "qa_fix_role_arn" {
-  description = "Role the vesselAI bug-fix workflow assumes via OIDC. Null while fix_agent_enabled is false."
-  value       = module.qa_agent.github_fix_role_arn
 }

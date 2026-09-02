@@ -108,17 +108,24 @@ aws s3api put-public-access-block \
   "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
 
-# Write backend config file
-cat > infra/backend.conf << EOF
+# Write backend config files — one per layer root (each layer has its own state).
+# bootstrap.sh does this; shown here for a manual setup.
+cat > infra/layer1_persistent/backend.conf << EOF
 bucket         = "${BUCKET_NAME}"
-key            = "pipelineguard/terraform.tfstate"
+key            = "pipelineguard/layer1/dev/terraform.tfstate"
+region         = "${REGION}"
+encrypt        = true
+EOF
+cat > infra/layer2_ephemeral/backend.conf << EOF
+bucket         = "${BUCKET_NAME}"
+key            = "pipelineguard/layer2/dev/terraform.tfstate"
 region         = "${REGION}"
 encrypt        = true
 EOF
 
 echo "Bootstrap complete."
 echo "State bucket: s3://${BUCKET_NAME}"
-echo "Backend config written to infra/backend.conf"
+echo "Backend configs written for layer1_persistent + layer2_ephemeral"
 ```
 
 ---
@@ -195,9 +202,12 @@ aws codestarconnections create-connection \
 
 ## Step 3 — Configure Terraform Variables
 
+The demo stack's variables live in `infra/layer2_ephemeral/dev.tfvars` (the QA
+core in layer1 has its own tfvars with the pinned `qa_agent_code_*` values):
+
 ```bash
-# infra/environments/dev.tfvars
-cat > infra/environments/dev.tfvars << 'EOF'
+# infra/layer2_ephemeral/dev.tfvars
+cat > infra/layer2_ephemeral/dev.tfvars << 'EOF'
 aws_region          = "ap-southeast-1"
 environment         = "dev"
 owner_tag           = "amad"
@@ -262,25 +272,25 @@ echo "All gates packaged."
 
 ## Step 5 — Deploy Infrastructure with Terraform
 
+The infra is TWO Terraform roots with separate states. First the always-on QA
+core (layer1_persistent — applied once, left up), then the demo stack
+(layer2_ephemeral — the pipeline lives here).
+
 ```bash
-cd infra
+# Layer 1 — QA core (KMS + AgentCore runtime; applied once, stays up ~$1.40/mo)
+./scripts/apply-dev.sh
 
-# Initialise with S3 backend
-terraform init -backend-config=backend.conf
-
-# Validate syntax
-terraform validate
-
-# Preview what will be created (read this carefully)
-terraform plan -var-file=environments/dev.tfvars
-
-# Deploy (takes ~8-12 minutes first time)
-terraform apply -var-file=environments/dev.tfvars
+# Layer 2 — demo stack. demo-up.sh handles the cold-start order (security-gate
+# image first, then the rest + app image), so a fresh `cd`+init isn't needed:
+cd infra/layer2_ephemeral
+terraform init -backend-config=backend.conf    # first time only
+cd ../..
+./scripts/demo-up.sh -auto-approve
 ```
 
-**What gets created (in order):**
+**What layer2 creates (in order):**
 1. VPC + subnets + IGW + NAT Gateway + route tables
-2. ECR repository
+2. ECR repositories
 3. ECS cluster + task definition + service + ALB
 4. Secrets Manager secret (with your API keys)
 5. Lambda gate functions
@@ -289,13 +299,12 @@ terraform apply -var-file=environments/dev.tfvars
 8. CloudWatch log groups + alarms
 9. SNS topic for alerts
 
-**Terraform outputs to note:**
+**Terraform outputs to note (layer2):**
 ```
 alb_dns_name         = "pipelineguard-alb-dev-XXXX.ap-southeast-1.elb.amazonaws.com"
-ecr_repo_url         = "123456789.dkr.ecr.ap-southeast-1.amazonaws.com/pipelineguard-app-dev"
-pipeline_url         = "https://ap-southeast-1.console.aws.amazon.com/codesuite/codepipeline/pipelines/..."
-cost_gate_arn        = "arn:aws:lambda:..."
-security_gate_arn    = "arn:aws:lambda:..."
+ecr_repository_url   = "123456789.dkr.ecr.ap-southeast-1.amazonaws.com/pipelineguard-app-dev"
+cost_gate_function   = "pipelineguard-cost-gate-dev"
+security_gate_function = "pipelineguard-security-gate-dev"
 ```
 
 ---
@@ -304,23 +313,22 @@ security_gate_arn    = "arn:aws:lambda:..."
 
 The pipeline needs at least one image in ECR before ECS can run:
 
+`demo-up.sh` already pushes `:latest` as its final step. To push manually (e.g.
+after a rebuild):
+
 ```bash
-# Get ECR URL from Terraform output
-ECR_URL=$(terraform output -raw ecr_repo_url)
+# Get ECR URL from the layer2 output
+ECR_URL=$(terraform -chdir=infra/layer2_ephemeral output -raw ecr_repository_url)
 AWS_REGION="ap-southeast-1"
 
 # Login to ECR
 aws ecr get-login-password --region $AWS_REGION | \
   docker login --username AWS --password-stdin $ECR_URL
 
-# Build and push bootstrap image
-cd ../app
-docker build -t $ECR_URL:bootstrap .
-docker push $ECR_URL:bootstrap
-docker tag $ECR_URL:bootstrap $ECR_URL:latest
-docker push $ECR_URL:latest
+# Build and push (linux/amd64 to match the Fargate default platform)
+docker buildx build --platform linux/amd64 -t "$ECR_URL:latest" --push app/
 
-echo "Bootstrap image pushed. ECS service will stabilise in ~2 minutes."
+echo "App image pushed. ECS service will stabilise in ~2 minutes."
 ```
 
 ---
@@ -338,7 +346,7 @@ aws ecs describe-services \
 
 ### 7b. Hit the health endpoint
 ```bash
-ALB_URL=$(cd infra && terraform output -raw alb_dns_name)
+ALB_URL=$(terraform -chdir=infra/layer2_ephemeral output -raw alb_dns_name)
 curl http://$ALB_URL/health
 # Expected: {"status":"healthy","timestamp":"...","version":"unknown","environment":"unknown"}
 ```
@@ -371,7 +379,7 @@ Temporarily set the threshold to $0 to force a block:
 
 ```bash
 export TF_VAR_cost_gate_threshold=0
-cd infra && terraform apply -var-file=environments/dev.tfvars -target=module.gates
+terraform -chdir=infra/layer2_ephemeral apply -var-file=dev.tfvars -target=module.gates
 ```
 
 Push a commit — the cost gate should block and you'll get a Slack message.
@@ -379,7 +387,7 @@ Push a commit — the cost gate should block and you'll get a Slack message.
 Reset after testing:
 ```bash
 export TF_VAR_cost_gate_threshold=50
-terraform apply -var-file=environments/dev.tfvars -target=module.gates
+terraform -chdir=infra/layer2_ephemeral apply -var-file=dev.tfvars -target=module.gates
 ```
 
 ### Test security gate blocking
@@ -391,16 +399,13 @@ Add a deliberately vulnerable dependency to the app or an insecure Terraform res
 ## Step 9 — Cleanup (When Done Demoing)
 
 ```bash
-# Destroy all infrastructure
-cd infra
-terraform destroy -var-file=environments/dev.tfvars
+# Between demos: destroy ONLY the demo layer (layer2). Empties ECR repos first
+# (destroy won't remove non-empty ECR). NEVER touches the layer1 QA core.
+./scripts/demo-down.sh -auto-approve
 
-# Delete ECR images first (destroy won't remove non-empty ECR)
-ECR_URL=$(terraform output -raw ecr_repo_url)
-REPO_NAME=$(echo $ECR_URL | cut -d'/' -f2)
-aws ecr list-images --repository-name $REPO_NAME \
-  --query 'imageIds[*]' --output json | \
-  xargs -I{} aws ecr batch-delete-image --repository-name $REPO_NAME --image-ids {}
+# To stop the WHOLE project (QA core included — the AgentCore runtime the vesselAI
+# QA workflow invokes goes away until recreated):
+./scripts/destroy-dev.sh -auto-approve
 
 # Delete S3 state bucket (do this last, manually)
 # aws s3 rb s3://pipelineguard-tf-state-ACCOUNT_ID --force
@@ -472,38 +477,43 @@ AWS Account (ap-southeast-1)
 ## Cost Estimate (ap-southeast-1 / Singapore)
 
 > All prices in USD. Based on AWS public pricing as of mid-2026.
-> Assumes: low-traffic portfolio demo, ~5 pipeline runs/day, 1 ECS task running continuously.
+> The stack is split so the always-on footprint is tiny: layer1 (QA core) stays
+> up, layer2 (demo, where the NAT + ALB + Fargate live) exists only while demoing.
 
-### Fixed Monthly Costs (always-on)
+### Layer 1 — QA core (always-on, ~$1.40/mo)
 
 | Resource | Spec | Monthly Cost |
 |---|---|---|
-| **NAT Gateway** | 1x, data ~1GB/month | **~$35.00** |
-| **ALB** | 1x, ~0.5 LCU | **~$18.00** |
-| **ECS Fargate** | 0.25 vCPU / 0.5 GB, 24/7 | **~$11.00** |
-| **Secrets Manager** | 1 secret, 5 API calls/day | **~$0.40** |
-| **CloudWatch Logs** | ~1 GB/month ingestion | **~$0.50** |
-| **S3** | ~500 MB artifacts + state | **~$0.02** |
-| **ECR** | ~500 MB storage | **~$0.05** |
-| **SNS** | <1000 notifications | **~$0.00** |
-| **SUBTOTAL (fixed)** | | **~$65/month** |
+| **KMS key** | 1x customer-managed | **~$1.00** |
+| **Secrets Manager** | QA secret | **~$0.40** |
+| **SUBTOTAL (layer1)** | | **~$1.40/month** |
 
-### Variable Costs (per pipeline run)
+The AgentCore QA runtime is PUBLIC-mode and bills per session, never while idle.
 
-| Resource | Per Run | 5 runs/day (monthly) |
+### Layer 2 — demo stack (only while up; ~$2.10/day)
+
+| Resource | Spec | Daily Cost |
 |---|---|---|
-| **CodeBuild** | ~8 min build @ general1.small | ~$0.08/run → **~$12.00** |
-| **Lambda** | Cost gate ~30s, Security gate ~120s | ~$0.002/run → **~$0.30** |
-| **Claude API** | ~500 tokens/scan (Haiku) | ~$0.0004/run → **~$0.06** |
-| **SUBTOTAL (variable)** | | **~$12.36/month** |
+| **NAT Gateway** | 1x | ~$1.08/day |
+| **ALB** | 1x | ~$0.54/day |
+| **ECS Fargate** | 0.25 vCPU / 0.5 GB | ~$0.37/day |
+| **Secrets · Logs · S3 · ECR · SNS** | | ~$0.11/day |
+| **SUBTOTAL (layer2)** | | **~$2.10/day · $0 while down** |
+
+### Variable Costs (per pipeline run, demo layer only)
+
+| Resource | Per Run |
+|---|---|
+| **CodeBuild** | ~8 min build @ general1.small → ~$0.08/run |
+| **Lambda** | Cost gate ~30s, Security gate ~120s → ~$0.002/run |
 
 ### Total Estimated Monthly Cost
 
 | Scenario | Monthly |
 |---|---|
-| **Just keeping infra alive (no pipeline runs)** | ~$65 |
-| **Active dev (5 pipeline runs/day)** | ~$77 |
-| **Portfolio demo (1 run/day)** | ~$67 |
+| **QA core only, no demos (default)** | **~$1.40** |
+| **One demo day + a handful of QA runs** | **~$5–8** |
+| **Demoing every day** | ~$65+ |
 
 ### 💡 Cost Reduction Tips for Portfolio
 

@@ -12,13 +12,15 @@ phases:
   build:
     commands:
       - echo "Applying Terraform..."
-      - cd infra
+      # The pipeline lives in the demo layer (layer2_ephemeral); deploy rolls the
+      # demo ECS service only. Layer1 (the QA core) is never touched here.
+      - cd infra/layer2_ephemeral
       # backend.conf is git-ignored, so regenerate it in CI.
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
         cat > backend.conf <<EOF
         bucket         = "pipelineguard-tfstate-${ACCOUNT_ID}-${AWS_DEFAULT_REGION}"
-        key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
+        key            = "pipelineguard/layer2/${ENVIRONMENT}/terraform.tfstate"
         region         = "${AWS_DEFAULT_REGION}"
         encrypt        = true
         EOF
@@ -28,7 +30,7 @@ phases:
       # Deploy the exact image this pipeline run built (the immutable Git-SHA tag),
       # not a floating ':latest'. Applying the new tag updates the task definition,
       # which rolls the ECS service automatically — no separate force-new-deployment.
-      - IMAGE_TAG=$(cat ../image_tag.txt 2>/dev/null || cat image_tag.txt 2>/dev/null || echo latest)
+      - IMAGE_TAG=$(cat ../../image_tag.txt 2>/dev/null || cat image_tag.txt 2>/dev/null || echo latest)
       - echo "Deploying image tag $IMAGE_TAG"
       - terraform init -backend-config=backend.conf -reconfigure
       # Deploy = roll the ECS service to the new image, nothing else. Target only
@@ -37,11 +39,11 @@ phases:
       # -refresh=false keeps the deploy role least-privilege.
       - |
         terraform apply -auto-approve -refresh=false \
-          -var-file=environments/${ENVIRONMENT}.tfvars \
+          -var-file=${ENVIRONMENT}.tfvars \
           -var="app_image_tag=${IMAGE_TAG}" \
           -target=module.ecs.aws_ecs_task_definition.app \
           -target=module.ecs.aws_ecs_service.app
-      - cd ..
+      - cd ../..
 
   post_build:
     commands:

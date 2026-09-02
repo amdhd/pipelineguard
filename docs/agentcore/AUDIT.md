@@ -44,7 +44,7 @@ in the runtime path.**
 **Caveats:** (a) ~~unpinned floors + no hash lock → rebuilds are not
 reproducible~~ — **the floors are pinned** (P2.4, 2026-09-02):
 `bedrock-agentcore==1.22.0`, `websocket-client==1.9.2` — read out of the
-deployed zip, not off PyPI — guarded by `test_requirements_are_pinned_exactly`. Transitives
+deployed zip, not off PyPI — guarded by `test_requirements_are_pinned_exactly`; deployed 2026-09-02 (runtime version 4). Transitives
 are still not hash-locked — the uploaded zip, whose S3 version id `dev.tfvars`
 pins, remains what fixes the closure for a given deploy; (b) ~~the `aarch64`
 vendoring target is unconfirmed~~ — **resolved**: confirmed by `DISCOVERY.md`
@@ -272,7 +272,7 @@ gates).
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | **DONE** | — |
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | **DONE** — audited 2026-09-02 against `ui-qa-agent.yml` @ `a4784517`; the fork check is **AND**-ed with the label, so the collapse this item feared does not exist | — |
-| **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | **DONE** — `==1.22.0` / `==1.9.0`, guarded by a test; zip rebuilt and staged | — |
+| **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | **DONE** — `==1.22.0` / `==1.9.2` (read out of the deployed zip), guarded by a test; rebuilt and deployed (runtime v4) | — |
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
 | **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
 | **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | **DONE** | — |
@@ -465,10 +465,21 @@ days. That is the residual caveat measured rather than asserted: the pin fixes
 what this repo declares, and the zip's S3 version id is still what fixes
 everything below it.
 
-The staged zip is **not deployed** — `dev.tfvars` still pins
-`GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX`, so the live runtime is untouched. The cascade
-in CLAUDE.md rule 5 — which recreates the runtime and rotates its ARN — is a
-deliberate decision, not something this commit forces.
+**Deployed 2026-09-02** (pipelineguard#66). `dev.tfvars` advanced to
+`l90BIgjGrwasJ2v_Sr9V0302MzjT0NQk` and `scripts/apply-dev.sh` applied it:
+`agent_runtime_version` 3 → 4, serving the pinned zip.
+
+Worth recording, because it revises the deploy model this project has been
+carrying: a code-version bump is an **update in-place**, not a recreation.
+`terraform plan` read `0 to add, 1 to change, 0 to destroy` on
+`aws_bedrockagentcore_agent_runtime.qa[0]`, and after the apply
+`terraform output qa_runtime_arn` still equalled vesselAI's `QA_RUNTIME_ARN`
+(`…runtime/pipelineguard_qa_dev_runtime-lxQgbh3dlW`), so no
+`gh variable set` was needed. The ARN rotation in CLAUDE.md rule 5 is the
+consequence of the runtime being **destroyed and recreated** — what the
+2026-08-30 incident did by dropping `count` to 0 — not of shipping a new zip.
+The rule's sequence still holds; its ARN step is conditional, and this apply is
+the measurement of when that condition fires.
 
 **P3.1 — DONE.** `navigate()` charges a route only after the CDP navigation
 succeeds. A failed `Page.navigate` returns the browser error with current page

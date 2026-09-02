@@ -13,7 +13,8 @@ Green for continuing to run the pipeline in its current **semi-supervised** mode
 — it never auto-merges, a human reviews, and the gates are conservative. Not yet
 green to:
 
-- call any phase **done** per its own exit criteria, or
+- call Phase 1 or Phase 3 **done** per its own exit criteria — Phase 2's
+  demonstration criterion is met by referenced evidence (**P1.4 DONE**), or
 - let the agent's PR comment gate a merge unsupervised, or
 - run Phase 3 (convergence) rounds at scale without a live demonstration.
 
@@ -199,9 +200,12 @@ stop loses nothing.**
 4. ~~**`TARGET_ARCH=aarch64` unverified**~~ — **resolved**: the audit missed
    that `DISCOVERY.md` §13 already confirmed aarch64 empirically (see P0-2).
 
-**Phase 2 — CAUTION.** Well-tested; the staleness guard closes the known real
-incident. But **no agent PR has ever been merged CI-green** — the criterion is
-encoded (caps ≤5 files/≤120 lines), not demonstrated. → **P1-4**.
+**Phase 2 — CAUTION, demonstration met.** Well-tested; the staleness guard closes
+the known real incident; **one agent PR has merged CI-green** —
+[amdhd/vesselAI#102](https://github.com/amdhd/vesselAI/pull/102) (run
+`33409654638`, 11 checks green, 2026-08-31) — the P1.4 criterion is now
+referenced, not claimed (EVIDENCE.md, Phase 2 section). Remaining: **P2.3**
+(fork-PR guard) and **P2.4** (version pinning).
 
 **Phase 3 — NO-GO on unsupervised operation.** The stopping rule is unit-tested
 but **never run live**, and `EVIDENCE.md` itself flags the blocking
@@ -225,7 +229,7 @@ gates).
 | **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **DONE — written scope decision (2026-09-02).** Carve-out (PR #49) withdrawn (eleventh pass); candidate layer (PR #50) merged + measured (twelfth pass): detector correct, Leg B clean, but S-3 0/7 — the raw-`OPEN` signal renders only on the `/sire` Findings tab the agent never materializes. Per the written-decision branch of P1.1's criterion, S-3's symptom (a raw enum rendering only behind a non-default tab) is declared OUT OF SCOPE for the browser-driving agent while the runtime harvests only the DOM the model materializes; the miss is documented and owned, and the detector stays live so any future layer that materializes all views closes it — see [EVIDENCE.md](EVIDENCE.md) twelfth pass | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
-| **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | 1–2 days | Phase 2 done |
+| **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | **DONE** | amdhd/vesselAI#102, run 33409654638 |
 | **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
 | **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | **DONE** | — |
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
@@ -314,8 +318,20 @@ a run renders a non-`unpriced` three-meter cost table.
 steps actually ran, decision history coherent, and either repeated runs per
 round or a tolerance band added to `convergence.py`.
 
-**P1.4 — Phase 2 live.** A real fix-agent PR (compiles, CI green, no human
-intervention on the agent's side) exists and is referenced, not claimed.
+**P1.4 — DONE.** A real fix-agent PR (compiles, CI green, no human intervention
+on the agent's side) exists and is **referenced, not claimed**:
+[amdhd/vesselAI#102](https://github.com/amdhd/vesselAI/pull/102) — authored by
+`app/pipelineguard-fix-agent`, produced by the current `agent-fix` workflow (run
+`33409654638`, `workflow_dispatch` on `main`), patch
+`frontend/src/pages/DashboardPage.tsx` +2/−2 (the "Captain Captain" greeting
+duplicate), all 11 CI checks SUCCESS, merged 2026-08-31 (merge commit
+`5d91f6b3`). The rollup running on the bot's own PR is the evidence that rules
+out the `GITHUB_TOKEN` zero-checks failure (PLAN.md:1102-1105). Caveats,
+recorded not hidden: input was the committed fixture `findings-33140664097` (a
+real finding, frozen for reproducibility — PLAN.md:1115-1132); a human clicked
+the final merge (the designed human gate); the second agent run (PR #105) closed
+as wrong — the pipeline also needs a human reviewer. Full record in the Phase 2
+section of EVIDENCE.md.
 
 **P1.5 — DONE.** The `--session-label` default is now `new_session_id("qa-run")`,
 unique per invocation, so concurrent runs cannot overwrite each other's

@@ -41,12 +41,16 @@ in the runtime path.**
 | fix/converge deps | **no `requirements.txt`** | Harnesses declare nothing; their only hard dep (boto3) is installed by the `vesselAI` workflow, which this repo cannot see. An unverifiable contract. |
 | `express ^4.18.2` (demo app) | `app/package.json` | `^` resolves to patched 4.20.x. But CI's `npm audit --audit-level=high ... \|\| true` is **informational only**. |
 
-**Caveats:** (a) ~~unpinned floors + no hash lock → rebuilds are not
-reproducible~~ — **the floors are pinned** (P2.4, 2026-09-02):
-`bedrock-agentcore==1.22.0`, `websocket-client==1.9.2` — read out of the
-deployed zip, not off PyPI — guarded by `test_requirements_are_pinned_exactly`; deployed 2026-09-02 (runtime version 4). Transitives
-are still not hash-locked — the uploaded zip, whose S3 version id `dev.tfvars`
-pins, remains what fixes the closure for a given deploy; (b) ~~the `aarch64`
+**Caveats:** (a) **PARTIALLY RESOLVED** — this caveat had two halves and only
+one is closed. ~~Unpinned floors~~ — **pinned** (P2.4, 2026-09-02):
+`bedrock-agentcore==1.22.0`, `websocket-client==1.9.2`, read out of the deployed
+zip rather than off PyPI, guarded by `test_requirements_are_pinned_exactly`,
+deployed as runtime v4. **No hash lock → rebuilds are still not byte-reproducible**,
+and that is measured, not assumed: the two zips built two days apart for P2.4
+differ in `boto3`/`botocore` (1.43.83 → 1.43.86) because transitives resolve
+freely. What fixes a closure today is the uploaded zip, whose S3 version id
+`dev.tfvars` pins — an artifact lock, not a source lock, so the zip cannot be
+reconstructed from the commit. Tracked as **P2.5**; (b) ~~the `aarch64`
 vendoring target is unconfirmed~~ — **resolved**: confirmed by `DISCOVERY.md`
 §13 and every corpus run since (see P0-2).
 
@@ -273,6 +277,7 @@ gates).
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | **DONE** — audited 2026-09-02 against `ui-qa-agent.yml` @ `a4784517`; the fork check is **AND**-ed with the label, so the collapse this item feared does not exist | — |
 | **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | **DONE** — `==1.22.0` / `==1.9.2` (read out of the deployed zip), guarded by a test; rebuilt and deployed (runtime v4) | — |
+| **P2.5** | Hash-lock the transitive closure so a zip is reconstructible from a commit | LOW | `scripts/package-qa-agent.sh` | half-day | — |
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
 | **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
 | **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | **DONE** | — |
@@ -480,6 +485,20 @@ consequence of the runtime being **destroyed and recreated** — what the
 2026-08-30 incident did by dropping `count` to 0 — not of shipping a new zip.
 The rule's sequence still holds; its ARN step is conditional, and this apply is
 the measurement of when that condition fires.
+
+**P2.5 — the half of caveat (a) P2.4 did not close.** Pinning the direct deps
+made the declaration reproducible; the *closure* still is not. Measured on the
+P2.4 rebuild: two zips built two days apart from the same commit differ in
+`boto3`/`botocore` (1.43.83 → 1.43.86). The S3 version id in `dev.tfvars` locks
+the artifact, so what RUNS is always known — but the zip cannot be rebuilt from
+the commit, which is what a supply-chain question would actually ask.
+
+Acceptance: a `pip install --require-hashes`-compatible lock generated **for
+`manylinux2014_aarch64` / `cp312`**, not for a laptop, plus a rebuild
+demonstrating two zips from one commit with identical `dist-info` sets. The work
+is in `scripts/package-qa-agent.sh`, not in `requirements.txt` — which is why
+P2.4 did not do it. Low priority: the artifact lock already answers "what is
+running", and this answers the rarer "can we prove what went into it".
 
 **P3.1 — DONE.** `navigate()` charges a route only after the CDP navigation
 succeeds. A failed `Page.navigate` returns the browser error with current page

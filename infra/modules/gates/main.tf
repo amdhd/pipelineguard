@@ -15,9 +15,13 @@ resource "aws_secretsmanager_secret" "gate_secrets" {
 }
 
 # --- Lambda deployment packages ---
+# The source lives at the repo root under gates/ (sibling of infra/), so these
+# are referenced from path.module (the module dir, infra/modules/gates) rather
+# than path.root — the caller root depth varies by layer (infra/ previously,
+# infra/layer2_ephemeral now) and would break a caller-relative path.
 data "archive_file" "cost_gate" {
   type        = "zip"
-  source_dir  = "${path.root}/../gates/cost_gate"
+  source_dir  = "${path.module}/../../../gates/cost_gate"
   output_path = "${path.module}/build/cost_gate.zip"
 }
 
@@ -25,7 +29,7 @@ data "archive_file" "cost_gate" {
 # The layer zips are expected under gates/layers/. See docs/runbook.md.
 resource "aws_lambda_layer_version" "infracost_binary" {
   layer_name          = "pipelineguard-infracost-${var.environment}"
-  filename            = "${path.root}/../gates/layers/infracost_layer.zip"
+  filename            = "${path.module}/../../../gates/layers/infracost_layer.zip"
   compatible_runtimes = ["python3.12"]
   description         = "infracost CLI binary"
 

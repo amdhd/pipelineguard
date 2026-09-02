@@ -11,13 +11,15 @@ phases:
 
   build:
     commands:
-      - cd infra
+      # The pipeline lives in the demo layer (layer2_ephemeral). Layer1 (the QA
+      # core) has its own state and is never planned by this stage.
+      - cd infra/layer2_ephemeral
       # backend.conf is git-ignored, so regenerate it in CI.
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - |
         cat > backend.conf <<EOF
         bucket         = "pipelineguard-tfstate-${ACCOUNT_ID}-${AWS_DEFAULT_REGION}"
-        key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
+        key            = "pipelineguard/layer2/${ENVIRONMENT}/terraform.tfstate"
         region         = "${AWS_DEFAULT_REGION}"
         encrypt        = true
         EOF
@@ -28,14 +30,14 @@ phases:
       - terraform validate
       # -refresh=false keeps the plan role least-privilege (no describe on every
       # resource); the config-vs-state delta is all the cost gate needs.
-      - terraform plan -var-file=environments/${ENVIRONMENT}.tfvars -refresh=false -out=plan.tfplan -no-color
+      - terraform plan -var-file=${ENVIRONMENT}.tfvars -refresh=false -out=plan.tfplan -no-color
       - terraform show -json plan.tfplan > plan.json
       - echo "Plan complete"
 
 artifacts:
   files:
-    - infra/plan.json
-    - infra/plan.tfplan
+    - infra/layer2_ephemeral/plan.json
+    - infra/layer2_ephemeral/plan.tfplan
     - infra/**/*
     - gates/**/*
     - buildspecs/**/*

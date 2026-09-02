@@ -1,3 +1,7 @@
+# LAYER 2 variables — the demo/live stack. No QA-agent vars here (they live in
+# layer1_persistent). The layer1_state_* trio configures the terraform_remote_state
+# data source that reads the shared KMS key's ARN out of layer1's state.
+
 variable "aws_region" {
   description = "AWS region to deploy into"
   type        = string
@@ -75,35 +79,24 @@ variable "enable_manual_approval" {
   default     = false
 }
 
-# --- QA agent code artifact (printed by scripts/package-qa-agent.sh) ---
+# --- Layer 1 remote-state pointer (reads layer1's KMS key ARN) ---
 #
-# Empty by default so a cold apply works before any zip exists. The runtime
-# resource is created only once these are supplied:
-#
-#   ./scripts/package-qa-agent.sh dev ap-southeast-1
-#   ./scripts/apply-dev.sh -var="qa_agent_code_key=..." -var="qa_agent_code_version_id=..."
-variable "qa_agent_code_key" {
-  description = "S3 key of the QA agent deployment zip. Empty disables the AgentCore runtime."
+# Both layers share one account + region, but the backend object is separate per
+# layer so teardown of one never touches the other.
+variable "layer1_state_bucket" {
+  description = "S3 bucket holding layer1 (persistent QA core) state"
   type        = string
-  default     = ""
+  default     = "pipelineguard-tfstate-149751500899-ap-southeast-1"
 }
 
-variable "qa_agent_code_version_id" {
-  description = "S3 object version of the QA agent zip"
+variable "layer1_state_key" {
+  description = "State object key of layer1 in the shared bucket"
   type        = string
-  default     = ""
+  default     = "pipelineguard/layer1/dev/terraform.tfstate"
 }
 
-# PLAN.md Phase 2. False creates no fix role at all -- the kill switch is the
-# absence of the identity, not a narrower policy on one that still exists.
-variable "fix_agent_enabled" {
-  description = "Create the CI role the Phase 2 bug-fix harness assumes. Leave false until agents/fix/ exists; flipping it off later stops the fix agent at the account, with no workflow change."
-  type        = bool
-  default     = false
-}
-
-variable "qa_corpus_refs" {
-  description = "Git refs allowed to assume the QA role via workflow_dispatch for seeded-corpus runs. Empty by default (strict main-only); pass e.g. [\"refs/heads/qa-corpus-1\"] to reopen a branch for a corpus dispatch, then drop the flag to restore."
-  type        = list(string)
-  default     = []
+variable "layer1_state_region" {
+  description = "Region the layer1 state bucket lives in"
+  type        = string
+  default     = "ap-southeast-1"
 }

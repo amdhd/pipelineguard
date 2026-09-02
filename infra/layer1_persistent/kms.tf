@@ -1,7 +1,10 @@
-# Customer-managed KMS key (CMK) used for at-rest encryption across the stack:
-# CloudWatch Logs, CodeBuild, CodePipeline artifacts, ECR, Lambda env vars,
-# Secrets Manager, SNS, S3, and SSM. Satisfies the Checkov "encrypt with CMK"
-# family. One shared key keeps cost to ~$1/month.
+# Customer-managed KMS key (CMK) used for at-rest encryption across Layer 1's
+# QA infra. Satisfies the Checkov "encrypt with CMK" family.
+#
+# The demo layer (layer2_ephemeral) reads this key's ARN via
+# terraform_remote_state rather than owning its own: a second key would double
+# the ~$1/month KMS spend and split the "one shared key" story the whole stack
+# used to tell.
 data "aws_caller_identity" "current" {}
 
 resource "aws_kms_key" "main" {
@@ -48,7 +51,7 @@ resource "aws_kms_key" "main" {
           "kms:CreateGrant"
         ]
         Resource = "*"
-      }
+      },
     ]
   })
 }

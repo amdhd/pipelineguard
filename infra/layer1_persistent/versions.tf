@@ -1,3 +1,5 @@
+# LAYER 1 (persistent QA core) — always-up root. State lives in its own backend
+# object so demo teardown (layer2) can never touch it by accident.
 terraform {
   required_version = ">= 1.7"
 
@@ -19,18 +21,12 @@ terraform {
 
   backend "s3" {
     # S3-native locking: Terraform writes a "<key>.tflock" object alongside the
-    # state and deletes it on release. This replaces the DynamoDB lock table --
-    # the "dynamodb_table" backend parameter is deprecated in favour of it, and
-    # keeping both configured meant acquiring two locks to protect one state.
-    #
-    # The role that runs Terraform therefore needs s3:DeleteObject on the lock
-    # object, not just Get/Put. Without it a lock is acquired and never
-    # released, and every later run fails to lock. See the TerraformStateBackend
-    # statement in modules/pipeline/main.tf.
+    # state and deletes it on release.
     use_lockfile = true
     # Values provided via backend config file or env vars:
     #   terraform init -backend-config=backend.conf
     # backend.conf should contain: bucket, key, region, encrypt
+    # key = "pipelineguard/layer1/dev/terraform.tfstate"
   }
 }
 

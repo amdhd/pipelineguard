@@ -178,10 +178,15 @@ resource "aws_iam_role_policy" "codebuild" {
         # Scoped to the single lock object rather than the bucket prefix -- this
         # grants deletion of exactly one key, and notably NOT the state file
         # itself, which the statement above can write but nothing can delete.
+        #
+        # Layer2's own state only: the plan/deploy stages run against
+        # layer2_ephemeral. They READ layer1's state for terraform_remote_state
+        # (the KMS ARN), which the TerraformStateBackend GetObject already
+        # covers, but they never lock it.
         Sid      = "TerraformStateLock"
         Effect   = "Allow"
         Action   = ["s3:DeleteObject"]
-        Resource = ["arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/pipelineguard/${var.environment}/terraform.tfstate.tflock"]
+        Resource = ["arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/pipelineguard/layer2/${var.environment}/terraform.tfstate.tflock"]
       },
       {
         # `terraform plan -refresh=false` still evaluates data sources; the only

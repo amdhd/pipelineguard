@@ -1370,3 +1370,61 @@ tolerance the repeated-runs choice buys, and its cost, stated plainly.
 - Runs 4 and 5 stopped honestly at MAX_ROUNDS while still shrinking; the 3-round
   cap was the limiter, not the defects. Run 6 needed max_rounds=5 to earn its
   verification round.
+
+---
+
+## Deploy verification — runtime v4 (P2.4's pinned zip)
+
+### 2026-09-02 — v4 boots, imports and reports; NOT a recall measurement
+
+This entry exists to close a gap the P2.4 deploy opened, and it is deliberately
+filed apart from the corpus passes above. **Do not read it as a recall data
+point.** It ran on haiku over 2 routes against healthy `main`, so it is not
+comparable to the sonnet corpus runs, and no seeded defect was in scope.
+
+**Why it was needed.** P2.4 pinned the agent's direct deps and re-packaged, and
+`dev.tfvars` moved the runtime to v4 (pipelineguard#66). The staged zip vendored
+the same *direct* versions as v3, but not the same bytes — `boto3`/`botocore`
+moved 1.43.83 → 1.43.86 between the two builds. Rule 4 in CLAUDE.md exists
+because a bad zip fails as an `ImportError` at INVOKE time, which nothing before
+an invocation detects. v4 had been applied and never invoked; the next party to
+discover a broken runtime would have been a vesselAI PR author.
+
+[Run 33618547097](https://github.com/amdhd/vesselAI/actions/runs/33618547097),
+`workflow_dispatch` on `main` at `5c3ee9d4`, haiku, `max_routes=2`:
+
+| | |
+|---|---|
+| overall | **PASS** |
+| authenticated | `true` (`auth_probe = "measured"`) |
+| routes | `/voyage`, `/maintenance` |
+| turns / session | 13 / 84 s (paced 37.3 s) |
+| findings | 0 |
+| candidates | 3, all assessed (3 refuted) |
+| archive | `reports/gh-33618547097-1/findings.json` |
+
+**What that actually proves.** Every module in the zip executed: `candidates.py`
+generated three candidates, `browser_tools.py` + `cdp.py` drove the browser
+through two authenticated routes, the auth probe measured rather than guessed,
+and the payload validated against `schema.py`. The import path is the thing under
+test and it is model-independent, which is why the cheap rung was sufficient.
+0 findings on healthy `main` also matches the Leg B baseline, so the new zip
+brings no false-positive spike.
+
+**Cost: $0.0487** — 63 in / 2,357 out / 120,488 cache-read / 15,794 cache-write
+on haiku ($0.0436) + 84 s of the two concurrent sessions the compute meter bills
+($0.0051). Predicted $0.035–0.05 before dispatch; the estimate held, which is a
+calibration check on `prices.json` as much as on the runtime.
+
+**A cancelled paid session, recorded because it cost money.** Three dispatches
+landed within three minutes. `cancel-in-progress` is on, so each killed the
+previous: 33618302728 died *inside* **Run the QA agent** — past the health gate,
+runtime already invoked — and 33618483720 died during **Start the stack** ($0).
+The spend on the first is small and unknowable (no report was produced, and
+cancelling the job kills the harness, not necessarily the server-side session,
+which can bill to its 600 s deadline). The workflow's own concurrency comment
+predicts exactly this. **Check for an in-flight run before dispatching.**
+
+**Not done, deliberately.** A sonnet/8-route run (~$0.26) would put v4 on the
+record next to the v2/v3 corpus passes. It was declined: it buys a measurement,
+not confidence in the runtime, and the runtime question is answered.

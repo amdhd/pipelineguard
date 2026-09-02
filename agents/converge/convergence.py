@@ -184,6 +184,145 @@ def _patched_fingerprints(fix_result: dict, by_id: dict) -> list:
     return patched
 
 
+# --- Aggregating repeated QA runs into one round (P1.3) ------------------
+#
+# One QA run is not a measurement: EVIDENCE.md measured S-1 caught in five runs
+# and missed in the sixth, route coverage varying between seven and eight, on
+# identical code. A convergence check that compares single-run finding sets
+# therefore reads noise as progress, or progress as noise. The audit's P1.3 fix
+# -- "repeated runs per round" -- is to run QA K times per round and fold the
+# runs into one findings JSON by majority vote: a finding counts only when more
+# than half the runs report it. It lives here, in the deterministic layer, so
+# the workflow and the session are unchanged: the aggregate is a drop-in for the
+# findings file they already read.
+
+# The severityless key: `finding_fingerprint` embeds severity, which would split
+# one defect graded HIGH by one run and MEDIUM by another into two rows. Group
+# by what the defect IS, then grade the group at its most severe -- the
+# blocking-safe direction, so a HIGH in any majority of runs stays blocking.
+_SEVERITY_RANK = {s: i for i, s in enumerate(schema.SEVERITIES)}
+
+
+def _finding_key(finding: dict) -> str:
+    return f"{finding.get('page', '?')}::{finding.get('summary', '').strip().lower()}"
+
+
+def _observed_at_commit(runs: list):
+    """Every run in a round is stamped with the same commit, so any one works."""
+    for r in runs:
+        if r.get("observed_at_commit"):
+            return r["observed_at_commit"]
+    return None
+
+
+def _sum_costs(runs: list) -> dict:
+    """
+    Sum every run's tokens and turns.
+
+    The cumulative TOKEN_BUDGET backstop measures spend through the round's
+    meters, so if the aggregate dropped the other K-1 runs' cost, the cap would
+    silently stop enforcing K times the real spend.
+    """
+    total = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    turns = 0
+    model = None
+    for r in runs:
+        cost = r.get("cost") or {}
+        tokens = cost.get("model_tokens") or {}
+        for key in total:
+            total[key] += int(tokens.get(key, 0))
+        turns += int(cost.get("turns", 0))
+        model = model or cost.get("model")
+    return {"model": model or "unknown", "turns": turns, "model_tokens": total}
+
+
+def aggregate_findings(runs: list, *, threshold: int | None = None) -> dict:
+    """
+    Fold K QA findings JSONs into one, by strict-majority vote.
+
+    A finding counts only when more than half the runs report it, so a defect
+    one run's model hallucinated is dropped and one a single run missed is not
+    lost to a coin flip. The round is comparable only when a majority of the
+    runs completed; otherwise the aggregate carries `error`/`incomplete`, so the
+    round records INCONCLUSIVE and never passes.
+
+    K=1 returns the run unchanged: repeated runs are opt-in, and the single-run
+    behaviour is byte-for-byte what it was before this function existed.
+    """
+    if not runs:
+        raise ValueError("aggregate_findings needs at least one run")
+    if len(runs) == 1:
+        return runs[0]
+
+    k = len(runs)
+    # Strict majority: k//2+1. (ceil(k/2) would count a finding present in 1 of
+    # 2 runs, which is no agreement at all.)
+    need = threshold if threshold is not None else k // 2 + 1
+    completed = [r for r in runs if not r.get("error") and not r.get("incomplete")]
+
+    # The round proves nothing. Prefer the error over the truncation: both stop
+    # the loop, but the error names the cause.
+    if len(completed) < need:
+        errored = next((r for r in runs if r.get("error")), None)
+        agg = {
+            "findings": [],
+            "observed_at_commit": _observed_at_commit(runs),
+            "session_seconds": sum(int(r.get("session_seconds", 0)) for r in runs),
+            "cost": _sum_costs(runs),
+            "repeats": {"total": k, "completed": len(completed), "threshold": need},
+        }
+        if errored is not None:
+            agg["error"] = errored["error"]
+            agg["detail"] = f"{k - len(completed)} of {k} repeated QA runs failed"
+        else:
+            agg["incomplete"] = True
+            agg["stop_reason"] = "fewer than a majority of repeated QA runs completed"
+        return agg
+
+    # Majority over the severityless key; a group grades at its most severe.
+    by_key: dict = {}
+    for run in completed:
+        for finding in run.get("findings", []):
+            by_key.setdefault(_finding_key(finding), []).append(finding)
+
+    merged = []
+    for group in by_key.values():
+        if len(group) < need:
+            continue
+        # Most severe = smallest rank (CRITICAL=0 < HIGH=1 < ...). `min` picks
+        # it; `max` would pick the mildest grade, the wrong direction.
+        best = min(group, key=lambda f: _SEVERITY_RANK.get(f.get("severity"), 9))
+        merged.append(dict(best))
+
+    # ids are renumbered every run, so the merged set gets its own F-001.. run,
+    # and the fix result's applied[].finding_id resolves 1:1 through it.
+    merged.sort(
+        key=lambda f: (
+            _SEVERITY_RANK.get(f.get("severity"), 9),
+            f.get("page", "?"),
+            f.get("summary", ""),
+        )
+    )
+    for i, finding in enumerate(merged, 1):
+        finding["id"] = f"F-{i:03d}"
+
+    return {
+        # Kept schema-plausible (a blocking finding forces FAIL), though only
+        # round_record and the fix harness actually read the result.
+        "overall": (
+            "FAIL" if any(f["severity"] in schema.BLOCKING for f in merged) else "PASS"
+        ),
+        "pages_tested": max((r.get("pages_tested", 0) for r in completed), default=0),
+        "findings": merged,
+        "session_seconds": sum(int(r.get("session_seconds", 0)) for r in runs),
+        "cost": _sum_costs(runs),
+        "observed_at_commit": _observed_at_commit(runs),
+        # Self-describing and inert to every consumer; tells a reader of the
+        # artefact that it is a vote, not a single run.
+        "repeats": {"total": k, "completed": len(completed), "threshold": need},
+    }
+
+
 def round_record(
     number: int,
     findings: dict,

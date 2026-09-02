@@ -11,8 +11,29 @@
 # selected at install time, so pip has nothing to select and --platform cannot
 # correct it. agents/qa/agent/cdp.py speaks CDP directly instead -- 134 MB and an
 # uncorrectable binary replaced by 82 KB of pure Python.
-bedrock-agentcore>=1.22.0
-websocket-client>=1.9.0
+#
+# PINNED WITH ==, NOT >=. The zip locks what the RUNNING runtime uses, but it
+# cannot lock a REBUILD: a floor resolves to whatever is latest on the day
+# someone re-packages, so two zips built from the same commit need not contain
+# the same code. That is not hypothetical here -- websocket-client shipped 1.9.1
+# and 1.9.2 after `>=1.9.0` was written, and the deployed zip
+# (version GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX, built 2026-08-31) turns out to carry
+# 1.9.2. The floor drifted a minor version into production without anyone
+# choosing it, which is exactly the failure the pin removes.
+#
+# The versions below are therefore the ones the runtime is MEASURED on -- read
+# out of that deployed zip, not off PyPI -- so pinning changes nothing that runs
+# today. Moving either is a deliberate edit here, packaged and re-measured, not
+# a side effect of the calendar.
+bedrock-agentcore==1.22.0
+websocket-client==1.9.2
+
+# Transitives are deliberately NOT pinned here. This file's job is to name the
+# direct deps; a full hash-locked closure would have to be generated for
+# manylinux2014_aarch64 / cp312 rather than for a laptop, which is a packaging
+# change, not a requirements one. The uploaded zip remains the artifact that
+# fixes the transitive closure for a given deploy, and dev.tfvars pins the S3
+# version id of that zip.
 
 # boto3 is NOT listed: bedrock-agentcore already depends on it, and the managed
 # runtime provides it. Pinning a third copy only invites a version skew.

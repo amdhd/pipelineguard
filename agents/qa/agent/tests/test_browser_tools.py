@@ -266,6 +266,31 @@ def test_requirements_exclude_playwright():
     assert set(packages) == {"bedrock-agentcore", "websocket-client"}
 
 
+def test_requirements_are_pinned_exactly():
+    """
+    A floor is not a lock, and the zip cannot cover the gap.
+
+    The vendored zip fixes what the RUNNING runtime imports, but it says nothing
+    about a REBUILD: `>=` resolves to whatever is latest on the day someone
+    re-packages, so two zips built from the same commit need not contain the same
+    code. That already happened -- `>=1.9.0` silently put websocket-client 1.9.2
+    into the deployed zip, a minor bump nobody chose and nothing recorded.
+
+    Assert `==` on every requirement line rather than the specific versions: the
+    versions are meant to be bumped deliberately, the pinning is not.
+    """
+    reqs = (Path(__file__).resolve().parents[1] / "requirements.txt").read_text()
+    lines = [
+        line.strip()
+        for line in reqs.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert lines, "requirements.txt declares nothing"
+    for line in lines:
+        assert "==" in line, f"unpinned requirement: {line}"
+        assert ">=" not in line, f"floor, not a pin: {line}"
+
+
 class TestRouteBudget:
     """
     The explore-cap is listed as a COST CONTROL. Stated only in the prompt it was

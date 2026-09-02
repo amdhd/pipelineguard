@@ -35,15 +35,20 @@ in the runtime path.**
 
 | Dep | Where | Verdict |
 |---|---|---|
-| `bedrock-agentcore>=1.22.0` | `agents/qa/agent/requirements.txt` | Floor exactly matches latest (1.22.0, 2026-08-18). Two yanked versions (1.4.8, 1.5.0) sit below the floor. Vendored into the deployment zip at package time → the **zip is the lock**; the running runtime cannot drift. |
-| `websocket-client>=1.9.0` | same file | No current CVE. 82 KB pure-Python CDP client replacing a 134 MB non-manylinux Playwright wheel. |
+| `bedrock-agentcore==1.22.0` | `agents/qa/agent/requirements.txt` | Pinned (P2.4) at 1.22.0, still the latest release (2026-08-18). Two yanked versions (1.4.8, 1.5.0) sit below the pin. Vendored into the deployment zip at package time → the **zip is the lock**; the running runtime cannot drift. |
+| `websocket-client==1.9.2` | same file | Pinned (P2.4) at the version the deployed zip was found to contain. No current CVE. 82 KB pure-Python CDP client replacing a 134 MB non-manylinux Playwright wheel. |
 | `boto3` | deliberately absent | Runtime-provided; `bedrock-agentcore` pulls its own. Minor skew surface between the vendored zip and the runtime. Low risk. |
 | fix/converge deps | **no `requirements.txt`** | Harnesses declare nothing; their only hard dep (boto3) is installed by the `vesselAI` workflow, which this repo cannot see. An unverifiable contract. |
 | `express ^4.18.2` (demo app) | `app/package.json` | `^` resolves to patched 4.20.x. But CI's `npm audit --audit-level=high ... \|\| true` is **informational only**. |
 
-**Caveats:** (a) unpinned floors + no hash lock → rebuilds are not reproducible;
-(b) ~~the `aarch64` vendoring target is unconfirmed~~ — **resolved**: confirmed
-by `DISCOVERY.md` §13 and every corpus run since (see P0-2).
+**Caveats:** (a) ~~unpinned floors + no hash lock → rebuilds are not
+reproducible~~ — **the floors are pinned** (P2.4, 2026-09-02):
+`bedrock-agentcore==1.22.0`, `websocket-client==1.9.2` — read out of the
+deployed zip, not off PyPI — guarded by `test_requirements_are_pinned_exactly`. Transitives
+are still not hash-locked — the uploaded zip, whose S3 version id `dev.tfvars`
+pins, remains what fixes the closure for a given deploy; (b) ~~the `aarch64`
+vendoring target is unconfirmed~~ — **resolved**: confirmed by `DISCOVERY.md`
+§13 and every corpus run since (see P0-2).
 
 ## 2. Interface — exact types, error states, and 5 edge cases
 
@@ -267,7 +272,7 @@ gates).
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | **DONE** | — |
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
 | **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | **DONE** — audited 2026-09-02 against `ui-qa-agent.yml` @ `a4784517`; the fork check is **AND**-ed with the label, so the collapse this item feared does not exist | — |
-| **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | 1–2 h | — |
+| **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | **DONE** — `==1.22.0` / `==1.9.0`, guarded by a test; zip rebuilt and staged | — |
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
 | **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
 | **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | **DONE** | — |
@@ -431,6 +436,39 @@ exactly what the workflow's own comment says. A cheap hardening, not required:
 `github.event.pull_request.head.repo.full_name == github.repository` compares
 strings and avoids GitHub's loose `== false` coercion, which also treats a null
 `head.repo` (deleted fork) as passing.
+
+**P2.4 — DONE (2026-09-02).** `bedrock-agentcore>=1.22.0` /
+`websocket-client>=1.9.0` became `==1.22.0` / `==1.9.2`. The audit's framing that
+"the zip is the lock" was true of the running runtime and false of a rebuild: a
+floor resolves to whatever is latest on the day someone re-packages. **It had
+already drifted.** The deployed zip (`GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX`, built
+2026-08-31) was pulled and read: it carries `websocket_client-1.9.2.dist-info`,
+not the 1.9.0 the floor was written against. A minor version reached production
+without anyone choosing it and without the repo recording it — which is why the
+pin is 1.9.2, read out of that zip, rather than the 1.9.0 this audit had assumed:
+pinning is meant to freeze what runs, not to quietly downgrade it. `test_requirements_are_pinned_exactly` asserts `==` on every
+requirement line (not the specific versions — the versions are meant to be bumped
+deliberately, the pinning is not); 611 pass.
+
+A hash-locked transitive closure was considered and not done: it would have to be
+generated for `manylinux2014_aarch64` / `cp312` rather than for a laptop, which
+is a change to `package-qa-agent.sh`, not to `requirements.txt`. The uploaded zip
+stays the artifact that fixes the closure per deploy, and `dev.tfvars` pins its
+S3 version id.
+
+Verified by rebuild: `scripts/package-qa-agent.sh` installed the pinned set for
+the target, passed the ELF/`cp312` verification, and uploaded version
+`l90BIgjGrwasJ2v_Sr9V0302MzjT0NQk`. Diffing the staged zip's `dist-info` list
+against the deployed one shows the two direct deps now identical and **only the
+unpinned transitives moved** — `boto3`/`botocore` 1.43.83 → 1.43.86 across two
+days. That is the residual caveat measured rather than asserted: the pin fixes
+what this repo declares, and the zip's S3 version id is still what fixes
+everything below it.
+
+The staged zip is **not deployed** — `dev.tfvars` still pins
+`GYEn9n0EQFFeQjkVsN.b_.MVBydy6foX`, so the live runtime is untouched. The cascade
+in CLAUDE.md rule 5 — which recreates the runtime and rotates its ARN — is a
+deliberate decision, not something this commit forces.
 
 **P3.1 — DONE.** `navigate()` charges a route only after the CDP navigation
 succeeds. A failed `Page.navigate` returns the browser error with current page

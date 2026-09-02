@@ -563,6 +563,55 @@ def _backstop(rounds: list, budgets: dict) -> Decision | None:
     return None
 
 
+def _cross_round_blocking(previous: dict, current: dict):
+    """
+    Match consecutive rounds' blocking findings by the prose-tolerant identity.
+
+    `round_record` stores each round's blocking set as fingerprints, and the
+    summary inside a fingerprint is fresh prose every run -- the exact variance
+    that made live run 33588304974 end REGRESSED: round 2 reported the same
+    /voyage crash round 1 patched, only rephrased, so the exact-fingerprint set
+    difference read a still-unfixed defect as a brand-new one and blamed the
+    patch. Matching by page + Dice over significant tokens instead -- the same
+    identity `aggregate_findings` already uses within a round -- a rephrased
+    blocker matches, and the verdict falls out of what the sets actually did: a
+    blocker that persisted after a patch is STALL, not REGRESSED.
+
+    Severity is deliberately not part of this identity, for the same reason it
+    is not part of `aggregate_findings`': a defect graded HIGH by one run and
+    MEDIUM by the next is the same defect, and splitting it would turn round-to-
+    round grading noise into a false regression.
+
+    Returns (resolved, appeared): the previous round's blocking fingerprints
+    with no match in the current round, and the current round's with no match in
+    the previous.
+    """
+    prev_meta = previous.get("findings", {}) or {}
+    curr_meta = current.get("findings", {}) or {}
+    prev_fps = list(previous.get("blocking", []))
+    curr_fps = list(current.get("blocking", []))
+    prev_findings = [prev_meta.get(fp, {}) for fp in prev_fps]
+    curr_findings = [curr_meta.get(fp, {}) for fp in curr_fps]
+    # `_similarity_clusters` returns the finding objects it was given, so map
+    # each back to its fingerprint by identity. `_fingerprints` builds a fresh
+    # dict per finding, so id() is unique within a round.
+    fp_of = {
+        **{id(f): prev_fps[i] for i, f in enumerate(prev_findings)},
+        **{id(f): curr_fps[i] for i, f in enumerate(curr_findings)},
+    }
+
+    pairs = [(0, f) for f in prev_findings] + [(1, f) for f in curr_findings]
+    resolved, appeared = [], []
+    for cluster in _similarity_clusters(pairs):
+        prev_members = [(rn, f) for rn, f in cluster if rn == 0]
+        curr_members = [(rn, f) for rn, f in cluster if rn == 1]
+        if prev_members and not curr_members:
+            resolved.extend(fp_of[id(f)] for _, f in prev_members)
+        elif curr_members and not prev_members:
+            appeared.extend(fp_of[id(f)] for _, f in curr_members)
+    return resolved, appeared
+
+
 def decide(rounds: list, budgets: dict | None = None) -> Decision:
     """
     The whole stopping rule, in the order the reasons take precedence.
@@ -600,9 +649,7 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
 
     # 3. The comparison. Nothing to compare against on the first round.
     if previous is not None:
-        before, after = set(previous["blocking"]), set(current["blocking"])
-        appeared = after - before
-        resolved = before - after
+        resolved, appeared = _cross_round_blocking(previous, current)
 
         if appeared:
             return Decision(
@@ -617,9 +664,9 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
             return Decision(
                 STALL,
                 f"round {current['round']} reports the same "
-                f"{len(after)} blocking finding(s) as round {previous['round']}. "
-                "Another round would run the same agent against the same defects "
-                "and cost the same money.",
+                f"{len(current['blocking'])} blocking finding(s) as round "
+                f"{previous['round']}. Another round would run the same agent "
+                "against the same defects and cost the same money.",
             )
 
     # 4. Shrinking (or the first round) -- continue, unless a cap says otherwise.
@@ -633,7 +680,6 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
             f"round {current['round']} found {len(current['blocking'])} blocking "
             "finding(s); nothing to compare against yet.",
         )
-    resolved = set(previous["blocking"]) - set(current["blocking"])
     return Decision(
         CONTINUE,
         f"round {current['round']} resolved {len(resolved)} of round "
@@ -665,57 +711,77 @@ def reconcile(rounds: list, labels: dict | None = None) -> list:
     """
     The per-finding ledger, across every round, in one table.
 
-    A finding is followed by fingerprint, so the same defect reported as F-002
-    in one round and F-001 in the next is one row rather than two.
+    A finding is followed by the same prose-tolerant identity the stopping rule
+    uses, so a defect the model rephrased between rounds -- and whose id the
+    fix loop renumbered -- is one row rather than two. The exact-fingerprint
+    ledger would render live run 33588304974 as the /voyage crash "fixed" in
+    round 1 and a NEW /voyage crash "introduced" in round 2, contradicting the
+    STALL the stopping rule now reports.
     """
     labels = labels or {}
     final = rounds[-1]
-    seen: dict = {}
+    patched_by_round = {r["round"]: set(r.get("patched", [])) for r in rounds}
 
+    # Every (round, finding) in the run. `_fingerprints` builds a fresh dict per
+    # finding, so object identity maps a cluster member back to its fingerprint.
+    pairs = []
+    fp_of = {}
     for r in rounds:
-        for fp, meta in r["findings"].items():
-            row = seen.setdefault(
-                fp,
-                {
-                    "fingerprint": fp,
-                    "severity": meta["severity"],
-                    "page": meta["page"],
-                    "summary": meta["summary"],
-                    "first_round": r["round"],
-                    "rounds_seen": [],
-                    "patched_in": [],
-                },
-            )
-            row["rounds_seen"].append(r["round"])
-        for fp in r["patched"]:
-            if fp in seen:
-                seen[fp]["patched_in"].append(r["round"])
+        for fp, meta in (r.get("findings") or {}).items():
+            pairs.append((r["round"], meta))
+            fp_of[id(meta)] = fp
 
-    for row in seen.values():
-        present_at_end = row["fingerprint"] in final["findings"]
-        patched = bool(row["patched_in"])
+    rows = []
+    for cluster in _similarity_clusters(list(pairs)):
+        members = sorted(
+            ((rn, fp_of[id(meta)], meta) for rn, meta in cluster),
+            key=lambda m: m[0],
+        )
+        first_round, fp, meta = members[0]
+        rounds_seen = sorted({rn for rn, _, _ in members})
+        patched_in = sorted(
+            {
+                rn
+                for rn, member_fp, _ in members
+                if member_fp in patched_by_round.get(rn, set())
+            }
+        )
+        present_at_end = any(member_fp in final["findings"] for _, member_fp, _ in members)
+        patched = bool(patched_in)
 
         if present_at_end and patched:
-            row["outcome"] = PATCH_INEFFECTIVE
-        elif present_at_end and row["first_round"] > rounds[0]["round"]:
-            row["outcome"] = INTRODUCED
+            outcome = PATCH_INEFFECTIVE
+        elif present_at_end and first_round > rounds[0]["round"]:
+            outcome = INTRODUCED
         elif present_at_end:
-            row["outcome"] = OUTSTANDING
+            outcome = OUTSTANDING
         elif patched:
-            row["outcome"] = FIXED
+            outcome = FIXED
         else:
             # Gone, and nothing patched it. Either the first round's report was
             # noise or the defect is intermittent -- both are the agent's
             # problem rather than the application's, and neither can be told
             # apart from here.
-            row["outcome"] = NOT_REPRODUCED
+            outcome = NOT_REPRODUCED
 
-        row["label"] = labels.get(row["fingerprint"])
+        rows.append(
+            {
+                "fingerprint": fp,
+                "severity": meta["severity"],
+                "page": meta["page"],
+                "summary": meta["summary"],
+                "first_round": first_round,
+                "rounds_seen": rounds_seen,
+                "patched_in": patched_in,
+                "outcome": outcome,
+                "label": labels.get(fp),
+            }
+        )
 
     # Blocking severities first, then by the round they appeared, so the rows a
     # human has to act on are the rows at the top.
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     return sorted(
-        seen.values(),
+        rows,
         key=lambda r: (order.get(r["severity"], 9), r["first_round"], r["page"]),
     )

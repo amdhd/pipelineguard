@@ -21,5 +21,6 @@ module "qa_agent" {
   qa_agent_code_key        = var.qa_agent_code_key
   qa_agent_code_version_id = var.qa_agent_code_version_id
   qa_corpus_refs           = var.qa_corpus_refs
+  qa_pr_enabled            = var.qa_pr_enabled
   fix_agent_enabled        = var.fix_agent_enabled
 }

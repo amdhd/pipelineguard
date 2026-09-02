@@ -199,11 +199,16 @@ stop loses nothing.**
 - **Phase 2**: `fix_agent_enabled` (default `false`, count-gated) — flip off and
   the fix role/runtime wiring disappears. Currently `true` in `dev.tfvars`. The
   cleanest rollback in the system.
-- **Phase 1**: `qa_corpus_refs` (default `[]`) + the schedule trigger. The
+- **Phase 1**: `qa_pr_enabled` (default `true`) — the account-level kill switch
+  for the whole QA-on-PR pipeline, ~~previously a gap~~ **closed by P3-4**.
+  PR-QA needs two halves: the `pull_request` trigger in vesselAI's workflow, and
+  the `pull_request` subject in `github_qa`'s trust policy. Only the second is
+  ours, and dropping it is sufficient — the workflow keeps firing and its
+  assume-role fails. Corpus/schedule dispatch is untouched (the `ref:` subjects
+  stay), so `qa_corpus_refs` (default `[]`) and the schedule trigger keep
+  working, as does the `qa_github_role_arn` output `layer2_ephemeral` reads. The
   PR-comment behavior is gated by exit codes and the marker; the agent never
-  auto-merges. **Gap:** no Terraform-level switch to turn the whole QA-on-PR
-  pipeline off — the `pull_request` trigger lives in the external workflow.
-  → **P3-4**.
+  auto-merges.
 - **Code migration**: `qa_agent_code_key` + `qa_agent_code_version_id` are
   committed and pinned; rollback of an agent build is repointing the version_id
   (an unset key once destroyed the runtime — now prevented by committed
@@ -276,7 +281,7 @@ gates).
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
 | **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
 | **P3.3** | Make `npm audit` a real gate or label it informational | LOW | `.github/workflows/ci.yml` | **DONE** | — |
-| **P3.4** | Add a Terraform-level switch to disable the whole QA-on-PR pipeline | LOW/MED | `infra/modules/qa_agent/` | half-day | — |
+| **P3.4** | Add a Terraform-level switch to disable the whole QA-on-PR pipeline | LOW/MED | `infra/modules/qa_agent/` | **DONE** — `qa_pr_enabled` (default `true`) gates the `pull_request` subject only; zero-drift proven by a no-diff plan | — |
 
 ## Acceptance criteria per item
 
@@ -495,6 +500,30 @@ stdlib (reads JSON, applies the stopping rule, writes the ledger).
 The old `|| true` swept failures under a step that always went green; the tree
 currently passes (its only finding is a LOW `body-parser`), so a new HIGH/CRITICAL
 prod dependency now blocks the PR.
+
+**P3.4 — DONE (2026-09-02).** `qa_pr_enabled`, a module + layer1 variable
+defaulting to `true`, conditions exactly one entry of `github_qa`'s
+`token.actions.githubusercontent.com:sub` list: the `pull_request` subject.
+
+Why that and not the role: Phase 1's QA-on-PR pipeline needs the external
+workflow's `pull_request` trigger AND this account's `pull_request` subject.
+Only the subject is ours, and removing it is enough — the workflow still fires
+and `configure-aws-credentials` fails to assume. Count-gating the whole
+`github_qa` role would also have killed `workflow_dispatch`/schedule dispatch (a
+live mechanism — P1.3's six corpus runs used it) and broken the
+`qa_github_role_arn` output `layer2_ephemeral` reads through remote state.
+
+Two plans against real state are the evidence, both plan-only — nothing applied:
+
+- **Default (`true`): `No changes. Your infrastructure matches the configuration.`**
+  The `concat` renders today's subject list in today's order, so the switch is
+  inert until someone chooses it.
+- **`-var='qa_pr_enabled=false'`: `0 to add, 1 to change, 0 to destroy`** — the
+  role updated in place, its subject list losing `repo:amdhd/vesselAI:pull_request`
+  and keeping `repo:amdhd/vesselAI:ref:refs/heads/main`.
+
+The switch ships **off-by-default-unused**: `dev.tfvars` does not set it, so
+PR-QA keeps running until someone adds `qa_pr_enabled = false` and applies.
 
 **P2.x / P3.x** — each gets its named outcome + test.
 

@@ -387,11 +387,18 @@ resource "aws_iam_role" "github_qa" {
           # ENUMERATED SUBJECTS, StringEquals, never StringLike with a wildcard
           # -- the same discipline vesselAI's own github-oidc.tf argues for.
           # The workflow has three triggers presenting two subjects:
-          #   pull_request              -> ...:pull_request
+          #   pull_request              -> ...:pull_request  (var.qa_pr_enabled)
           #   schedule/workflow_dispatch -> ...:ref:refs/heads/main
           "token.actions.githubusercontent.com:sub" = concat(
+            # THE QA-ON-PR KILL SWITCH (P3.4). The pull_request TRIGGER lives in
+            # vesselAI's workflow, which this repo cannot edit -- so the only
+            # switch we own is the subject that trigger needs to assume this
+            # role. Dropping it leaves the workflow firing and the assume-role
+            # failing, which is the point: PR-QA stops at the account, with no
+            # change in the external repo. The ref subjects below are untouched,
+            # so corpus and schedule dispatches keep working.
+            var.qa_pr_enabled ? ["repo:${var.qa_workflow_repo}:pull_request"] : [],
             [
-              "repo:${var.qa_workflow_repo}:pull_request",
               "repo:${var.qa_workflow_repo}:ref:${var.qa_workflow_ref}",
             ],
             [

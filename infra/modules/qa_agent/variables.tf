@@ -54,6 +54,14 @@ variable "qa_workflow_ref" {
   default     = "refs/heads/main"
 }
 
+# P3.4 rollback switch. The pull_request TRIGGER is in vesselAI's workflow and
+# out of this repo's reach; the SUBJECT that trigger must assume is not.
+variable "qa_pr_enabled" {
+  description = "Admit the pull_request subject to the QA role's trust policy. False stops PR-triggered QA at the account -- the external workflow still fires and its assume-role fails -- with no vesselAI change. Corpus/schedule ref subjects are unaffected."
+  type        = bool
+  default     = true
+}
+
 variable "qa_corpus_refs" {
   description = "Extra git refs allowed to assume the QA role via workflow_dispatch, for the seeded-bug corpus (e.g. the qa-corpus-1 test branch). Empty by default so the strict main-only baseline needs no change; pass explicitly to reopen a branch for a corpus run, then drop the flag to restore."
   type        = list(string)

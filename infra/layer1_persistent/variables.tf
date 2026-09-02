@@ -55,6 +55,16 @@ variable "fix_agent_enabled" {
   default     = false
 }
 
+# P3.4 rollback switch. Phase 1's QA-on-PR pipeline needs two halves: the
+# pull_request trigger in vesselAI's workflow, and the pull_request subject in
+# the QA role's trust policy. Only the second is ours; flipping this off is the
+# account-level kill switch for the whole PR pipeline.
+variable "qa_pr_enabled" {
+  description = "Admit the pull_request subject to the QA role's trust policy. False stops PR-triggered QA at the account -- the external workflow still fires and its assume-role fails -- with no vesselAI change. Corpus/schedule dispatch is unaffected."
+  type        = bool
+  default     = true
+}
+
 variable "qa_corpus_refs" {
   description = "Git refs allowed to assume the QA role via workflow_dispatch for seeded-corpus runs. Empty by default (strict main-only); pass e.g. [\"refs/heads/qa-corpus-1\"] to reopen a branch for a corpus dispatch, then drop the flag to restore."
   type        = list(string)

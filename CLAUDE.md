@@ -29,7 +29,9 @@ The QA runtime is PUBLIC-mode (no VPC/ENI/NAT) and independent of layer2 — tha
 
 4. **After changing agent code, re-package.** `scripts/package-qa-agent.sh` zips `agents/qa/agent/` for a Linux aarch64 managed runtime (cross-platform pip; never assume Mac wheels run). Its file-copy loop must list **every** module (`agent.py rubric.py schema.py browser_tools.py cdp.py candidates.py`) — a missing module is a silent `ImportError` at invoke time, after a browser session is already paid for.
 
-5. **Deploy sequence after an agent change:** package (captures `VERSION_ID`; prints the new `qa_agent_code_key` / `qa_agent_code_version_id`) → commit those two values into `layer1_persistent/dev.tfvars` → `scripts/apply-dev.sh` (runtime recreation is expected; capture the ARN from `terraform output qa_runtime_arn`) → `gh variable set QA_RUNTIME_ARN <arn> --repo amdhd/vesselAI` if the ARN changed → trigger the workflow.
+5. **Deploy sequence after an agent change:** package (captures `VERSION_ID`; prints `qa_agent_code_key` / `qa_agent_code_version_id` — the key is the same S3 object every time, so in practice only the version id moves) → commit both values into `layer1_persistent/dev.tfvars` → `scripts/apply-dev.sh` **from the main checkout, not a worktree** (`.terraform/` and `backend.conf` are gitignored, so a worktree dies at backend init) → compare `terraform output qa_runtime_arn` against `gh variable get QA_RUNTIME_ARN --repo amdhd/vesselAI`, and `gh variable set` it **only if they differ** → trigger the workflow.
+
+   **A zip bump does NOT recreate the runtime.** Measured 2026-09-02 (#66): the plan reads `0 to add, 1 to change, 0 to destroy`, `agent_runtime_version` increments (3 → 4), and the ARN holds. AgentCore regenerates the ARN when the runtime is **destroyed and recreated** — which is what the 2026-08-30 incident did by dropping `count` to 0, not what shipping new code does. Expect an in-place update; if a plan on an agent-code change proposes a *replace* or a *destroy*, something else is wrong — stop and read it before applying.
 
 ### Architecture (so you don't conflate the two programs)
 

@@ -119,7 +119,8 @@ budget to route count.
 ## 4. Security
 
 **Strong — the hard problems (secrets, lateral write scope, untrusted-model
-input) are solved the right way. Two trust dependencies live outside this repo.**
+input) are solved the right way. The fork guard, the first of the two out-of-repo
+trust dependencies, is now audited (P2.3); one remains.**
 
 - **Secrets never touch Terraform.** Seeded out-of-band via `seed-qa-secret.sh`
   (0600 temp file); the code is aware `terraform show -json` does not redact.
@@ -132,10 +133,27 @@ input) are solved the right way. Two trust dependencies live outside this repo.*
   writes code.
 - **OIDC uses `StringEquals` enumerated subjects**, never `StringLike`. The
   `github_fix` role is ref-only (no `pull_request` subject).
-- **Two out-of-repo trust dependencies:** (1) `github_qa` cannot distinguish
-  fork PRs — the guard is a workflow-level fork check in `vesselAI`'s
-  `ui-qa-agent.yml`, not auditable from this repo; (2) the fix harness runs in a
-  GitHub runner whose image/install is defined by that same external workflow.
+- **The fork guard is audited and correct (P2.3, 2026-09-02).** `github_qa`
+  still cannot distinguish fork PRs — GitHub mints `sub =
+  repo:amdhd/vesselAI:pull_request` for fork and same-repo PRs alike — so the
+  control remains workflow-level. Read at `ui-qa-agent.yml` @ `a4784517`, the
+  job-level `if` is:
+
+  ```yaml
+  (github.event_name != 'pull_request' ||
+    (github.event.pull_request.head.repo.fork == false &&
+     contains(github.event.pull_request.labels.*.name, 'agent-qa'))) &&
+  (github.event_name != 'schedule' || vars.QA_SCHEDULE_ENABLED == 'true')
+  ```
+
+  The fork check is **AND**-ed with the label, not offered as an alternative to
+  it, so the collapse this audit feared — a maintainer labelling a fork PR to
+  review it — does not open the gate. `qa` is the workflow's only job and the
+  `if` is job-level, so **Configure AWS credentials** is inside the guard: a fork
+  PR reaches no AWS-touching step. `workflow_dispatch` needs write access;
+  `schedule` is separately gated on `QA_SCHEDULE_ENABLED`.
+- **One out-of-repo trust dependency remains:** the fix harness runs in a GitHub
+  runner whose image/install is defined by that same external workflow.
 
 ## 5. Tests — what's covered and the minimal missing set
 
@@ -240,7 +258,7 @@ gates).
 | **P0.2** | Verify `TARGET_ARCH` against the runtime, or make it an env override | **HIGH** | `scripts/package-qa-agent.sh` | **DONE** | Phase 1 done |
 | **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
 | **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **DONE — written scope decision (2026-09-02).** Carve-out (PR #49) withdrawn (eleventh pass); candidate layer (PR #50) merged + measured (twelfth pass): detector correct, Leg B clean, but S-3 0/7 — the raw-`OPEN` signal renders only on the `/sire` Findings tab the agent never materializes. Per the written-decision branch of P1.1's criterion, S-3's symptom (a raw enum rendering only behind a non-default tab) is declared OUT OF SCOPE for the browser-driving agent while the runtime harvests only the DOM the model materializes; the miss is documented and owned, and the detector stays live so any future layer that materializes all views closes it — see [EVIDENCE.md](EVIDENCE.md) twelfth pass | Phase 1 done |
-| **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
+| **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | **DONE** | Phase 1 criterion 1 |
 | **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | **DONE** — runs 33586824290→33599986790 (PASS) | Phase 3 demo met |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | **DONE** | amdhd/vesselAI#102, run 33409654638 |
 | **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
@@ -248,7 +266,7 @@ gates).
 | **P1.7** | Collect 3 human-labelled PRs for a real false-positive rate | MEDIUM | corpus + `score.py` | ongoing | Phase 1 criterion 4 |
 | **P2.1** | Handle empty-token auth probe explicitly | LOW/MED | `agents/qa/agent/agent.py` | **DONE** | — |
 | **P2.2** | Align harness `read_timeout=900` with agent deadline 600 | LOW/MED | `agents/qa/harness/main.py` | **DONE** | — |
-| **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | 1–2 h | — |
+| **P2.3** | Verify the `vesselAI` fork-PR guard is present and correct | MEDIUM | external workflow (audit) | **DONE** — audited 2026-09-02 against `ui-qa-agent.yml` @ `a4784517`; the fork check is **AND**-ed with the label, so the collapse this item feared does not exist | — |
 | **P2.4** | Pin exact versions in `requirements.txt` / add a lockfile | LOW/MED | `agents/qa/agent/requirements.txt` | 1–2 h | — |
 | **P3.1** | Don't consume route budget on a failed navigation | LOW | `agents/qa/agent/browser_tools.py` | **DONE** | — |
 | **P3.2** | Declare fix/converge runtime deps (a `requirements.txt`) | LOW | `agents/fix/`, `agents/converge/` | **DONE** | — |
@@ -383,6 +401,36 @@ instead of a hardcoded 900. A caller who raised `--deadline-seconds` toward the
 ceiling was previously cut off mid-flight — discarding the same report the
 timeout exists to protect. The 900 default is drift-checked against
 `agent.DEFAULT_DEADLINE_SECONDS`. +6 tests.
+
+**P2.3 — DONE (audit, 2026-09-02).** Read `.github/workflows/ui-qa-agent.yml`
+in `amdhd/vesselAI` at `a4784517` (the current head of that file). Verdict:
+**present and correct.** The guard is the job-level `if` quoted in Section 4. The
+three things that had to be true are:
+
+1. **The fork check is mandatory, not an alternative.** `head.repo.fork == false`
+   is `&&`-ed with the `agent-qa` label, so the failure mode this item was opened
+   for — "the label gate collapses the moment a maintainer labels a fork PR" — is
+   not reachable. Labelling a fork PR satisfies the label clause and still fails
+   the fork clause.
+2. **It covers the credential step.** `qa` is the only job; the `if` is
+   job-level, so **Configure AWS credentials** (`vars.QA_AGENT_ROLE_ARN`) and
+   every step after it are inside the guard. There is no unguarded job or step
+   that touches AWS.
+3. **The other two triggers are gated too.** `workflow_dispatch` requires write
+   access on the repo; `schedule` — the one trigger that can bill unattended —
+   additionally requires `vars.QA_SCHEDULE_ENABLED == 'true'`.
+
+**Residual, recorded not closed:** the workflow file a `pull_request` run
+executes comes from the PR head, so a fork author can edit the guard text in
+their own PR. No workflow-level control can survive that; the backstop is
+GitHub's fork-PR token policy, and it is in place — `amdhd/vesselAI` is public
+and its default workflow permissions are `read`, so a fork PR is never granted
+`id-token: write` and `configure-aws-credentials` has no OIDC token to exchange.
+That is a platform default rather than a control this project owns, which is
+exactly what the workflow's own comment says. A cheap hardening, not required:
+`github.event.pull_request.head.repo.full_name == github.repository` compares
+strings and avoids GitHub's loose `== false` coercion, which also treats a null
+`head.repo` (deleted fork) as passing.
 
 **P3.1 — DONE.** `navigate()` charges a route only after the CDP navigation
 succeeds. A failed `Page.navigate` returns the browser error with current page

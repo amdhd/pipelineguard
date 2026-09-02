@@ -91,15 +91,26 @@ else
   echo "==> Created ${OIDC_ARN}"
 fi
 
-# --- backend.conf for terraform init ---
-BACKEND_CONF="infra/backend.conf"
-cat > "${BACKEND_CONF}" <<EOF
+# --- backend.conf for each layer's terraform init ---
+# Two separate roots (layer1_persistent = QA core, always up; layer2_ephemeral =
+# demo stack), each with its OWN state object so demo teardown can never touch
+# the QA core. backend.conf is gitignored; the *.example files are committed.
+cat > "infra/layer1_persistent/backend.conf" <<EOF
 bucket         = "${STATE_BUCKET}"
-key            = "pipelineguard/${ENVIRONMENT}/terraform.tfstate"
+key            = "pipelineguard/layer1/${ENVIRONMENT}/terraform.tfstate"
 region         = "${REGION}"
 encrypt        = true
 EOF
 
-echo "==> Wrote ${BACKEND_CONF}"
-echo "==> Bootstrap complete. Next:"
-echo "    cd infra && terraform init -backend-config=backend.conf"
+cat > "infra/layer2_ephemeral/backend.conf" <<EOF
+bucket         = "${STATE_BUCKET}"
+key            = "pipelineguard/layer2/${ENVIRONMENT}/terraform.tfstate"
+region         = "${REGION}"
+encrypt        = true
+EOF
+
+echo "==> Wrote infra/layer1_persistent/backend.conf"
+echo "==> Wrote infra/layer2_ephemeral/backend.conf"
+echo "==> Bootstrap complete. Next, per layer:"
+echo "    cd infra/layer1_persistent && terraform init -backend-config=backend.conf"
+echo "    cd infra/layer2_ephemeral && terraform init -backend-config=backend.conf"

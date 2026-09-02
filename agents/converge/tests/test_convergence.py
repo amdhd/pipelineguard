@@ -110,8 +110,13 @@ class TestTheComparison:
         PLAN.md says "identical or growing -> stall". A set that GREW contains
         something that was not there before, and naming that separately is what
         tells the reader to look at the diff rather than at the findings.
+
+        Round 1 patched A, so the code round 2 measures differs from the code
+        round 1 measured -- the patch is a real suspect. (Without a round-1 fix
+        the two sets describe identical code, and growth is just re-measurement
+        variance; that case is STALL, not REGRESSED.)
         """
-        rounds = [rnd(1, [A]), rnd(2, [A, C])]
+        rounds = [rnd(1, [A], fix(applied=["F-001"])), rnd(2, [A, C])]
         assert conv.decide(rounds).state == conv.REGRESSED
 
     def test_a_set_that_shrank_while_gaining_a_member_is_a_regression(self):
@@ -124,7 +129,11 @@ class TestTheComparison:
         that; the set can.
         """
         D = finding("/analytics", "CRITICAL", "chart crashes on range change", "F-009")
-        rounds = [rnd(1, [A, B, C]), rnd(2, [A, D])]
+        # Round 1 patched A, B and C: D only exists because that patch ran.
+        rounds = [
+            rnd(1, [A, B, C], fix(applied=["F-001", "F-002", "F-003"])),
+            rnd(2, [A, D]),
+        ]
         d = conv.decide(rounds)
         assert d.state == conv.REGRESSED
         assert "the patch is the suspect" in d.reason
@@ -211,6 +220,78 @@ class TestProseIdentityAcrossRounds:
         d = conv.decide(rounds)
         assert d.state == conv.REGRESSED
         assert "the patch is the suspect" in d.reason
+
+
+class TestAPatchIsMeasuredBeforeTheLoopStops:
+    """
+    The fix the live runs demanded. A round records its finding set BEFORE its
+    fix runs, so a STALL or REGRESSED computed from a round's own pre-fix
+    findings passes sentence on a patch that has never been measured. Run
+    33590568978 applied the correct backend fixes (voyage.ts actual_fuel ->
+    actualFuel, maintenance.ts healthScore) in round 2 and was stopped at
+    REGRESSED before round 3 could verify them; run 33588304974 did the same.
+    A round that patched always earns a verification round.
+    """
+
+    S1 = TestProseIdentityAcrossRounds.S1
+    S1_REPHRASED = TestProseIdentityAcrossRounds.S1_REPHRASED
+    S2 = finding(
+        "/maintenance",
+        "HIGH",
+        "Health score value missing from every equipment health ring on the "
+        "Equipment Health tab",
+        "F-002",
+    )
+
+    def test_a_round_that_patched_is_not_stalled_on_its_own_pre_fix_set(self):
+        """
+        Run 33588304974's shape: round 1 patched the crash site wrongly, round 2
+        measured the SAME crash still present (rephrased) and patched again --
+        this time the real backend cause. The old rule stalled here and threw
+        round 2's correct fix away. The loop must run round 3 to verify it.
+        """
+        rounds = [
+            rnd(1, [self.S1], fix(applied=["F-001"])),
+            rnd(2, [self.S1_REPHRASED], fix(applied=["F-001"])),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.CONTINUE
+        assert "patched 1 blocking finding(s)" in d.reason
+        assert "measures whether the fixes took" in d.reason
+
+    def test_a_round_that_patched_is_not_called_a_regression_on_growth(self):
+        """
+        Run 33590568978's shape: round 1's fix agent skipped (nothing patched),
+        round 2 re-measured the same code, saw the S-1 crash AND a newly-blocking
+        S-2, and patched both. Round 2's growth happened BEFORE its own fix, so
+        the fix is not the suspect -- and patching S-2 makes it exactly what
+        round 3 must verify.
+        """
+        rounds = [
+            rnd(1, [self.S1]),
+            rnd(2, [self.S1_REPHRASED, self.S2], fix(applied=["F-001", "F-002"])),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.CONTINUE
+        assert "patched 2 blocking finding(s)" in d.reason
+
+    def test_growth_on_unchanged_code_without_a_patch_is_a_stall_not_a_regression(self):
+        """
+        The guard for the grown-set case: if round 2 ALSO declined to patch, the
+        two sets describe identical code (no fix ever ran), so a blocker only
+        round 2 sees is re-measurement variance -- "the patch is the suspect"
+        would name a patch that does not exist. Still a stop: nothing has been
+        fixed, so the loop cannot converge.
+        """
+        rounds = [
+            rnd(1, [self.S1]),
+            rnd(2, [self.S1_REPHRASED, self.S2]),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.STALL
+        assert d.state != conv.REGRESSED
+        assert "neither round patched" in d.reason
+        assert "re-measurement variance" in d.reason
 
 
 class TestAnIncompleteRoundProvesNothing:

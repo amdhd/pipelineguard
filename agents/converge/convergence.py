@@ -45,6 +45,24 @@ reads the report -- a stall means the agent cannot fix this, while a regression
 means the agent broke something and the branch it produced should be treated
 accordingly.
 
+Two things must be true before either verdict can fire, because both accuse the
+code.
+
+First, a round that patched is never stopped on its own findings. The round
+records its finding set BEFORE its fix runs, so STALL ("the agent cannot fix
+this") or REGRESSED ("the patch is the suspect") computed from a round's own
+pre-fix set would pass sentence on a patch that has never been measured. A
+round that changed the code always earns the next round, which exists to
+measure that change; the stop verdicts belong to a round that found blocking
+findings and produced no patch -- the one state where another round would
+re-measure the same code and cost the same money.
+
+Second, `REGRESSED` requires a patch to have run between the two measured
+states. When neither round patched, the two finding sets describe the same
+code, so a blocker that only appears in the second measurement is the
+run-to-run variance repeated runs exist to absorb -- it cannot be a regression,
+because nothing changed to regress.
+
 A ROUND THAT DID NOT FINISH DECIDES NOTHING
 -------------------------------------------
 `INCONCLUSIVE` exists because of a failure mode this repo has already been bitten
@@ -83,7 +101,7 @@ import schema  # noqa: E402
 # the reader nothing about whether to celebrate, review a branch, or go and look
 # at CloudWatch.
 
-CONTINUE = "CONTINUE"        # the set shrank and nothing new appeared
+CONTINUE = "CONTINUE"        # progress, or a round that patched needs verifying
 PASS = "PASS"                # zero blocking findings -- the loop's goal
 STALL = "STALL"              # nothing resolved this round
 REGRESSED = "REGRESSED"      # a blocking finding appeared that was not there before
@@ -651,25 +669,50 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
     if previous is not None:
         resolved, appeared = _cross_round_blocking(previous, current)
 
-        if appeared:
-            return Decision(
-                REGRESSED,
-                f"round {current['round']} reports {len(appeared)} blocking "
-                f"finding(s) that round {previous['round']} did not "
-                f"({len(resolved)} resolved). A set that gained a member is not "
-                "converging, and when the only thing that changed between the "
-                "rounds was the agent's own patch, the patch is the suspect.",
-            )
-        if not resolved:
-            return Decision(
-                STALL,
-                f"round {current['round']} reports the same "
-                f"{len(current['blocking'])} blocking finding(s) as round "
-                f"{previous['round']}. Another round would run the same agent "
-                "against the same defects and cost the same money.",
-            )
+        # A round that patched changed the code, so its patch has not been
+        # measured yet -- the next round exists to do that. STALL and REGRESSED
+        # would end the loop on this round's PRE-fix findings and discard the
+        # patch it just made. Live runs did exactly that: 33588304974 and
+        # 33590568978 each applied the correct backend cause in their final
+        # round and were stopped a round before any QA could verify it. A round
+        # that changed the code falls through to CONTINUE below; the stop
+        # verdicts belong to a round that found blockers and produced no patch.
+        if not current["patched"]:
+            if appeared:
+                if previous["patched"]:
+                    return Decision(
+                        REGRESSED,
+                        f"round {current['round']} reports {len(appeared)} blocking "
+                        f"finding(s) that round {previous['round']} did not "
+                        f"({len(resolved)} resolved). A set that gained a member is not "
+                        "converging, and when the only thing that changed between the "
+                        "rounds was the agent's own patch, the patch is the suspect.",
+                    )
+                # Neither round patched, so the two sets describe the same code.
+                # A blocker only the second measurement sees is the run-to-run
+                # variance repeated runs exist to absorb -- not a regression,
+                # because nothing changed to regress. Still a stop: with no fix
+                # applied in either round, another round changes nothing.
+                return Decision(
+                    STALL,
+                    f"round {current['round']} reports {len(appeared)} more blocking "
+                    f"finding(s) than round {previous['round']}, on code that has not "
+                    "changed (neither round patched). A blocker that only shows up in "
+                    "the second measurement of identical code is re-measurement "
+                    "variance, not a regression -- but the loop cannot converge "
+                    "without a fix.",
+                )
+            if not resolved:
+                return Decision(
+                    STALL,
+                    f"round {current['round']} reports the same "
+                    f"{len(current['blocking'])} blocking finding(s) as round "
+                    f"{previous['round']}. Another round would run the same agent "
+                    "against the same defects and cost the same money.",
+                )
 
-    # 4. Shrinking (or the first round) -- continue, unless a cap says otherwise.
+    # 4. Continue, unless a cap says otherwise. The continue paths: the first
+    # round, a set that shrank, or a round that patched and must be verified.
     hit = _backstop(rounds, budgets or {})
     if hit is not None:
         return hit
@@ -679,6 +722,12 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
             CONTINUE,
             f"round {current['round']} found {len(current['blocking'])} blocking "
             "finding(s); nothing to compare against yet.",
+        )
+    if current["patched"]:
+        return Decision(
+            CONTINUE,
+            f"round {current['round']} patched {len(current['patched'])} blocking "
+            f"finding(s); the next round measures whether the fixes took.",
         )
     return Decision(
         CONTINUE,

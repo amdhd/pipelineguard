@@ -1129,3 +1129,244 @@ produces patches a reviewer rejects — which is why the loop never auto-merges.
 DONE. This does not declare Phase 2 finished — the audit keeps P2.3 (fork-PR
 guard) and P2.4 (version pinning) open — and it says nothing about Phase 3,
 whose live run (P1.3) remains outstanding.
+
+---
+
+## Phase 3 — the convergence loop ran live
+
+Repeated runs per round were the audit's allowed answer to its own blocked
+methodological risk (noted above: "a set that shrinks between two rounds may be
+noise rather than progress"). `convergence.aggregate_findings` + a thin
+`aggregate.py` CLI (pipelineguard#55 `817852a`) make each round QA the corpus K
+times and keep a finding only when a strict majority of the runs report it,
+graded at the most severe of its reporters, under a prose-tolerant identity
+(page + Sorensen-Dice over significant tokens). Six live runs then taught six
+mechanism lessons in turn — a false PASS, two mislabelled REGRESSEDs, an honest
+stop whose ledger mislabelled its last patch, a truthful stop, and finally the
+first live PASS. The demo target was `qa-corpus-1` @ `de96b34`, seeded with two
+deterministic rendering defects: S-1 (`/voyage` HIGH crash) and S-2
+(`/maintenance` blank score rings).
+
+| run | pipelineguard pin | outcome | lesson → fix |
+|---|---|---|---|
+| 33586824290 | `817852a` (#55) | **false PASS** (0 findings) | within-round aggregation key must survive prose → #56 `01924da` |
+| 33588304974 | `01924da` (#56) | REGRESSED | between-round comparison must survive prose → #57 `1446cd3` |
+| 33590568978 | `1446cd3` (#57) | REGRESSED | a round's own patch must earn a verification round → #59 `4acc325` |
+| 33593197606 | `4acc325` (#59) | honest MAX_ROUNDS — but the ledger called its last patch "ineffective" | a final-round patch is unverified, not ineffective → #60 `630f3ea` |
+| 33596263397 | `630f3ea` (#60) | truthful MAX_ROUNDS | — (#60 held live) |
+| 33599986790 | `630f3ea` (#60) | **PASS** — first live convergence | — |
+
+vesselAI carried each pin: #114 (→ #55), #115 (→ #56), #117 (→ #57), #119
+(→ #59), #121 (→ #60). The agent PRs each run opened against `qa-corpus-1`
+(#116, #118, #120, #122, #123) were closed unmerged, so the corpus stayed at
+`de96b34a` throughout.
+
+### 2026-09-02 (first live run) — the false PASS that proved identity must survive prose
+
+Run
+[33586824290](https://github.com/amdhd/vesselAI/actions/runs/33586824290):
+target `qa-corpus-1` @ `de96b34`, repeats=3, max_rounds=3, token budget 6 M,
+severities CRITICAL,HIGH.
+
+The loop ran end-to-end for the first time — stack, tunnel, health gate, three
+QA sessions (632 s, $0.78), the majority aggregate, a decision, a stop. But the
+decision was a false **PASS** on 0 findings, and the run is more valuable as a
+failure than the success it claimed:
+
+- **The mechanics were right.** `repeats: {total: 3, completed: 3, threshold: 2}`
+  was written; tokens (1,096,392) and session_seconds summed across the three
+  runs; `observed_at_commit` preserved.
+- **The identity was wrong.** All three QA runs found the same two seeded
+  defects — S-1 `/voyage` HIGH and S-2 `/maintenance` MEDIUM — each phrasing
+  them differently ("crashes with TypeError on .toFixed() of undefined" vs
+  "crashes React tree with TypeError on 'toFixed' call" vs "Cannot read
+  properties of undefined (reading 'toFixed')"). The aggregation key was
+  `page::summary` verbatim, so each phrasing was its own 1-of-3 group and every
+  finding fell below the strict majority. The round recorded PASS on a corpus
+  with two real defects in it.
+
+This is the run-to-run variance this document predicted, one layer deeper than
+measured before: it is not just whether a defect is caught (S-1 was caught 5/6
+historically) — it is that the *summary* a model writes for the same defect is
+prose that changes every run. A convergence key built on that prose cannot
+recognise the same defect twice. The fix (pipelineguard#56 `01924da`, carried by
+vesselAI#115) groups by page and Dice-similarity over significant tokens, within
+a round and (after #57) between rounds.
+
+### 2026-09-02 (second live run) — REGRESSED: the between-round comparison did not survive prose
+
+Run
+[33588304974](https://github.com/amdhd/vesselAI/actions/runs/33588304974):
+target `qa-corpus-1` @ `de96b34`, repeats=3, max_rounds=3, token budget 6 M,
+severities CRITICAL,HIGH.
+
+| round | aggregated blocking set | decision | patched | commit observed | tokens | seconds |
+|---|---|---|---|---|---|---|
+| 1 | S-1 `/voyage` HIGH | CONTINUE | 1 (S-1) | `de96b34a` | 1,201,968 | 674 |
+| 2 | S-1 `/voyage` HIGH (rephrased) | **REGRESSED** | 1 (S-1) | `0bcbea1c` | 1,113,215 | 596 |
+
+**Decision history:** CONTINUE → REGRESSED. **Cost:** 2,369,311 tokens (~$1.78),
+1,050 s session. Agent PR amdhd/vesselAI#116 closed unmerged.
+
+Round 1 patched the S-1 crash (its patch committed as `0bcbea1c`). Round 2 —
+measuring that patch — reported the same `/voyage` crash, but phrased
+differently ("crashes with TypeError on toFixed, triggering error boundary" vs
+round 1's "Cannot read properties of undefined (reading 'toFixed')"). The
+between-round comparison still used the exact fingerprint (`page::severity::
+summary.strip().lower()`), so the rephrased-but-persistent blocker did not match
+its predecessor: the set "gained a member" that round 1 "never had", and the
+verdict was REGRESSED — the patch is the suspect — for a defect round 2 was
+looking straight at. Replaying this run's state through the fixed mechanism
+(#57 prose-tolerant cross-round matching, #59 verification) reads round 2 as
+CONTINUE: the blocker was rephrased, not new, and round 2 patched it again.
+
+### 2026-09-02 (third live run) — REGRESSED: a round's own patch was never measured
+
+Run
+[33590568978](https://github.com/amdhd/vesselAI/actions/runs/33590568978):
+target `qa-corpus-1` @ `de96b34`, repeats=3, max_rounds=3, token budget 6 M,
+severities CRITICAL,HIGH.
+
+| round | aggregated blocking set | decision | patched | fix | commit observed | tokens | seconds |
+|---|---|---|---|---|---|---|---|
+| 1 | S-1 `/voyage` CRITICAL | CONTINUE | 0 | **skipped** | `de96b34a` | 1,179,499 | 642 |
+| 2 | S-1 `/voyage` HIGH + S-2 `/maintenance` HIGH | **REGRESSED** | 2 (both) | 2 edits/2 files | `de96b34a` | 1,051,921 | 590 |
+
+**Decision history:** CONTINUE → REGRESSED. **Cost:** 2,318,040 tokens (~$1.86),
+1,047 s session. Agent PR amdhd/vesselAI#118 closed unmerged.
+
+Two failures in one run. Round 1's fix agent **skipped** S-1, reasoning that the
+crash was `ciiImpact.toFixed` on an undefined value and that — since the backend
+maps `ciiImpact ?? 0` — the undefined value must originate in the withheld mock
+files. That diagnosis was wrong: the crash is `formatFuel(voyage.actualFuel)` on
+a field the backend `/history/:vesselId` returns as `actual_fuel` (snake_case)
+while the frontend reads `voyage.actualFuel` (camelCase). The fix is a two-line
+change to reachable `backend/src/routes/voyage.ts`, and round 2 made it (plus a
+three-line `maintenance.ts` change for S-2).
+
+And the verdict the loop reported was false in the worse direction. Both rounds
+observed `de96b34a` — round 1 patched nothing, so the code never changed — yet
+round 2's **pre-fix** finding set was the input to the decision, and that set had
+*grown* (S-2's aggregate grade flipped MEDIUM→HIGH on a 1-of-3 outlier, under the
+conservative most-severe grading rule). The loop therefore reported REGRESSED —
+"the patch is the suspect" — and stopped one round before round 2's correct
+fixes could be verified. A round records its findings BEFORE its fix runs; the
+stopping rule was passing sentence on a patch that had never been measured. The
+fix (pipelineguard#59 `4acc325`) makes STALL and REGRESSED fire only when the
+round applied no patch — the one state where another round would re-measure
+identical code — and requires a real patch to have run before blaming one.
+Replaying this run's state through #59 reads round 2 as CONTINUE: "round 2
+patched 2 blocking finding(s); the next round measures whether the fixes took."
+
+### 2026-09-02 (fourth live run) — an honest MAX_ROUNDS, then the ledger mislabelled its last patch
+
+Run
+[33593197606](https://github.com/amdhd/vesselAI/actions/runs/33593197606):
+target `qa-corpus-1` @ `de96b34`, repeats=3, max_rounds=3, token budget 6 M,
+severities CRITICAL,HIGH.
+
+| round | aggregated blocking set | decision | patched | commit observed | tokens | seconds |
+|---|---|---|---|---|---|---|
+| 1 | S-1 `/voyage` HIGH | CONTINUE | 1 | `de96b34a` | 1,080,694 | 647 |
+| 2 | S-1 `/voyage` HIGH + S-2 `/maintenance` MEDIUM | CONTINUE | 1 | `b5a7b8a7` | 1,152,968 | 601 |
+| 3 | SAVINGS `/voyage` CRITICAL + S-2 `/maintenance` MEDIUM | MAX_ROUNDS | 1 | `1ce22c0b` | 1,446,657 | 656 |
+
+**Decision history:** CONTINUE → CONTINUE → MAX_ROUNDS. **Cost:** 3,680,319
+tokens ($2.75), 1,904 s loop wall. Agent PR amdhd/vesselAI#120 closed unmerged.
+
+The loop stopped honestly at its 3-round cap while still shrinking, and its
+ledger then lied about the last round. Round 3 patched a newly-surfaced SAVINGS
+CRITICAL — the crash fix had let the savings table render, unmasking its wrong
+arithmetic. A round records its findings BEFORE its own fixes run, so round 3's
+finding set — measured against the pre-fix code — still contained the SAVINGS
+CRITICAL; the loop then hit its round cap, and nothing ever re-measured the
+round-3 patch. `reconcile()` saw a finding that was patched yet still present in
+the final round and labelled it "patch did not fix it": a verdict of ineffective
+passed on a patch no round had measured. The fix (pipelineguard#60 `630f3ea`,
+carried by vesselAI#121) added `PATCH_UNVERIFIED` — "patch unverified (run ended
+before a re-measure)" — which requires a later round to have measured a finding
+before calling its patch ineffective. Replaying this run's state through #60
+reads the SAVINGS row as patch unverified, not ineffective. The stopping
+decision itself (MAX_ROUNDS, "finding set is still shrinking") was already
+correct — the mechanism that lied was the reconciliation ledger, not
+`decide()`.
+
+### 2026-09-02 (fifth live run) — MAX_ROUNDS with a truthful ledger
+
+Run
+[33596263397](https://github.com/amdhd/vesselAI/actions/runs/33596263397):
+target `qa-corpus-1` @ `de96b34`, repeats=3, max_rounds=3, token budget 6 M,
+severities CRITICAL,HIGH, on pipelineguard `630f3ea` (carried by vesselAI#121).
+
+| round | aggregated blocking set | decision | patched | commit observed | tokens | seconds |
+|---|---|---|---|---|---|---|
+| 1 | S-1 `/voyage` HIGH + S-2 `/maintenance` MEDIUM | CONTINUE | 1 (S-1) | `de96b34a` | 1,046,753 | 616 |
+| 2 | S-1 `/voyage` HIGH + S-2 `/maintenance` MEDIUM | CONTINUE | 1 (S-1) | `c8680c4a` | 1,112,052 | 599 |
+| 3 | SAVINGS `/voyage` CRITICAL + S-2 `/maintenance` HIGH | MAX_ROUNDS | 2 (both) | `36f2485f` | 1,422,223 | 670 |
+
+**Decision history:** CONTINUE → CONTINUE → MAX_ROUNDS. **Cost:** 3,581,028
+tokens ($2.78), 1,885 s loop wall. Agent PR amdhd/vesselAI#122 closed unmerged.
+
+This is run 4 on the #60 fix, and the ledger now tells the truth. Round 3
+patched the SAVINGS CRITICAL and the S-2 maintenance ring, hit its round cap,
+and `reconcile()` reads both patches as **"patch unverified (run ended before a
+re-measure)"** — the correct verdict for a patch applied in the final round —
+while S-1's crash, patched in rounds 1 and 2 and measured absent in round 3,
+reads **fixed**. The vote absorbed run-to-run variance in the visible shape the
+aggregate was built for: round 1's repeat x2 alone reported a LOW "Captain
+Captain" greeting (a third finding neither x1 nor x3 saw), so it was 1-of-3 and
+dropped from the aggregate. A single-run loop would have PASSed or stalled on
+whichever run it happened to draw.
+
+### 2026-09-02 (sixth live run) — PASS, the first live convergence
+
+Run
+[33599986790](https://github.com/amdhd/vesselAI/actions/runs/33599986790):
+target `qa-corpus-1` @ `de96b34`, repeats=3, **max_rounds=5**, token budget 10 M,
+severities CRITICAL,HIGH, on pipelineguard `630f3ea` (carried by vesselAI#121).
+
+| round | aggregated blocking set | decision | patched | commit observed | tokens | seconds |
+|---|---|---|---|---|---|---|
+| 1 | S-1 `/voyage` HIGH + S-2 `/maintenance` MEDIUM | CONTINUE | 1 (S-1) | `de96b34a` | 1,146,587 | 677 |
+| 2 | S-1 `/voyage` HIGH + S-2 `/maintenance` MEDIUM | CONTINUE | 1 (S-1) | `a7640566` | 1,081,291 | 581 |
+| 3 | S-2 `/maintenance` (S-1 gone) | CONTINUE | 1 (S-2) | `4beb2391` | 1,276,785 | 601 |
+| 4 | none | **PASS** | — | `a0087e4b` | 1,179,639 | 556 |
+
+**Decision history:** CONTINUE → CONTINUE → CONTINUE → PASS. **Cost:** 4,684,302
+tokens ($3.44), 2,415 s loop wall. Agent PR amdhd/vesselAI#123 closed unmerged.
+
+The first live convergence PASS. Rounds 1 and 2 patched the S-1 `/voyage` crash
+twice before it held — round 1's `VoyageHistory.tsx` guard on `ciiImpact` did
+not reach the actual undefined (the backend `/history/:vesselId` returns
+`actual_fuel`, snake_case, while the frontend reads `voyage.actualFuel`), and
+round 2's two-line `voyage.ts` change fixed the real cause. Round 3 measured the
+crash gone and patched the last blocker — the S-2 `/maintenance` health ring
+(`maintenance.ts` no longer overwrites the mock's `healthScore` with
+`undefined`). Round 4 measured both fixes held: the aggregated blocking set was
+empty, and `decide()` returned PASS.
+
+Round 4 is also the vote doing exactly its job, and the clearest statement of
+what the strict majority costs. Its three runs each reported a *different*
+finding, none shared: x1 a LOW greeting duplicate, x2 a **CRITICAL** `/voyage`
+SAVINGS anomaly, x3 a LOW `/analytics` axis-ticks artifact. Each was 1-of-3 and
+every one fell below the ≥2-of-3 threshold, so the aggregate recorded zero
+blockers and the round PASSed. A single-run loop would have passed or failed on
+a coin flip. The honest caveat: the SAVINGS anomaly x2 reported is real — it was
+CRITICAL in the two prior runs' round 3, once the crash fix let the savings
+table render — but it is intermittently visible, surfacing only in runs that
+materialize that table, and the strict majority drops exactly that. The PASS
+certifies the two seeded blockers converged (S-1 and S-2 were absent from all
+three round-4 runs); it does not certify the corpus is clean. That is the
+tolerance the repeated-runs choice buys, and its cost, stated plainly.
+
+**Honest caveats across the six runs:**
+- Loop QA ran in `ai_fallback_mode`; the seeds are deterministic rendering
+  defects, so this does not claim the live model's full surface.
+- The agent's patches live only on the closed-unmerged `agent-converge/run-*`
+  branches (PRs #116, #118, #120, #122, #123); `qa-corpus-1` is untouched at
+  `de96b34a`. A converged loop is evidence the majority-reported blockers are
+  gone, not that the patches are good.
+- S-3 remains out of scope by P1.1's written decision.
+- Runs 4 and 5 stopped honestly at MAX_ROUNDS while still shrinking; the 3-round
+  cap was the limiter, not the defects. Run 6 needed max_rounds=5 to earn its
+  verification round.

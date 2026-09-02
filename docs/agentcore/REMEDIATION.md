@@ -270,6 +270,44 @@ would triple the cost to average out a variance that lives in the *assessment*
 step, which detections bypass entirely; a tolerance band would need a number
 that turns out to be the same size as the signal.
 
+**Addendum (2026-09-02): the audit's allowed option was built, and six live runs
+measured it.** P1.3 chose the NO-GO's permitted fix — repeated runs per round —
+rather than this section's recommendation. What was built is
+`convergence.aggregate_findings` + `aggregate.py`: QA runs K times per round and
+the findings fold by strict majority (≥2 of 3), graded at the most severe of
+their reporters, on a prose-tolerant identity (page + Dice over significant
+tokens).
+
+The live runs validated this section's warning harder than expected, and each
+also exposed a bug in the stopping rule or its ledger. The first run
+(33586824290) found the variance is one layer deeper than this section measured:
+not just whether a defect is detected, but the summary a model writes for the
+same defect is fresh prose each run, so the exact-summary identity key dropped
+every finding and the round PASSed on a dirty corpus (fix: pipelineguard#56,
+prose-tolerant identity). The second (33588304974) showed the between-round
+comparison carried the same prose blindness and read a rephrased-but-persistent
+blocker as a new one (fix: #57). The third (33590568978) showed the decision
+fired on a round's own pre-fix findings, ending the loop one round before the
+correct patch could be verified (fix: #59 — STALL and REGRESSED fire only when a
+round applied no patch). The fourth (33593197606) stopped honestly at its round
+cap, but its reconciliation ledger called the final round's unmeasured patch
+"ineffective" (fix: #60 — a final-round patch is "unverified", not
+"ineffective"). The fifth (33596263397) ran the fixed ledger and told the truth.
+The sixth (33599986790) PASSed.
+
+One consequence this section should record for whoever inherits it: the strict
+majority trades exactly the way this warning says, and the warning now has a run
+attached. Run 33599986790's final round had each of its three QA runs report a
+*different* 1-of-3 finding — including a CRITICAL `/voyage` SAVINGS anomaly that
+two earlier runs had also reported at CRITICAL — and the aggregate dropped them
+all. The vote absorbed the variance (a single-run loop would have passed or
+failed on a coin flip) and the PASS is truthful *for the majority-reported
+blockers*; it is not a clean-corpus certificate. Detections-convergence remains
+the better long answer — it bypasses the model-prose step entirely — but it is
+the larger change (the findings JSON has no raw detection list). Repeated-runs
+majority aggregation is the smaller change the audit allowed, now demonstrated
+live.
+
 ## What this document is not
 
 It is not a list of everything wrong. The parts that held are not listed here,

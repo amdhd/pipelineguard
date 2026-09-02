@@ -104,7 +104,7 @@ and measured runs sit 3–10× below the ceilings. Memory is a non-issue.**
 | QA wall-clock | ~470s at 7.6s/turn | 137s | 600s deadline |
 | QA cost | — | **$0.03–0.18/run** (vs ~$0.23 estimate) | token/deadline |
 | Fix per run | 5 findings, 200k tokens | 29,402 tokens/finding; **$0.09–0.11/finding** | budget, `--max-findings` |
-| Loop | 3 rounds, 2 M tokens, 3600s wall-clock, 1500s/round | **not yet run live** | cumulative caps from flags |
+| Loop | 3 rounds, 2 M tokens, 3600s wall-clock, 1500s/round | live 33599986790: 4 rounds, 4.7 M tokens, 2415s wall — **PASS** | cumulative caps from flags |
 | Idle runtime | — | ~$1.40/month | — |
 
 **Flagged:** harness `read_timeout=900` exceeds the agent's 600s deadline — a
@@ -159,9 +159,14 @@ CI runs all six test dirs, AWS-free.
 4. `LOG_PAGE_STATE` defaults off / gated. → **P0-3**.
 5. ~~Concurrent-runs key isolation under `screenshots/qa-run/`.~~ **DONE in
    P1-5** (default label unique per invocation; +4 tests).
-6. **Convergence has no live multi-round test** — `test_convergence.py`'s own
+6. ~~**Convergence has no live multi-round test** — `test_convergence.py`'s own
    docstring says the decision surface is exercised with constructed rounds "for
-   the price of a unit test." → **P1-3**.
+   the price of a unit test."~~ **DONE in P1-3**: six live runs exercised
+   QA→fix→decision end-to-end on `qa-corpus-1` (33586824290 → 33599986790, the
+   last a PASS), and repeated runs per round were added
+   (`convergence.aggregate_findings` + `aggregate.py`: strict-majority vote on a
+   prose-tolerant identity). Each early run exposed one stopping-rule or ledger
+   bug the fixes below closed. See EVIDENCE.md, Phase 3 section.
 
 ## 6. Rollback — feature flags and migration path
 
@@ -207,11 +212,19 @@ the known real incident; **one agent PR has merged CI-green** —
 referenced, not claimed (EVIDENCE.md, Phase 2 section). Remaining: **P2.3**
 (fork-PR guard) and **P2.4** (version pinning).
 
-**Phase 3 — NO-GO on unsupervised operation.** The stopping rule is unit-tested
-but **never run live**, and `EVIDENCE.md` itself flags the blocking
-methodological risk: run-to-run variance is large enough that "a set that
-shrinks between two rounds may be noise rather than progress," and the plan
-assumes neither repeated runs per round nor a tolerance band. → **P1-3**.
+**Phase 3 — demonstration met.** The stopping rule ran live on `qa-corpus-1`
+with repeated runs per round: QA K=3 times, aggregated by strict majority on a
+prose-tolerant identity (page + Dice over significant tokens), so the
+round-to-round comparison is no longer at the mercy of run-to-run variance
+(EVIDENCE.md's flagged risk). Six runs (33586824290 → 33599986790) each exposed
+and the subsequent fix closed one mechanism bug: an exact-summary aggregation
+key produced a false PASS (→ pipelineguard#56); an exact-fingerprint
+between-round comparison read a rephrased blocker as new (→ #57); the decision
+fired on a round's own pre-fix findings (→ #59); and the reconciliation ledger
+called an unmeasured final-round patch "ineffective" (→ #60). The final run,
+33599986790, ended in the first live convergence **PASS**. Remaining: loop QA in
+fallback mode for corpus seeds, the strict majority's documented tolerance, and
+detections-convergence as a future refinement (REMEDIATION.md).
 
 ---
 
@@ -228,7 +241,7 @@ gates).
 | **P0.3** | Gate `LOG_PAGE_STATE` behind an env flag, default off | LOW | `infra/modules/qa_agent/main.tf` | **DONE** | — |
 | **P1.1** | Close the S-3 recall gap (5/9 → ≥8/9, or documented rationale) | **HIGH** | candidate layer (not `rubric.py`) | **DONE — written scope decision (2026-09-02).** Carve-out (PR #49) withdrawn (eleventh pass); candidate layer (PR #50) merged + measured (twelfth pass): detector correct, Leg B clean, but S-3 0/7 — the raw-`OPEN` signal renders only on the `/sire` Findings tab the agent never materializes. Per the written-decision branch of P1.1's criterion, S-3's symptom (a raw enum rendering only behind a non-default tab) is declared OUT OF SCOPE for the browser-driving agent while the runtime harvests only the DOM the model materializes; the miss is documented and owned, and the detector stays live so any future layer that materializes all views closes it — see [EVIDENCE.md](EVIDENCE.md) twelfth pass | Phase 1 done |
 | **P1.2** | Wire `--runner-minutes` through the workflow | LOW | `vesselAI` workflow + `report.py` | 1–2 h | Phase 1 criterion 1 |
-| **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | 1–2 days incl. cost | Phase 3 (NO-GO) |
+| **P1.3** | Run Phase 3 live, 2–3 real rounds; add tolerance band or repeated rounds | **HIGH** | `agents/converge/` + runner | **DONE** — runs 33586824290→33599986790 (PASS) | Phase 3 demo met |
 | **P1.4** | Demonstrate one agent PR merged CI-green | MEDIUM | fix harness + `vesselAI` workflow | **DONE** | amdhd/vesselAI#102, run 33409654638 |
 | **P1.5** | Make the default session label unique (concurrency isolation) | MEDIUM | `agents/qa/harness/main.py` | **DONE** | — |
 | **P1.6** | `staleness()` warns on a non-git checkout | MEDIUM | `agents/fix/harness.py` | **DONE** | — |
@@ -314,9 +327,17 @@ exercises the written-decision branch of the acceptance criterion above:
 **P1.2 — criterion 1 complete.** The workflow passes a real `--runner-minutes`;
 a run renders a non-`unpriced` three-meter cost table.
 
-**P1.3 — Phase 3 de-NO-GO.** One real 2–3-round run where each round's QA+fix
-steps actually ran, decision history coherent, and either repeated runs per
-round or a tolerance band added to `convergence.py`.
+**P1.3 — DONE.** One real 2–3-round run where each round's QA+fix steps actually
+ran, decision history coherent, and repeated runs per round added to
+`convergence.py`. Six live runs on `qa-corpus-1` (33586824290 → 33599986790);
+the final one, 33599986790, ran four rounds
+(CONTINUE → CONTINUE → CONTINUE → **PASS**) with repeated QA runs aggregated by
+strict majority (≥2 of 3) on a prose-tolerant identity, and is the first live
+convergence PASS. The five earlier runs each exposed a mechanism bug — a false
+PASS, two mislabelled REGRESSEDs, a mislabelled ledger patch — which
+pipelineguard#56/#57/#59/#60 closed; they are documented in EVIDENCE.md, not
+hidden. Repeated runs were the audit's allowed option; detections-convergence
+stays a future refinement (REMEDIATION.md).
 
 **P1.4 — DONE.** A real fix-agent PR (compiles, CI green, no human intervention
 on the agent's side) exists and is **referenced, not claimed**:

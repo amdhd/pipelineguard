@@ -1,4 +1,4 @@
-# Phase 1 — evidence record
+# Phase 1–2 — evidence record
 
 Phase 1's exit criteria are quantitative. Until each row below carries a
 measurement, the agent's output is **plausible, not demonstrated** — and that
@@ -1059,3 +1059,73 @@ The count must also render unconditionally. `{open > 0 && …}` hides the badge
 when the number is zero, so the seeded symptom would be an *absence* — and the
 rubric correctly tells the agent that an absent element is a missing feature, not
 a defect. A wrong number is reportable; a missing badge is not.
+
+---
+
+## Phase 2 — the fix-agent loop, and the demonstration P1.4 asked for
+
+Phase 2's demonstration criterion (AUDIT.md **P1.4**) is: *a real fix-agent PR
+(compiles, CI green, no human intervention on the agent's side) exists and is
+referenced, not claimed.* It is met here by primary-source record. The two runs
+below are the current `agent-fix` workflow in `amdhd/vesselAI`
+(`workflow_dispatch` on `main`, harness checked out at pinned
+`PIPELINEGUARD_REF`, PRs opened with the GitHub App token).
+
+### 2026-08-31 — the fix loop ran live, twice: one PR merged CI-green, one closed as wrong
+
+| Run | Input | PR | Outcome |
+|---|---|---|---|
+| [33409654638](https://github.com/amdhd/vesselAI/actions/runs/33409654638) | `fixtures/findings-33140664097.json` | [amdhd/vesselAI#102](https://github.com/amdhd/vesselAI/pull/102) | **MERGED** — 11 checks green |
+| [33412966705](https://github.com/amdhd/vesselAI/actions/runs/33412966705) | `fixtures/findings-33137979741.json` | [amdhd/vesselAI#105](https://github.com/amdhd/vesselAI/pull/105) | **CLOSED** — never merged |
+
+**PR #102 — the merged demonstration.** Authored by `app/pipelineguard-fix-agent`
+(the GitHub App identity), produced by run `33409654638`, patching
+`frontend/src/pages/DashboardPage.tsx` (+2/−2) — the "Captain Captain" greeting
+duplicate reported by the 2026-08-28 negative-check run. Every CI check it
+needed to merge was green with no human re-runs: Backend, Frontend and Angular
+(typecheck + test + build), the data platform, the Docker image build, all five
+image build/scan/publish jobs, and the Kubernetes manifest render. The one
+non-green entry, "QA agent", concluded **SKIPPED** — that workflow is
+`workflow_dispatch`-only, so its PR-time guard correctly declines to run; it is
+not a failure. The PR was merged 2026-08-31 (merge commit `5d91f6b3`).
+
+**Why this satisfies the criterion, clause by clause:**
+
+- **compiles** — the Backend/Frontend/Angular typecheck + test + build checks are
+  green; the patch passed the compile-and-test gate before the PR was even opened.
+- **CI green** — all 11 checks that ran on the PR's own commit succeeded. That the
+  checks ran *at all* is itself the load-bearing fact: a PR opened with the
+  default `GITHUB_TOKEN` arrives with zero checks and is permanently unmergeable
+  (PLAN.md, the "`GITHUB_TOKEN` trap"). The rollup proves the GitHub App token
+  path, which the criterion exists to catch.
+- **no human intervention on the agent's side** — finding → patch → PR were
+  produced by the harness and workflow unassisted. The only human step was the
+  final merge click, which is the designed terminal gate ("branch protection
+  provides the human gate", PLAN.md).
+- **referenced, not claimed** — this entry, the PR link, the run id, and the
+  check rollup above *are* the reference. REMEDIATION.md asserted the merge in
+  prose; the audit correctly refused to count an unreferenced claim.
+
+**PR #105 — the honest counterpoint.** The second run (the two-finding fixture,
+which includes the by-then-already-fixed greeting) patched
+`backend/src/routes/sire.ts` and `frontend/src/pages/DashboardPage.tsx` (+3/−3),
+opened as a PR, and was closed eight minutes later, unmerged. The pipeline also
+produces patches a reviewer rejects — which is why the loop never auto-merges.
+
+**Caveats, recorded not hidden:**
+
+- The inputs were **committed fixtures**, not live QA findings — the PLAN
+  prescribed exactly this for the first smoke tests (a fixture in the repo keeps
+  resolving after the 7-day S3 reports bucket expires). The underlying finding is
+  real (the greeting defect was reproduced against `main`); the frozen copy is
+  what makes the run reproducible.
+- The merged patch was **two lines** — it exercised the whole loop (selection,
+  edit, gate, PR, merge) but not the hardest editing shapes.
+- A **human clicked merge** (#102 was merged by `amdhd`, not the bot). The
+  criterion's "no human intervention on the agent's side" is about the agent's
+  work, and that was unassisted; the human gate is a feature, not a failure.
+
+**Phase 2 status after this record:** the demonstration criterion (P1.4) is
+DONE. This does not declare Phase 2 finished — the audit keeps P2.3 (fork-PR
+guard) and P2.4 (version pinning) open — and it says nothing about Phase 3,
+whose live run (P1.3) remains outstanding.

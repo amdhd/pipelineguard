@@ -140,16 +140,77 @@ class TestTheComparison:
         rounds = [rnd(1, [A, B]), rnd(2, [A, renumbered])]
         assert conv.decide(rounds).state == conv.STALL
 
-    def test_a_severity_change_is_a_different_finding(self):
+    def test_a_severity_change_is_the_same_defect(self):
         """
-        Documenting a real consequence of the fingerprint rather than asserting
-        a preference: severity is part of the identity, so a HIGH that comes back
-        as a CRITICAL reads as one resolved and one introduced. That is the safe
-        direction -- it stops the loop and shows a human both rows.
+        Severity is run-to-run noise, not identity: `aggregate_findings` already
+        grades one defect reported HIGH by one run and MEDIUM by another as a
+        single defect, so the cross-round comparison must not split a defect
+        because a later round graded it worse. The loop still stops -- STALL
+        stops it -- and the ledger shows both grades.
         """
         escalated = {**A, "severity": "CRITICAL"}
         rounds = [rnd(1, [A]), rnd(2, [escalated])]
-        assert conv.decide(rounds).state == conv.REGRESSED
+        assert conv.decide(rounds).state == conv.STALL
+
+
+class TestProseIdentityAcrossRounds:
+    """Live run 33588304974: the same /voyage crash rephrased round-to-round."""
+
+    S1 = finding(
+        "/voyage",
+        "HIGH",
+        "Voyage History tab crashes with TypeError: Cannot read properties of "
+        "undefined (reading 'toFixed')",
+        "F-001",
+    )
+    S1_REPHRASED = finding(
+        "/voyage",
+        "HIGH",
+        "Voyage History tab crashes with TypeError on toFixed, triggering error "
+        "boundary",
+        "F-001",
+    )
+
+    def test_a_rephrased_persistent_defect_is_a_stall_not_a_regression(self):
+        """
+        The bug run 33588304974 exposed: round 2 reported the same /voyage crash
+        round 1 patched, only rephrased, and the exact-fingerprint difference
+        read it as a brand-new blocker -- REGRESSED, "the patch is the suspect" --
+        when the honest verdict is that the fix did not take.
+        """
+        rounds = [
+            rnd(1, [self.S1], fix(applied=["F-001"])),
+            rnd(2, [self.S1_REPHRASED]),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.STALL
+        assert "same 1 blocking finding(s)" in d.reason
+
+    def test_prose_matching_still_counts_real_progress(self):
+        """
+        Tolerance must not over-match: a second blocker that round 2 no longer
+        reports stays resolved even when the surviving one was rephrased.
+        """
+        S2 = finding("/maintenance", "HIGH", "score rings render blank", "F-002")
+        rounds = [
+            rnd(1, [self.S1, S2], fix(applied=["F-001", "F-002"])),
+            rnd(2, [self.S1_REPHRASED]),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.CONTINUE
+        assert "resolved 1 of round 1" in d.reason
+
+    def test_a_genuinely_new_blocker_is_still_a_regression(self):
+        NEW = finding(
+            "/fleet", "CRITICAL", "history tab throws on range change", "F-002"
+        )
+        rounds = [
+            rnd(1, [self.S1], fix(applied=["F-001"])),
+            rnd(2, [self.S1_REPHRASED, NEW]),
+        ]
+        d = conv.decide(rounds)
+        assert d.state == conv.REGRESSED
+        assert "the patch is the suspect" in d.reason
 
 
 class TestAnIncompleteRoundProvesNothing:
@@ -317,3 +378,29 @@ class TestReconciliation:
     def test_blocking_rows_sort_above_the_rest(self):
         rows = conv.reconcile([rnd(1, [LOW, A, B])])
         assert [r["severity"] for r in rows] == ["CRITICAL", "HIGH", "LOW"]
+
+    def test_a_rephrased_defect_is_one_row_not_fixed_plus_introduced(self):
+        """
+        The ledger must agree with the stopping rule: a /voyage crash rephrased
+        between rounds is one row whose patch did not take, not "fixed" in round
+        1 plus a new "introduced" crash in round 2.
+        """
+        S1 = finding(
+            "/voyage",
+            "HIGH",
+            "Voyage History tab crashes with TypeError: Cannot read properties "
+            "of undefined (reading 'toFixed')",
+            "F-001",
+        )
+        S1R = finding(
+            "/voyage",
+            "HIGH",
+            "Voyage History tab crashes with TypeError on toFixed, triggering "
+            "error boundary",
+            "F-001",
+        )
+        rows = conv.reconcile([rnd(1, [S1], fix(applied=["F-001"])), rnd(2, [S1R])])
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == conv.PATCH_INEFFECTIVE
+        assert rows[0]["patched_in"] == [1]
+        assert rows[0]["rounds_seen"] == [1, 2]

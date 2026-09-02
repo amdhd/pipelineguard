@@ -67,6 +67,7 @@ would be a lie in the direction that makes the loop look worse than it is, and
 `TOKEN_BUDGET` for a run that stalled hides the finding that stalled it.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -196,15 +197,85 @@ def _patched_fingerprints(fix_result: dict, by_id: dict) -> list:
 # the workflow and the session are unchanged: the aggregate is a drop-in for the
 # findings file they already read.
 
-# The severityless key: `finding_fingerprint` embeds severity, which would split
-# one defect graded HIGH by one run and MEDIUM by another into two rows. Group
-# by what the defect IS, then grade the group at its most severe -- the
-# blocking-safe direction, so a HIGH in any majority of runs stays blocking.
+# The severityless, prose-tolerant identity. `finding_fingerprint` embeds both
+# severity and the summary verbatim -- which would split one defect graded HIGH
+# by one run and MEDIUM by another into two rows, AND split the same defect
+# whose summary a model phrased differently into two rows. Live run 33586824290
+# proved the second split is the real one: all three QA runs found the same two
+# defects, each phrasing them differently, so an exact-summary key dropped every
+# one of them and the round PASSED on a dirty corpus. So: group by page, then by
+# Dice similarity over normalized significant tokens -- prose about the same
+# defect shares its stable core (voyage/typeerror/tofixed) even when no sentence
+# matches, while two genuinely different defects on one page share far less than
+# half their tokens. Grade the group at its most severe -- the blocking-safe
+# direction, so a HIGH in any majority of runs stays blocking.
 _SEVERITY_RANK = {s: i for i, s in enumerate(schema.SEVERITIES)}
 
+# Function words that carry no defect identity, plus the short numerals that
+# slip into prose. Tokenizing to this set is what makes "TypeError on .toFixed()
+# of undefined" and "TypeError: Cannot read properties of undefined (reading
+# 'toFixed')" the same signal.
+_FINDING_STOPWORDS = frozenset(
+    """a an the and or but is are was were be been with without on of for to in
+    from at by as it its this that these those has have had every all each any
+    some than then when which will would can could may might not no one two""".split()
+)
 
-def _finding_key(finding: dict) -> str:
-    return f"{finding.get('page', '?')}::{finding.get('summary', '').strip().lower()}"
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _finding_tokens(finding: dict) -> frozenset:
+    """The significant tokens of a finding's summary, as a set."""
+    text = finding.get("summary", "").lower()
+    return frozenset(
+        w for w in _TOKEN_RE.findall(text) if len(w) > 1 and w not in _FINDING_STOPWORDS
+    )
+
+
+def _dice(a: frozenset, b: frozenset) -> float:
+    """Sorensen-Dice similarity: twice the shared tokens over the two sizes."""
+    if not a or not b:
+        return 0.0
+    return 2 * len(a & b) / (len(a) + len(b))
+
+
+def _similarity_clusters(findings, sim_threshold: float = 0.5):
+    """
+    Group (run_index, finding) pairs into defects.
+
+    Same defect = same page and summaries whose significant tokens overlap by
+    >= sim_threshold (Dice). Findings from the SAME run are never merged -- a
+    run reports a given defect at most once -- so a page with two distinct
+    defects stays two clusters even when every run reports both.
+    """
+    by_page: dict = {}
+    for run_index, finding in findings:
+        by_page.setdefault(finding.get("page", "?"), []).append((run_index, finding))
+
+    clusters = []
+    for page, items in by_page.items():
+        tokens = [_finding_tokens(f) for _, f in items]
+        n = len(items)
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if items[i][0] == items[j][0]:
+                    continue  # never merge a run with itself
+                if _dice(tokens[i], tokens[j]) >= sim_threshold:
+                    parent[find(i)] = find(j)
+
+        comps: dict = {}
+        for i in range(n):
+            comps.setdefault(find(i), []).append(items[i])
+        clusters.extend(comps.values())
+    return clusters
 
 
 def _observed_at_commit(runs: list):
@@ -279,19 +350,23 @@ def aggregate_findings(runs: list, *, threshold: int | None = None) -> dict:
             agg["stop_reason"] = "fewer than a majority of repeated QA runs completed"
         return agg
 
-    # Majority over the severityless key; a group grades at its most severe.
-    by_key: dict = {}
-    for run in completed:
-        for finding in run.get("findings", []):
-            by_key.setdefault(_finding_key(finding), []).append(finding)
-
+    # Majority over similarity clusters; a cluster grades at its most severe.
+    all_findings = [
+        (run_index, finding)
+        for run_index, run in enumerate(completed)
+        for finding in run.get("findings", [])
+    ]
     merged = []
-    for group in by_key.values():
-        if len(group) < need:
+    for cluster in _similarity_clusters(all_findings):
+        # A cluster is a vote per run: how many DIFFERENT runs report it.
+        if len({run_index for run_index, _ in cluster}) < need:
             continue
         # Most severe = smallest rank (CRITICAL=0 < HIGH=1 < ...). `min` picks
         # it; `max` would pick the mildest grade, the wrong direction.
-        best = min(group, key=lambda f: _SEVERITY_RANK.get(f.get("severity"), 9))
+        best = min(
+            (finding for _, finding in cluster),
+            key=lambda f: _SEVERITY_RANK.get(f.get("severity"), 9),
+        )
         merged.append(dict(best))
 
     # ids are renumbered every run, so the merged set gets its own F-001.. run,

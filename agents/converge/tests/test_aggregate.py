@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aggregate  # noqa: E402
 import convergence as conv  # noqa: E402
 import session as sess  # noqa: E402
-from rounds import A, B, C, qa  # noqa: E402
+from rounds import A, B, C, finding, qa  # noqa: E402
 
 
 def write(path: Path, payload: dict) -> str:
@@ -121,6 +121,58 @@ class TestAggregateFindings:
     def test_no_runs_is_a_programming_error(self):
         with pytest.raises(ValueError):
             conv.aggregate_findings([])
+
+
+class TestProseIdentity:
+    """
+    The live-run lesson (33586824290): three QA runs found the same two defects,
+    each phrasing them differently, and the exact-summary key dropped all of
+    them -- a false PASS on a dirty corpus. Identity must survive prose.
+    """
+
+    # Verbatim from the run's three findings files.
+    S1 = [
+        "Voyage History tab crashes with TypeError on .toFixed() of undefined, rendering the view broken",
+        "Voyage History tab crashes React tree with TypeError on 'toFixed' call on undefined",
+        "Voyage History tab crashes with TypeError: Cannot read properties of undefined (reading 'toFixed')",
+    ]
+    S2 = [
+        "Health percentage value missing from every equipment card's health ring on Equipment Health tab",
+        "Health percentage value missing from equipment health ring on all 12 equipment cards",
+        "Every equipment card on the Equipment Health tab has a blank svg-adjacent slot — likely a health score ring or gauge is missing from all 12 items",
+    ]
+
+    @staticmethod
+    def run_pair(i):
+        return [
+            finding("/voyage", "HIGH", TestProseIdentity.S1[i], "F-101"),
+            finding("/maintenance", "MEDIUM", TestProseIdentity.S2[i], "F-102"),
+        ]
+
+    def test_verbatim_live_run_clusters_into_the_two_seeded_defects(self):
+        runs = [qa(self.run_pair(i)) for i in range(3)]
+        agg = conv.aggregate_findings(runs)
+        assert [f["page"] for f in agg["findings"]] == ["/voyage", "/maintenance"]
+        assert agg["findings"][0]["severity"] == "HIGH"
+        assert agg["overall"] == "FAIL"
+
+    def test_a_one_off_finding_still_loses_the_vote(self):
+        # r2 also saw the greeting defect on /; r1 and r3 did not. 1-of-3 drops.
+        runs = [qa(self.run_pair(i)) for i in range(3)]
+        runs[1]["findings"].append(
+            finding("/", "LOW", "Dashboard greeting displays 'Good morning, Captain Captain'")
+        )
+        agg = conv.aggregate_findings(runs)
+        assert [f["page"] for f in agg["findings"]] == ["/voyage", "/maintenance"]
+        assert all("Captain" not in f["summary"] for f in agg["findings"])
+
+    def test_distinct_defects_on_the_same_page_stay_two_clusters(self):
+        # Same page, disjoint token sets -> Dice 0 -> never merged, even at 3/3.
+        a = finding("/fleet", "HIGH", "health score renders NaN")
+        b = finding("/fleet", "CRITICAL", "history tab throws")
+        agg = conv.aggregate_findings([qa([a, b]), qa([a, b]), qa([a, b])])
+        assert [f["id"] for f in agg["findings"]] == ["F-001", "F-002"]
+        assert [f["severity"] for f in agg["findings"]] == ["CRITICAL", "HIGH"]
 
 
 class TestAggregateCli:

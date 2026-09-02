@@ -84,7 +84,7 @@ app/          Sample Express API (the deployed workload) + Dockerfile + tests
 infra/        All Terraform: networking, ecr, ecs, pipeline, gates modules (see infra/README.md)
 gates/        Lambda source: cost_gate (zip) + security_gate (container image, Dockerfile)
 buildspecs/   CodeBuild YAMLs for each pipeline stage
-scripts/      bootstrap · deploy-gates · apply-dev · destroy-dev · local-scan
+scripts/      bootstrap · demo-up · demo-down · apply-dev (layer1) · destroy-dev · local-scan
 docs/         architecture.md, deploy.md, runbook.md
 ```
 
@@ -97,17 +97,21 @@ an Anthropic API key, and a Slack webhook.
 export AWS_PROFILE=<your-profile>          # account/region target
 export AWS_DEFAULT_REGION=ap-southeast-1
 
-# 0. One-time backend bootstrap (S3 state bucket; locking is S3-native)
+# 0. One-time backend bootstrap (S3 state bucket; locking is S3-native). Writes
+#    backend.conf for BOTH layer roots.
 ./scripts/bootstrap.sh dev ap-southeast-1
 
-# 1. Two-phase: create the security-gate ECR repo first, then build gate artifacts
-#    (infracost layer + the security-gate container image) and push them.
-terraform -chdir=infra apply -var-file=environments/dev.tfvars \
-  -target=module.gates.aws_ecr_repository.security_gate
-./scripts/deploy-gates.sh dev ap-southeast-1
-
-# 2. Apply the full stack (~60 resources)
+# 1. QA core — layer1_persistent (KMS + qa_agent) is applied once and STAYS UP
+#    (~$1.40/mo idle). It carries the AgentCore runtime the vesselAI QA workflow
+#    invokes. apply-dev.sh uses infra/layer1_persistent/dev.tfvars, which pins
+#    qa_agent_code_key / qa_agent_code_version_id ON PURPOSE.
 ./scripts/apply-dev.sh -auto-approve
+
+# 2. DEMO layer bring-up (layer2_ephemeral: networking + ECR + ECS + ALB +
+#    pipeline + gates). Cold-start two-phase inside demo-up.sh (security-gate
+#    image first, then the rest + app image). A demo day costs ~$2-3; while down
+#    the layer bills ~$0.
+./scripts/demo-up.sh -auto-approve
 
 # 3. Seed the gate API keys directly into Secrets Manager. They are deliberately
 #    not Terraform variables: `terraform show -json` writes sensitive values into
@@ -120,13 +124,11 @@ export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 #    Developer Tools → Connections → pg-dev → Update pending connection
 #    (AWS exposes no API for the OAuth handshake — this is the only manual step.)
 
-# 5. Push the app's bootstrap image so ECS can start its first task:
-ECR=$(terraform -chdir=infra output -raw ecr_repository_url)
-aws ecr get-login-password | docker login --username AWS --password-stdin "${ECR%%/*}"
-docker buildx build --platform linux/amd64 --provenance=false -t "$ECR:latest" --push app/
+# 5. Between demos, tear the demo layer down (empties ECR repos first so destroy
+#    can't hang). This NEVER touches layer1:
+./scripts/demo-down.sh -auto-approve
 
-# Teardown (empties ECR repos first so destroy can't hang) — do this between demos:
-./scripts/destroy-dev.sh -auto-approve
+#   destroy-dev.sh instead destroys BOTH layers — only to stop the whole project.
 ```
 
 Full walkthrough — remote state, the GitHub connection, troubleshooting — is in
@@ -178,28 +180,40 @@ The choices that took real thought — and double as interview talking points:
   emits an OCI manifest that Lambda rejects; that flag yields the Docker v2 manifest Lambda accepts.
 - **One shared NAT Gateway, deliberately.** It's ~60% of idle cost, so for a demo environment it's
   shared across AZs. Production would use one per AZ — a conscious cost-vs-availability tradeoff.
-- **Designed for near-zero idle spend.** The whole stack destroys and rebuilds in minutes
-  (~$0.10/hr live, ~$0 parked), with a teardown script that empties ECR first so `destroy` can't hang.
+- **Designed for near-zero idle spend.** Two Terraform layers with separate states: the QA core
+  (layer1_persistent) stays up at ~$1.40/mo, and the demo stack (layer2_ephemeral) is destroyed
+  between demos — NAT + ALB are hourly-rate and can't scale to zero, so "off" means destroyed.
+  `demo-down.sh` empties ECR first so `destroy` can't hang and never touches layer1.
 - **Least-privilege everywhere.** Each Lambda and ECS task gets its own IAM role; secrets live only
   in Secrets Manager (never env vars); ECS tasks run in private subnets, reachable only from the ALB.
 
 ## Cost (dev, `ap-southeast-1`)
 
+**Layer1 (QA core) — always up:**
 | Resource | Approx. USD/mo |
 |---|---|
-| NAT Gateway (1) | ~$32 |
-| ALB | ~$18 |
-| Fargate task (256 CPU / 512 MB, 1×) | ~$11 |
-| ECR · S3 · Secrets · CloudWatch | ~$3 |
-| CodePipeline + CodeBuild | ~$1 + build minutes |
-| **Total (running)** | **~$65/mo · ~$0.10/hr** |
+| KMS key (1) | ~$1.00 |
+| Secrets Manager (QA secret) | ~$0.40 |
+| **Layer1 total** | **~$1.40/mo** |
 
-Infracost projects **~$73/mo** for the live stack (it assumes some NAT data processing). Either way:
-run `./scripts/destroy-dev.sh` when you're done and it costs ~$0 parked.
+The AgentCore runtime is PUBLIC-mode and bills **per session**, never while idle; a handful of QA
+runs a month adds ~$0.03–0.28 each.
+
+**Layer2 (demo stack) — only while demoing (~$2–3/day):**
+| Resource | Approx. USD/day |
+|---|---|
+| NAT Gateway (1) | ~$1.08 |
+| ALB | ~$0.54 |
+| Fargate task (256 CPU / 512 MB, 1×) | ~$0.37 |
+| ECR · S3 · Secrets · CloudWatch · pipeline | ~$0.10 |
+| **Layer2 total** | **~$2.10/day · ~$0 while down** |
+
+Demo a day or two a month and the whole project lands **under $10/mo**. Tear the demo layer down
+between demos with `./scripts/demo-down.sh`.
 
 ## Setting the cost threshold
 
-`cost_gate_threshold` (USD/month) lives in `infra/environments/dev.tfvars` (default **$50**).
+`cost_gate_threshold` (USD/month) lives in `infra/layer2_ephemeral/dev.tfvars` (default **$50**).
 When a `terraform plan` projects a monthly increase above it, the cost gate returns a failing
 `gate_status`, posts to Slack, and the CodeBuild stage exits non-zero so the pipeline stops. Raise
 the threshold and re-apply if an increase is intentional.

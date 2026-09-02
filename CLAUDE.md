@@ -10,17 +10,26 @@ Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-s
 
 **Read before touching code, infra, or deploying.** The non-obvious constraints below are the lessons this project paid for; violating one destroys a live resource or burns a paid agent run. `docs/agentcore/PLAN.md` is the phased build spec and `docs/agentcore/EVIDENCE.md` is the measurement record — read both before proposing any change to the QA agent or claiming progress.
 
+### The two-layer AWS layout (read before any terraform command)
+
+Infra is **two separate Terraform roots**, each with its own state in `s3://pipelineguard-tfstate-<acct>-ap-southeast-1/`:
+
+- **`infra/layer1_persistent/`** — the ALWAYS-ON QA core (`aws_kms_key.main` + `module.qa_agent`). Stays up for the vesselAI QA workflow; bills ~**$1.40/mo** idle. State key `pipelineguard/layer1/dev/...`. **Never destroyed for routine teardown.**
+- **`infra/layer2_ephemeral/`** — the demo/live stack (networking + ecr + ecs + pipeline + gates). Apply → demo → destroy with `scripts/demo-up.sh` / `scripts/demo-down.sh`. While down it bills ~$0. State key `pipelineguard/layer2/dev/...`. Reads layer1's KMS key via `terraform_remote_state.layer1`.
+
+The QA runtime is PUBLIC-mode (no VPC/ENI/NAT) and independent of layer2 — that is why the demo layer can vanish without touching the QA workflow. Old single-root `infra/` files (main.tf, kms.tf, variables.tf, outputs.tf, versions.tf, environments/) are gone; the shared `infra/modules/` is unchanged.
+
 ### Hard rules (do not violate)
 
-1. **Never run a full `terraform apply` without the code vars.** The AgentCore runtime's `count` is `var.qa_agent_code_key == "" ? 0 : 1` — a bare apply (no `qa_agent_code_key` / `qa_agent_code_version_id`) destroys the runtime (1 → 0). These vars are **CLI-only, never in `dev.tfvars`**. For any apply that touches `module.qa_agent`, use a targeted helper script (the `scripts/reopen-corpus.sh` pattern: `-var-file=environments/dev.tfvars -auto-approve -target=...`). Long `-var=... -target=...` commands split on paste — always run them from a script file, not an inline one-liner.
+1. **Never apply or destroy `layer1_persistent` without `-var-file=dev.tfvars`.** The AgentCore runtime's `count` is `var.qa_agent_code_key == "" ? 0 : 1`. The two code vars are **pinned in `layer1_persistent/dev.tfvars` ON PURPOSE** (the 2026-08-30 incident: a bare apply dropped count to 0 and destroyed a working runtime, and AgentCore regenerates the runtime ARN on recreate — so vesselAI's `QA_RUNTIME_ARN` went stale too). A bare `terraform apply` in that directory is the hazard. Use the wrappers (`scripts/apply-dev.sh` for layer1, `scripts/reopen-corpus.sh` for a targeted corpus re-open) — long `-var=... -target=...` commands split on paste, so run them from script files, never inline one-liners.
 
-2. **`qa_agent_code_key`, `qa_agent_code_version_id`, and `qa_corpus_refs` are CLI-only.** Never add them to `infra/environments/dev.tfvars`. `qa_corpus_refs` opens the GitHub-role trust policy to a corpus branch; open via `scripts/reopen-corpus.sh`, and close (re-apply without the var) when the corpus runs are done.
+2. **`qa_corpus_refs` stays CLI-only** (never in a tfvars file). It opens the GitHub-role trust policy to a corpus branch; open via `scripts/reopen-corpus.sh` (which targets `layer1`), and close (re-apply without the var) when the corpus runs are done. `demo-down.sh` / layer2 ops can never touch this role.
 
 3. **Tests run with the repo venv, not system Python:** `.venv/bin/python -m pytest`. The system `python3.14` has no pytest. Test style: plain functions + classes, `sys.path.insert(0, parents[1])`, substring asserts, detailed WHY docstrings.
 
 4. **After changing agent code, re-package.** `scripts/package-qa-agent.sh` zips `agents/qa/agent/` for a Linux aarch64 managed runtime (cross-platform pip; never assume Mac wheels run). Its file-copy loop must list **every** module (`agent.py rubric.py schema.py browser_tools.py cdp.py candidates.py`) — a missing module is a silent `ImportError` at invoke time, after a browser session is already paid for.
 
-5. **Deploy sequence after an agent change:** package (captures `VERSION_ID`) → targeted apply with both code vars (runtime recreation is expected; capture the ARN from `terraform output`) → `gh variable set QA_RUNTIME_ARN <arn> --repo amdhd/vesselAI` if the ARN changed → trigger the workflow.
+5. **Deploy sequence after an agent change:** package (captures `VERSION_ID`; prints the new `qa_agent_code_key` / `qa_agent_code_version_id`) → commit those two values into `layer1_persistent/dev.tfvars` → `scripts/apply-dev.sh` (runtime recreation is expected; capture the ARN from `terraform output qa_runtime_arn`) → `gh variable set QA_RUNTIME_ARN <arn> --repo amdhd/vesselAI` if the ARN changed → trigger the workflow.
 
 ### Architecture (so you don't conflate the two programs)
 

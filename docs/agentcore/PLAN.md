@@ -170,13 +170,17 @@ there. Most of this is already done; the task is to record it in
 Already established **[verified]**:
 
 **PipelineGuard**
-- `infra/` is a flat root module (`main.tf`, `variables.tf`, `outputs.tf`,
-  `kms.tf`, `versions.tf`) with five child modules under `infra/modules/`:
-  `networking`, `ecr`, `ecs`, `pipeline`, `gates`. Naming convention throughout
-  is `pipelineguard-<thing>-<environment>`.
-- State: S3 backend, `pipelineguard-tfstate-149751500899-ap-southeast-1`, key
-  `pipelineguard/dev/terraform.tfstate`, `use_lockfile = true`. Config in
-  `infra/backend.conf` (git-ignored). Variables in `infra/environments/dev.tfvars`.
+- Infra is **two separate Terraform roots** (split 2026-09 to stop the NAT/ALB
+  idle burn): `infra/layer1_persistent/` (QA core — `aws_kms_key.main` +
+  `module.qa_agent`; always up, ~$1.40/mo) and `infra/layer2_ephemeral/` (demo:
+  `networking`, `ecr`, `ecs`, `pipeline`, `gates`; destroyed between demos),
+  sharing `infra/modules/`. Naming convention throughout is
+  `pipelineguard-<thing>-<environment>`.
+- State: S3 backend, `pipelineguard-tfstate-149751500899-ap-southeast-1`, keys
+  `pipelineguard/layer1/dev/terraform.tfstate` and
+  `pipelineguard/layer2/dev/terraform.tfstate`, `use_lockfile = true`. Config in
+  per-layer `backend.conf` (git-ignored). Variables in per-layer `dev.tfvars`;
+  layer1's pins `qa_agent_code_key` / `qa_agent_code_version_id`.
 - Gates are two Lambdas sharing one IAM role (`pipelineguard-gate-lambda-dev`),
   invoked from CodeBuild stages: **cost gate** is zip + an Infracost layer;
   **security gate** is a **container image** (Trivy + Checkov exceed the 250 MB

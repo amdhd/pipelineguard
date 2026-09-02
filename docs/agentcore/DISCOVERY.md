@@ -59,20 +59,22 @@ and `aws sts get-caller-identity --profile pipelineguard` returns
 
 ## 2. PipelineGuard — layout and state
 
-Flat root module in `infra/` with five child modules under `infra/modules/`.
+Two separate Terraform roots (one per layer, split 2026-09 to stop the NAT/ALB
+idle burn) with the shared modules under `infra/modules/`. The QA core lives in
+`layer1_persistent`; the demo stack the agent does NOT depend on lives in
+`layer2_ephemeral`.
 
 | File | Contents |
 |---|---|
-| `infra/main.tf` | Wires `networking`, `ecr`, `ecs`, `pipeline`, `gates` |
-| `infra/variables.tf` | 13 variables; `aws_region` defaults `ap-southeast-1`, `environment` defaults `dev` |
-| `infra/outputs.tf` | 9 outputs incl. `alb_dns_name`, `github_connection_arn` |
-| `infra/kms.tf` | One shared CMK, passed to every module as `kms_key_arn` |
-| `infra/versions.tf` | `required_version >= 1.7`; `aws >= 6.18, < 7.0`, `archive ~> 2.4`; S3 backend |
-| `infra/environments/dev.tfvars` | Non-secret values only, with a comment explaining why |
-| `infra/backend.conf` | Backend config, git-ignored |
+| `infra/layer1_persistent/main.tf` | Wires `aws_kms_key.main` + the `qa_agent` module (the QA core — always up) |
+| `infra/layer1_persistent/dev.tfvars` | Pins `qa_agent_code_key` / `qa_agent_code_version_id` ON PURPOSE |
+| `infra/layer1_persistent/versions.tf` | `required_version >= 1.7`; `aws >= 6.18, < 7.0`, `archive ~> 2.4`; S3 backend |
+| `infra/layer2_ephemeral/main.tf` | Wires `networking`, `ecr`, `ecs`, `pipeline`, `gates`; reads layer1's KMS ARN via `terraform_remote_state` |
+| `infra/modules/` | Shared child modules (`qa_agent`, `networking`, `ecr`, `ecs`, `pipeline`, `gates`) |
 
-**State.** S3 bucket `pipelineguard-tfstate-149751500899-ap-southeast-1`, key
-`pipelineguard/dev/terraform.tfstate`, region `ap-southeast-1`.
+**State.** S3 bucket `pipelineguard-tfstate-149751500899-ap-southeast-1`, two
+keys — `pipelineguard/layer1/dev/terraform.tfstate` (QA core) and
+`pipelineguard/layer2/dev/terraform.tfstate` (demo) — region `ap-southeast-1`.
 
 **Locking — resolved during Phase 0.5 #2.** This section originally flagged a
 redundancy: `versions.tf` set `use_lockfile = true` while `backend.conf` also set

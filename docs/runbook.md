@@ -2,18 +2,22 @@
 
 ## First-time deploy
 
+The stack is TWO Terraform roots with separate states (see infra/README.md):
+**layer1_persistent** (QA core, always up) and **layer2_ephemeral** (demo stack,
+destroyed between demos). First-time bring-up:
+
 ```bash
-# 1. Bootstrap remote state (creates S3 bucket, writes backend.conf)
+# 1. Bootstrap remote state (creates S3 bucket, writes both layers' backend.conf)
 AWS_PROFILE=your-profile ./scripts/bootstrap.sh dev ap-southeast-1
 
-# 2. Build Lambda layers (infracost, trivy, checkov). Needs docker + curl + zip.
-./scripts/deploy-gates.sh
+# 2. QA core — layer1. Applied once and left up (~$1.40/mo). Carries the
+#    AgentCore QA runtime; the vesselAI QA workflow assumes its roles.
+./scripts/apply-dev.sh -auto-approve
 
-# 3. Init + apply (creates the empty gate secret, among ~60 resources)
-cd infra
-terraform init -backend-config=backend.conf
-terraform apply -var-file=environments/dev.tfvars
-cd ..
+# 3. Demo layer — layer2. demo-up.sh does the cold-start two-phase apply
+#    (security-gate ECR repo → deploy-gates image → rest of the stack → app
+#    image) and prints the ALB URL.
+./scripts/demo-up.sh -auto-approve
 
 # 4. Seed the gate API keys straight into Secrets Manager.
 #    They are NOT Terraform variables: `terraform show -json` writes sensitive
@@ -34,9 +38,11 @@ export GITHUB_TOKEN="ghp_..."          # optional; enables the PR comment
 
 | Task | Command |
 |---|---|
+| Bring up the demo layer | `./scripts/demo-up.sh` |
+| Tear down the demo layer (leaves QA core up) | `./scripts/demo-down.sh` |
 | Re-run the pipeline | Push to `main`, or "Release change" in the CodePipeline console |
-| Change cost threshold | Edit `cost_gate_threshold` in the tfvars, `terraform apply` |
-| Rebuild a gate layer | `./scripts/deploy-gates.sh` then `terraform apply` |
+| Change cost threshold | Edit `cost_gate_threshold` in `infra/layer2_ephemeral/dev.tfvars`, `terraform -chdir=infra/layer2_ephemeral apply -var-file=dev.tfvars` |
+| Rebuild a gate layer | `./scripts/deploy-gates.sh` then finish the layer2 apply |
 | Tail gate logs | `aws logs tail /aws/lambda/pipelineguard-security-gate-dev --follow` |
 | Tail app logs | `aws logs tail /ecs/pipelineguard-dev --follow` |
 | Local scan | `./scripts/local-scan.sh` |
@@ -62,13 +68,18 @@ export GITHUB_TOKEN="ghp_..."          # optional; enables the PR comment
 
 ## Teardown
 
+Between demos, destroy only the demo layer — this never touches the QA core:
+
 ```bash
-cd infra
-terraform destroy -var-file=environments/dev.tfvars
-
-# ECR images block repo deletion if any remain — force-delete first if needed:
-aws ecr batch-delete-image --repository-name pipelineguard-app-dev \
-  --image-ids "$(aws ecr list-images --repository-name pipelineguard-app-dev --query 'imageIds[*]' --output json)" || true
-
-# The remote-state bucket + lock table are NOT managed by this stack; remove manually if desired.
+./scripts/demo-down.sh -auto-approve
 ```
+
+To stop the WHOLE project (QA core included — the AgentCore runtime the vesselAI
+QA workflow invokes goes away until recreated):
+
+```bash
+./scripts/destroy-dev.sh -auto-approve
+```
+
+Both empty the ECR repos first (Terraform can't delete non-empty repos). The
+remote-state bucket is NOT managed by either stack; remove manually if desired.

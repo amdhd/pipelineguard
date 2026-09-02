@@ -428,6 +428,27 @@ class TestReconciliation:
         rounds = [rnd(1, [A], fix(applied=["F-001"])), rnd(2, [A])]
         assert conv.reconcile(rounds)[0]["outcome"] == conv.PATCH_INEFFECTIVE
 
+    def test_a_patch_applied_in_the_final_round_is_unverified_not_ineffective(self):
+        """
+        A round records its findings BEFORE its fix runs (QA measures the code
+        the PREVIOUS round's patch produced). A finding that round N found and
+        patched, where N is the last round, has therefore never been measured
+        with its patch in -- the loop owed it a verification round it never
+        ran. Live run 33593197606 did exactly this: its round-3 blocker
+        (SAVINGS CRITICAL) was patched in round 3 and the loop hit its 3-round
+        cap. Calling that patch "did not fix it" would sentence a patch no QA
+        ever saw, the overclaim #59 removed from the stopping rule.
+        """
+        rounds = [
+            rnd(1, [A], fix(applied=["F-001"])),
+            rnd(2, [B], fix(applied=["F-002"])),
+        ]
+        rows = {r["summary"]: r for r in conv.reconcile(rounds)}
+        assert rows[B["summary"]]["outcome"] == conv.PATCH_UNVERIFIED
+        assert rows[B["summary"]]["patched_in"] == [2]
+        # Round 1's patch WAS measured (round 2 no longer reports A): fixed.
+        assert rows[A["summary"]]["outcome"] == conv.FIXED
+
     def test_a_finding_that_vanished_without_a_patch_is_not_reproduced(self):
         rounds = [rnd(1, [A, B], fix(applied=["F-001"])), rnd(2, [A])]
         rows = {r["summary"]: r for r in conv.reconcile(rounds)}

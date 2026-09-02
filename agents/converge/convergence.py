@@ -751,6 +751,7 @@ def decide(rounds: list, budgets: dict | None = None) -> Decision:
 
 FIXED = "fixed"                       # patched, and gone in the next round
 PATCH_INEFFECTIVE = "patch did not fix it"
+PATCH_UNVERIFIED = "patch unverified (run ended before a re-measure)"
 NOT_REPRODUCED = "not reproduced"     # went away without a patch
 OUTSTANDING = "outstanding"           # still there in the final round
 INTRODUCED = "introduced"             # first seen after round 1
@@ -798,7 +799,17 @@ def reconcile(rounds: list, labels: dict | None = None) -> list:
         present_at_end = any(member_fp in final["findings"] for _, member_fp, _ in members)
         patched = bool(patched_in)
 
-        if present_at_end and patched:
+        if patched and patched_in[-1] == final["round"]:
+            # The finding's last patch was applied in the final round, whose
+            # findings were recorded BEFORE that patch ran (QA measures the
+            # code the previous round's patch produced). No round exists that
+            # could have measured it, so "patch did not fix it" would sentence
+            # a patch no QA ever saw -- the same overclaim #59 removed from the
+            # stopping rule, restated for the ledger. Live run 33593197606
+            # patched its round-3 blocker (SAVINGS CRITICAL) in round 3 and the
+            # loop hit its 3-round cap: unverified, not ineffective.
+            outcome = PATCH_UNVERIFIED
+        elif present_at_end and patched:
             outcome = PATCH_INEFFECTIVE
         elif present_at_end and first_round > rounds[0]["round"]:
             outcome = INTRODUCED

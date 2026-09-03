@@ -44,7 +44,7 @@ Round chaining is capped by the human gate itself — no naive auto-push, no una
 | # | Item | Where | Effort | Verify |
 |---|---|---|---|---|
 | **D-1** | Bank the planted-defect PR as seed S-4 in a real corpus | `agents/qa/harness/corpus.json` | **DONE 2026-09-03** | `score.py` marks S-4 detected on run 33773198501's findings |
-| **D-2** | Reconciliation ledger data + `🔁 Prior findings re-verified` renderer | this repo: `report.py` + reuse `aggregate.py` identity | 0.5–1 day + tests | unit tests: same-finding re-present → STILL_FAILING; absent → FIXED; rephrased → still matched via Dice; final-round untested → UNVERIFIED |
+| **D-2** | Reconciliation ledger data + `🔁 Prior findings re-verified` renderer | this repo: `report.py` + reuse `aggregate.py` identity | **DONE 2026-09-04** | unit tests: same-finding re-present → STILL_FAILING; absent → FIXED; rephrased → still matched via Dice; final-round untested → UNVERIFIED |
 | **D-3** | PR-stable report store (write `pr-<n>/latest` on every PR run) + harness fetches prior report to reconcile | this repo archive step **+ vesselAI workflow flag** | half-day in-repo + vesselAI change | two dispatched QA runs on one PR; second comment shows the re-verify table |
 | **D-4** | Human-gated fix-loop chaining + final reconciliation board (prose + machine-readable ledger) | vesselAI workflows (flag) + this repo renderer | larger; coordinated | fix PR QA comment reconciles origin findings; board JSON consumed by `score.py` |
 | **D-5** | 3 real human PRs → labelled into `corpus.json` → **P1.7 FP rate** | corpus + vesselAI | ongoing | `score.py` over ≥3 real-PR findings |
@@ -60,4 +60,5 @@ The re-verify classifier must NOT reuse `schema.finding_fingerprint` alone for t
 ## 5. Status
 
 - **D-1 done.** See `agents/qa/harness/corpus.json` (S-4 = enum-vs-display-label count defect, `/maintenance`, source PR #125 / run 33773198501).
-- D-2 → D-5 pending sign-off of this plan.
+- **D-2 done.** `converge.verify_report(prior, current, *, fix_intervened)` in `agents/converge/convergence.py` reuses the Dice identity from `_similarity_clusters` (not `finding_fingerprint` alone) and emits STILL_FAILING / FIXED / NOT_REPRODUCED / UNVERIFIED rows keyed by fingerprint; `report.render_reverify()` + a `reverify_rows=` param on `report.render()` (renders the block above the cost table, and on a run that errored so UNVERIFIED still lands). Tests: `TestVerifyReport` in `agents/converge/tests/test_convergence.py`, `TestReverifyBlock` in `agents/qa/harness/tests/test_report.py`. 202 passed. Wiring the prior report in is D-3.
+- D-3 → D-5 pending.

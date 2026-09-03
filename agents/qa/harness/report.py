@@ -126,25 +126,89 @@ def _cost_table(cost: dict) -> str:
     return "\n".join(rows + [""] + notes)
 
 
-def render(findings: dict, *, runner_minutes: int | None = None) -> str:
+# Statuses a prior finding can carry after a re-run. Produced upstream by
+# `converge.verify_report`; the renderer only maps them, so the comment and the
+# ledger can never disagree about vocabulary.
+_REVERIFY_STATUS = {
+    "still failing": "🔴 **STILL FAILING**",
+    "fixed": "✅ **FIXED**",
+    "not reproduced": "⚪ NOT REPRODUCED",
+    "unverified": "⏸ **UNVERIFIED**",
+}
+
+
+def render_reverify(rows: list) -> str:
+    """
+    The ``🔁 Prior findings re-verified`` block.
+
+    ``rows`` are reconciliation rows from ``converge.verify_report`` -- one per
+    finding the previous report raised, each carrying ``fingerprint``,
+    ``severity``, ``page``, ``summary`` and a ``status``. Rendered as a table
+    because that is the one question a fix loop turns on: is the defect we
+    reported before still there, or is it gone?
+
+    The status column is the upstream vocabulary, verbatim. Absence never reads
+    as fixed -- only ``fixed`` says fixed, and it only appears when a fix is
+    known to have intervened between the two measurements.
+    """
+    if not rows:
+        return ""
+    ordered = sorted(
+        rows,
+        key=lambda r: (SEVERITY_ORDER.get(r["severity"], 9), r["page"], r["summary"]),
+    )
+    lines = [
+        "### 🔁 Prior findings re-verified",
+        "",
+        "Re-verified against the run above. A defect that no longer appears is "
+        "`fixed` only when a fix is known to have been applied since the last "
+        "report; otherwise it is `not reproduced` -- one clean run does not "
+        "erase a reported defect on its own.",
+        "",
+        "| Status | Page | Finding |",
+        "|---|---|---|",
+    ]
+    for r in ordered:
+        status = _REVERIFY_STATUS.get(r["status"], f"**{r['status'].upper()}**")
+        summary = r["summary"].replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {status} | `{r['page']}` | {summary} |")
+    if any(r["status"] == "unverified" for r in ordered):
+        lines += [
+            "",
+            "_`UNVERIFIED` means this run failed or stopped before it could "
+            "re-test the route that finding lives on. A run that never re-tested "
+            "a defect is not evidence the defect is gone._",
+        ]
+    return "\n".join(lines)
+
+
+def render(
+    findings: dict,
+    *,
+    runner_minutes: int | None = None,
+    reverify_rows: list | None = None,
+) -> str:
     """Render the full comment. Always leads with the verdict."""
     from pricing import summarise
 
     if findings.get("error"):
-        return "\n".join(
-            [
-                MARKER,
-                "## 🚫 QA agent — run failed",
-                "",
-                f"**`{findings['error']}`** — {findings.get('detail', 'no detail')}",
-                "",
-                _ERROR_HINTS.get(findings["error"], ""),
-                "",
-                "No findings are reported. A failed run is not a passing run: the agent "
-                "either could not start or returned something that did not match the "
-                "findings schema, and unparsed output is never presented as bugs.",
-            ]
-        )
+        parts = [
+            MARKER,
+            "## 🚫 QA agent — run failed",
+            "",
+            f"**`{findings['error']}`** — {findings.get('detail', 'no detail')}",
+            "",
+            _ERROR_HINTS.get(findings["error"], ""),
+            "",
+            "No findings are reported. A failed run is not a passing run: the agent "
+            "either could not start or returned something that did not match the "
+            "findings schema, and unparsed output is never presented as bugs.",
+        ]
+        if reverify_rows:
+            # A run that errored re-measured nothing, so every prior finding is
+            # UNVERIFIED -- but that verdict only lands if the block is shown.
+            parts += ["", render_reverify(reverify_rows)]
+        return "\n".join(parts)
 
     cost = summarise(findings)
     items = sorted(findings.get("findings", []), key=lambda f: SEVERITY_ORDER.get(f["severity"], 9))
@@ -206,6 +270,9 @@ def render(findings: dict, *, runner_minutes: int | None = None) -> str:
         parts += [summary, ""]
         parts += [_finding_block(f) for f in items]
         parts += [""]
+
+    if reverify_rows:
+        parts += ["", render_reverify(reverify_rows), ""]
 
     parts += ["### Cost", "", _cost_table(cost)]
     if runner_minutes is not None:

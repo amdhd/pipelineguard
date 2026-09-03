@@ -506,3 +506,68 @@ class TestReconciliation:
         assert rows[0]["outcome"] == conv.PATCH_INEFFECTIVE
         assert rows[0]["patched_in"] == [1]
         assert rows[0]["rounds_seen"] == [1, 2]
+
+
+class TestVerifyReport:
+    """The PR one-before/after ledger (`conv.verify_report`, D-2)."""
+
+    def test_a_finding_still_present_is_still_failing(self):
+        rows = conv.verify_report(qa([A]), qa([A]))
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.STILL_FAILING
+        assert rows[0]["fingerprint"] == conv.schema.finding_fingerprint(A)
+
+    def test_absent_with_a_known_fix_is_fixed(self):
+        rows = conv.verify_report(qa([A]), qa([]), fix_intervened=True)
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.FIXED
+
+    def test_absence_alone_is_not_reproduced_not_fixed(self):
+        """
+        Silence must not read as fixed. No fix is known to have intervened, so
+        the defect is only "not reproduced" -- one clean run does not erase a
+        reported defect on its own (the same rule the round ledger's
+        NOT_REPRODUCED exists to state).
+        """
+        rows = conv.verify_report(qa([A]), qa([]))
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.NOT_REPRODUCED
+
+    def test_a_rephrased_defect_is_still_failing(self):
+        """
+        Same identity the round ledger and stopping rule use: page + Dice over
+        significant tokens. A blocker the model rephrased between the two runs
+        is one row that never went away -- not "fixed" in the prior plus a
+        brand-new defect (the P1.3 bug #57 lesson, applied to the PR path).
+        """
+        rephrased = finding("/fleet", "HIGH", "health score shows NaN on the equipment card", "F-099")
+        rows = conv.verify_report(qa([A]), qa([rephrased]))
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.STILL_FAILING
+
+    def test_an_error_rereport_cannot_verify_anything(self):
+        rows = conv.verify_report(qa([A, C]), qa([A], error="schema_violation"))
+        assert [r["status"] for r in rows] == [conv.UNVERIFIED, conv.UNVERIFIED]
+
+    def test_a_truncated_rereport_cannot_verify_anything(self):
+        """
+        fix #60's rule, restated for the PR path: a re-measurement that stopped
+        early did not necessarily revisit the route a prior defect lives on. One
+        that happens to re-report A before stopping is no evidence about the
+        defects it never got back to -- so everything is UNVERIFIED, even A.
+        """
+        rows = conv.verify_report(qa([A, C]), qa([A], incomplete=True))
+        assert [r["status"] for r in rows] == [conv.UNVERIFIED, conv.UNVERIFIED]
+
+    def test_defects_new_in_the_rereport_are_not_ledger_rows(self):
+        """The ledger answers "what happened to what was reported before"."""
+        rows = conv.verify_report(qa([A]), qa([A, B]))
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.STILL_FAILING
+
+    def test_no_prior_findings_returns_no_rows(self):
+        assert conv.verify_report(qa([]), qa([A])) == []
+
+    def test_blocking_rows_sort_above_the_rest(self):
+        rows = conv.verify_report(qa([LOW, A, B]), qa([]))
+        assert [r["severity"] for r in rows] == ["CRITICAL", "HIGH", "LOW"]

@@ -14,9 +14,12 @@ browser inside AgentCore Runtime. This half invokes it, re-validates what comes
 back, prices it, and renders the comment. It holds no rubric and makes no model
 calls of its own.
 
-It performs NO AWS WRITES. Archiving and metrics happen inside the runtime's
-execution role, which is what keeps the role a public repo's CI can assume down
-to two statements: invoke one runtime, read one secret.
+It performs NO AWS WRITES in the D-1..D-3 steady state: archiving and metrics
+happen inside the runtime's execution role, which is what keeps the role a
+public repo's CI can assume down to two statements: invoke one runtime, read one
+secret. D-4 adds two BEST-EFFORT ledger writes under reports/<pr>/latest/
+(board.json, fix-verdict.json) so a later score.py pass can read the loop --
+they may never fail a run (see _put_report_json).
 """
 
 import argparse
@@ -86,35 +89,180 @@ def _latest_key(namespace: str) -> str:
     return f"reports/{namespace}/latest/findings.json"
 
 
+def _fetch_json(bucket: str, key: str, *, region: str = DEFAULT_REGION) -> dict | None:
+    """
+    Read and parse one object, or None when it cannot be read as JSON.
+    NoSuchKey on a first run is the common case, not an error, and a corrupted
+    body (an S3 website's error page, say) is not this program's failure either:
+    every caller treats None as "nothing there".
+    """
+    if not bucket or not key:
+        return None
+    try:
+        body = boto3.client("s3", region_name=region).get_object(
+            Bucket=bucket, Key=key
+        )["Body"].read()
+    except (ClientError, BotoCoreError):
+        return None
+    try:
+        return json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def _put_report_json(
+    bucket: str, key: str, payload: dict, *, region: str = DEFAULT_REGION
+) -> bool:
+    """
+    Best-effort S3 write for the D-4 ledger files (board.json, fix-verdict.json).
+
+    The comment is the product; these files are how a later score.py pass reads
+    what happened to the loop. A write that fails must never fail the run or
+    discard a comment that landed, so every failure is swallowed and reported as
+    False. Returns False without constructing a client when the run has no
+    reports bucket.
+    """
+    if not bucket or not key:
+        return False
+    try:
+        boto3.client("s3", region_name=region).put_object(
+            Bucket=bucket, Key=key, Body=json.dumps(payload).encode()
+        )
+        return True
+    except (ClientError, BotoCoreError):
+        return False
+
+
+def _pr_number(namespace: str | None) -> int | None:
+    """'pr-125' -> 125; a non-PR namespace (or none) -> None."""
+    if not namespace or not namespace.startswith("pr-"):
+        return None
+    try:
+        return int(namespace[3:])
+    except ValueError:
+        return None
+
+
+def _latest_fix_verdict_key(namespace: str) -> str:
+    """The key a fix-PR QA run writes its verdict to in the ORIGIN namespace."""
+    return f"reports/{namespace}/latest/fix-verdict.json"
+
+
+def _latest_board_key(namespace: str) -> str:
+    """The key a clean origin run writes its reconciliation board to."""
+    return f"reports/{namespace}/latest/board.json"
+
+
+def _parse_fix_origin(raw: str | None) -> dict | None:
+    """
+    The committed qa-fix-origin.json sidecar, read from the FIX_ORIGIN env var.
+
+    The workflow loads the file into the env with a heredoc, so the harness
+    still reads nothing from the checkout. None when absent or malformed -- a
+    bad sidecar must not fail the run, it just means no fix chain is honoured
+    (the run reconciles its own namespace, D-3 behaviour).
+    """
+    if not raw:
+        return None
+    try:
+        origin = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(origin, dict) or not isinstance(origin.get("origin"), dict):
+        return None
+    if not isinstance(origin.get("applied_fingerprints"), list):
+        return None
+    return origin
+
+
+def _origin_pr(fix_origin: dict) -> int | None:
+    """The origin PR number carried by a fix-origin sidecar, or None."""
+    raw = fix_origin.get("origin", {}).get("pr")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _applied_set(fix_origin: dict) -> set[str]:
+    """The fingerprints the fix run claimed to address, as a set for membership."""
+    return {str(fp) for fp in fix_origin.get("applied_fingerprints") or []}
+
+
+def _honor_fix_origin(
+    fix_origin: dict | None, report_namespace: str | None, head_ref: str
+) -> bool:
+    """
+    Anti-taint gate (D-4): honour FIX_ORIGIN only on the two runs the fix chain
+    actually touches -- a run on an ``agent-fix/`` head (the fix PR reconciling
+    the ORIGIN report) or the origin PR's own later run once the fix has merged
+    up into it (``origin.pr == own``). A sidecar that propagates to any other
+    branch -- main included -- is ignored, so it can never make an unrelated PR
+    reconcile somebody else's findings.
+    """
+    if not fix_origin or not report_namespace:
+        return False
+    own_pr = _pr_number(report_namespace)
+    if own_pr is None:
+        return False
+    if _origin_pr(fix_origin) == own_pr:
+        return True
+    return head_ref.startswith("agent-fix/")
+
+
 def fetch_prior_report(bucket: str, namespace: str, *, region: str = DEFAULT_REGION) -> dict | None:
     """
     Fetch the last report QA wrote for this PR, to re-verify against (D-3).
 
-    Reads only -- the harness never writes; archiving happens under the runtime's
-    execution role. ``None`` means "nothing to re-verify": a first run on a PR,
-    an unreachable bucket, or a corrupted body must not fail the run, they just
-    mean the comment renders without the ``🔁 Prior findings re-verified`` block.
+    Reads the PR-stable alias; the only writes this program ever makes are the
+    two best-effort D-4 ledger files under the same namespace (board.json,
+    fix-verdict.json) -- see _put_report_json. ``None`` means "nothing to
+    re-verify": a first run on a PR, an unreachable bucket, or a corrupted body
+    must not fail the run, they just mean the comment renders without the
+    ``🔁 Prior findings re-verified`` block.
     """
     if not bucket or not namespace:
         return None
-    try:
-        body = boto3.client("s3", region_name=region).get_object(
-            Bucket=bucket, Key=_latest_key(namespace)
-        )["Body"].read()
-    except (ClientError, BotoCoreError):
-        # NoSuchKey on the first run is the common case, not an error.
-        return None
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError:
-        return None
+    return _fetch_json(bucket, _latest_key(namespace), region=region)
 
 
-def _reverify_rows(prior: dict | None, findings: dict) -> list | None:
+def _ledger_rows(reverify_rows: list) -> list:
+    """
+    Reverify rows in the machine-readable ledger vocabulary.
+
+    verify_report's statuses already ARE that vocabulary ("still failing",
+    "fixed", ...) -- the report renderer maps them to the commented, uppercase
+    display words, while the ledger files (board.json / fix-verdict.json) keep
+    the raw meaning. `.lower()` is a belt-and-braces guard against upstream
+    capitalisation drift, nothing more.
+    """
+    return [
+        {
+            "fingerprint": r["fingerprint"],
+            "severity": r["severity"],
+            "page": r["page"],
+            "summary": r["summary"],
+            "status": r["status"].lower().replace("_", " "),
+        }
+        for r in reverify_rows
+    ]
+
+
+def _reverify_rows(
+    prior: dict | None,
+    findings: dict,
+    *,
+    fix_intervened: bool | set[str] | None = None,
+) -> list | None:
     """
     Reconcile the current run against the prior report, or None when there is no
     prior to reconcile against. Lazily imports converge so a harness without it
     still renders (just without the re-verify block).
+
+    `fix_intervened` is what separates a plain re-run from a fix-leg run: the
+    fix agent's applied-fingerprint set (D-4). An absent prior finding is FIXED
+    only when its fingerprint is in that set; absent with no fix signal is
+    NOT_REPRODUCED, never FIXED.
     """
     if not prior:
         return None
@@ -122,9 +270,56 @@ def _reverify_rows(prior: dict | None, findings: dict) -> list | None:
         import convergence
     except ImportError:  # pragma: no cover -- converge ships in this repo
         return None
-    # D-3 stage: a plain re-run carries no fix signal, so an absent defect is
-    # NOT_REPRODUCED, never FIXED. D-4 passes the fix agent's "applied" list.
-    return convergence.verify_report(prior, findings, fix_intervened=False)
+    return convergence.verify_report(prior, findings, fix_intervened=fix_intervened)
+
+
+def _unmatched_rows(prior: dict | None, findings: dict) -> list:
+    """
+    Current findings with no counterpart in the prior report (D-4).
+
+    Each is either a new defect or a regression introduced by this branch. An
+    errored/incomplete current run proves nothing, so it returns [] -- absence
+    of a re-measurement must not look like absence of new findings.
+    """
+    if not prior or not prior.get("findings"):
+        return []
+    try:
+        import convergence
+    except ImportError:  # pragma: no cover -- converge ships in this repo
+        return []
+    return convergence.unmatched_current(prior, findings)
+
+
+def _board_rows(reverify_rows: list, fix_verdict_rows: list | None) -> list:
+    """
+    Origin-board rows from the re-verify ledger + the fix PR's verdict file.
+
+    Attribution precedence (D-4): a prior finding present again is *still
+    failing*, from this run's own eyes. One that is absent is *fixed*, and the
+    row's `source` says whether the fix PR's QA run (fix-verdict.json) or this
+    run's own reconcile against the merged sidecar's applied set established it.
+    Absent with neither is *not reproduced*: absence alone is never a fix.
+    """
+    verdict = {r["fingerprint"]: r["status"] for r in fix_verdict_rows or []}
+    rows = []
+    for r in reverify_rows:
+        fp = r["fingerprint"]
+        status = r["status"].lower().replace("_", " ")
+        source = (
+            "fix-verdict" if status == "fixed" and verdict.get(fp) == "fixed" else "origin-run"
+        )
+        rows.append(
+            {
+                "fingerprint": fp,
+                "severity": r["severity"],
+                "page": r["page"],
+                "summary": r["summary"],
+                "status": status,
+                "source": source,
+                "label": None,  # score.py's human slot; null until a human writes it
+            }
+        )
+    return rows
 
 
 def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, session_id: str | None = None) -> dict:
@@ -225,9 +420,32 @@ def run(args) -> int:
     if args.secret_arn:
         creds = read_credentials(args.secret_arn, args.region)
 
-    # Read the last report for this PR before invoking, so the current run can
-    # be re-verified against it. None on a first run or an unreachable bucket.
-    prior = fetch_prior_report(args.reports_bucket, args.report_namespace, region=args.region)
+    # D-4 fix chain. The workflow loads the committed qa-fix-origin.json into the
+    # FIX_ORIGIN env var (heredoc, so the harness still reads nothing from the
+    # checkout). It is honoured only on the fix chain's own two runs -- the fix
+    # PR itself, and the origin PR once the fix has merged up into it -- never on
+    # an unrelated branch (anti-taint, _honor_fix_origin).
+    fix_origin = _parse_fix_origin(os.environ.get("FIX_ORIGIN"))
+    own_pr = _pr_number(args.report_namespace)
+    fix_pr_run = False
+    fix_intervened: bool | set[str] | None = None
+    prior_namespace = args.report_namespace
+    if _honor_fix_origin(
+        fix_origin, args.report_namespace, os.environ.get("GITHUB_HEAD_REF", "")
+    ):
+        origin_pr = _origin_pr(fix_origin)
+        if origin_pr != own_pr:
+            # A run on the fix PR's own head: reconcile the ORIGIN report, and
+            # let only the fix agent's applied fingerprints be called FIXED.
+            fix_pr_run = True
+            prior_namespace = f"pr-{origin_pr}"
+        fix_intervened = _applied_set(fix_origin)
+
+    # Read the report to re-verify against BEFORE invoking, so the current run
+    # can be reconciled against it. On the fix leg that is the ORIGIN PR's last
+    # report; otherwise this run's own PR's. None on a first run or an
+    # unreachable bucket.
+    prior = fetch_prior_report(args.reports_bucket, prior_namespace, region=args.region)
 
     payload = {
         "session_id": args.session_label,
@@ -271,15 +489,100 @@ def run(args) -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(findings, indent=2))
 
+    reverify_rows = _reverify_rows(prior, findings, fix_intervened=fix_intervened)
+    unmatched = _unmatched_rows(prior, findings)
+
+    # The board is the CLOSING ledger of the origin PR: it replaces the plain
+    # re-verify table on a run that is the origin's own (not a fix PR), has a
+    # prior report to reconcile, did not error or stop early, and finds no
+    # CRITICAL/HIGH still present. Its header is "Final" only when a row is
+    # actually fixed -- a clean re-run with no fix chain must not overclaim.
+    board_rows = None
+    board_fix_verdict_key = None
+    if (
+        own_pr is not None
+        and not fix_pr_run
+        and prior
+        and prior.get("findings")
+        and reverify_rows
+        and not findings.get("error")
+        and not findings.get("incomplete")
+    ):
+        blocking_now = any(
+            str(f.get("severity", "")).upper() in ("CRITICAL", "HIGH")
+            for f in (findings.get("findings") or [])
+        )
+        if not blocking_now:
+            fix_verdict = _fetch_json(
+                args.reports_bucket,
+                _latest_fix_verdict_key(args.report_namespace),
+                region=args.region,
+            )
+            if fix_verdict:
+                board_fix_verdict_key = _latest_fix_verdict_key(args.report_namespace)
+            board_rows = _board_rows(reverify_rows, (fix_verdict or {}).get("rows"))
+
     comment = report.render(
         findings,
         runner_minutes=args.runner_minutes,
-        reverify_rows=_reverify_rows(prior, findings),
+        reverify_rows=reverify_rows,
+        board_rows=board_rows,
+        unmatched=unmatched,
     )
     if args.comment_out:
         Path(args.comment_out).write_text(comment)
     else:
         print(comment)
+
+    # D-4 ledger emitters -- best-effort, never fail the run. The comment above
+    # is the product; these files are how a later score.py pass reads the loop.
+    if fix_pr_run and prior and args.reports_bucket and args.report_namespace:
+        origin_pr = _origin_pr(fix_origin)
+        blocking_now = any(
+            str(f.get("severity", "")).upper() in ("CRITICAL", "HIGH")
+            for f in (findings.get("findings") or [])
+        )
+        # fix-#60 rule: even an errored fix-leg run leaves a verdict behind, all
+        # rows unverified -- an empty re-measurement must not read as clean.
+        _put_report_json(
+            args.reports_bucket,
+            _latest_fix_verdict_key(f"pr-{origin_pr}"),
+            {
+                "schema": "pipelineguard/fix-verdict/v1",
+                "origin": {
+                    "repo": (fix_origin.get("origin") or {}).get("repo"),
+                    "pr": origin_pr,
+                },
+                "fix_pr": own_pr,
+                "reports_bucket": args.reports_bucket,
+                "prior_findings_key": _latest_key(f"pr-{origin_pr}"),
+                "overall": "FAIL" if blocking_now else "PASS",
+                "rows": _ledger_rows(reverify_rows) if reverify_rows else [],
+            },
+            region=args.region,
+        )
+
+    if board_rows is not None and args.reports_bucket and args.report_namespace:
+        origin_meta = (fix_origin or {}).get("origin") or {}
+        _put_report_json(
+            args.reports_bucket,
+            _latest_board_key(args.report_namespace),
+            {
+                "schema": "pipelineguard/board/v1",
+                "origin": {"repo": origin_meta.get("repo"), "pr": own_pr},
+                "run": {
+                    "session": args.session_label,
+                    "report_namespace": args.report_namespace,
+                    "observed_at_commit": findings.get("observed_at_commit"),
+                },
+                "reports_bucket": args.reports_bucket,
+                "prior_findings_key": _latest_key(args.report_namespace),
+                "fix_verdict_key": board_fix_verdict_key,
+                "overall": "PASS",
+                "rows": board_rows,
+            },
+            region=args.region,
+        )
 
     return report.exit_code(findings)
 

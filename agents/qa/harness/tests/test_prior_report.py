@@ -92,19 +92,25 @@ class TestFetchPriorReport:
 
 
 class TestReverifyWiring:
-    def test_second_run_renders_the_reverify_block(self, monkeypatch, tmp_path):
+    def test_clean_rerun_with_a_prior_renders_a_board_not_a_fake_close(self, monkeypatch, tmp_path):
         """
-        The prior HIGH is gone on a clean re-run, and no fix signal exists yet
-        (that is D-4), so the block shows it as NOT REPRODUCED under a PASS
-        headline -- never FIXED, never a bare absence.
+        D-4: the prior HIGH is gone on a clean origin re-run with no fix signal,
+        so the run renders the Reconciliation BOARD (the board replaces the plain
+        re-verify table on a clean origin run). No fix leg intervened, so the row
+        is NOT REPRODUCED -- never FIXED, never a bare absence, and the header is
+        "Reconciliation", not "Final": a clean re-run closes nothing on its own.
         """
         args = _args(tmp_path, reports_bucket="bucket", report_namespace="pr-125")
         monkeypatch.setattr(harness, "invoke", lambda *a, **k: dict(_PASS))
         monkeypatch.setattr(harness, "fetch_prior_report", lambda *a, **k: dict(_PRIOR))
+        # No fix leg ran, so there is no fix-verdict.json to fetch -- and the
+        # fetch must not reach real S3 from a unit test.
+        monkeypatch.setattr(harness, "_fetch_json", lambda *a, **k: None)
 
         assert harness.run(args) == 0
         comment = Path(tmp_path / "comment.md").read_text()
-        assert "Prior findings re-verified" in comment
+        assert "Reconciliation board" in comment
+        assert "Final reconciliation board" not in comment
         assert "NOT REPRODUCED" in comment
         assert "Voyage History tab crashes" in comment
         assert "FIXED" not in comment

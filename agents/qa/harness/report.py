@@ -182,11 +182,118 @@ def render_reverify(rows: list) -> str:
     return "\n".join(lines)
 
 
+def render_board(rows: list) -> str:
+    """
+    The ``🧾 Final reconciliation board`` that closes an origin PR (D-4).
+
+    ``rows`` are the board rows built by the harness -- one per finding the
+    origin QA raised, carrying ``fingerprint``/``severity``/``page``/``summary``,
+    a machine ``status`` (``still failing`` | ``fixed`` | ``not reproduced``),
+    a ``source`` (this run vs the fix PR's fix-verdict.json) and a ``label``
+    slot that is null until a human writes it.
+
+    The header is "Final" ONLY when at least one row is actually fixed by a fix
+    leg. A clean re-run with no fix chain reconciles but closes nothing, and a
+    comment that said otherwise would be the benchmark's prose-only board all
+    over again -- a closing table that overclaims what it shows.
+    """
+    if not rows:
+        return ""
+    ordered = sorted(
+        rows,
+        key=lambda r: (SEVERITY_ORDER.get(r["severity"], 9), r["page"], r["summary"]),
+    )
+    any_fixed = any(r["status"] == "fixed" for r in ordered)
+    fixed_n = sum(1 for r in ordered if r["status"] == "fixed")
+    if any_fixed:
+        header = "### 🧾 Final reconciliation board"
+        lede = (
+            f"Every finding the origin QA raised is accounted for: **{fixed_n} "
+            "fixed** by the fix leg; the rest are still failing, were not "
+            "reproduced, or await a human verdict."
+        )
+    else:
+        header = "### 🧾 Reconciliation board"
+        lede = (
+            "A clean re-run of the origin report, but no finding was fixed by a "
+            "fix leg -- absence alone is not a fix, so nothing here is closed. "
+            "Every row still needs a human verdict."
+        )
+    lines = [
+        header,
+        "",
+        lede,
+        "",
+        "| Status | Page | Finding | Human label |",
+        "|---|---|---|---|",
+    ]
+    for r in ordered:
+        status = _REVERIFY_STATUS.get(r["status"], f"**{r['status'].upper()}**")
+        summary = r["summary"].replace("|", "\\|").replace("\n", " ")
+        label = r.get("label") or "_needs a human_"
+        lines.append(f"| {status} | `{r['page']}` | {summary} | {label} |")
+    if any(r.get("label") is None for r in ordered):
+        lines += [
+            "",
+            "_Unlabelled rows are never counted as resolved: `true-positive`, "
+            "`false-positive` and `by-design` are human judgements made "
+            "downstream, and agent output is not evidence for them._",
+        ]
+    if any(r.get("source") == "fix-verdict" for r in ordered):
+        lines += [
+            "",
+            "_Fixed rows are marked from the fix PR's QA verdict "
+            "(`fix-verdict.json` in this report's namespace), reconciled against "
+            "this run._",
+        ]
+    return "\n".join(lines)
+
+
+def render_unmatched(findings: list) -> str:
+    """
+    The ``⚠️ New findings not in the origin report`` note (D-4).
+
+    Findings the previous report never raised. Each is a new defect or a
+    regression introduced by this branch -- the PR path has no sound way to mint
+    a fabricated ``regressed`` origin row, so regression risk surfaces here, and
+    a HIGH/CRITICAL one still fails the check by the ordinary exit-code rule.
+    """
+    if not findings:
+        return ""
+    ordered = sorted(
+        findings,
+        key=lambda f: (SEVERITY_ORDER.get(f["severity"], 9), f.get("page", ""), f.get("summary", "")),
+    )
+    blocking = [f for f in ordered if f["severity"] in ("CRITICAL", "HIGH")]
+    caveat = (
+        "**One or more are HIGH/CRITICAL and fail this check.**"
+        if blocking
+        else "None is blocking on its own, but each still wants a look."
+    )
+    lines = [
+        "### ⚠️ New findings not in the origin report",
+        "",
+        f"These appeared in this run and have no counterpart in the report it "
+        f"re-verified against. Each is either a new defect or a regression "
+        f"introduced by this branch. {caveat}",
+        "",
+        "| Severity | Page | Finding |",
+        "|---|---|---|",
+    ]
+    for f in ordered:
+        icon = SEVERITY_ICON.get(f["severity"], "")
+        summary = f["summary"].replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {icon} {f['severity']} | `{f['page']}` | {summary} |")
+    return "\n".join(lines)
+
+
 def render(
     findings: dict,
     *,
     runner_minutes: int | None = None,
     reverify_rows: list | None = None,
+    board_rows: list | None = None,
+    unmatched: list | None = None,
 ) -> str:
     """Render the full comment. Always leads with the verdict."""
     from pricing import summarise
@@ -271,8 +378,15 @@ def render(
         parts += [_finding_block(f) for f in items]
         parts += [""]
 
-    if reverify_rows:
+    if board_rows:
+        # The board is the closing ledger and a superset of the plain re-verify
+        # table, so it replaces it -- a clean origin run does not show both.
+        parts += ["", render_board(board_rows), ""]
+    elif reverify_rows:
         parts += ["", render_reverify(reverify_rows), ""]
+    if unmatched:
+        # Regression risk surfaces as a note, never as a fabricated origin row.
+        parts += ["", render_unmatched(unmatched), ""]
 
     parts += ["### Cost", "", _cost_table(cost)]
     if runner_minutes is not None:

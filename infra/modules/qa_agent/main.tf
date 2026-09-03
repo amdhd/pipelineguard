@@ -464,23 +464,27 @@ resource "aws_iam_role_policy" "github_qa" {
         Resource = [aws_secretsmanager_secret.qa_target.arn]
       },
       {
+        # SSE-KMS writes (the D-4 ledger files below) need GenerateDataKey as
+        # well as Decrypt -- the runner asks KMS for a fresh data key to encrypt
+        # the object it is about to put. The reports bucket is CMK-encrypted
+        # with this same key, so both actions stay on one ARN.
         Sid      = "DecryptQaSecret"
         Effect   = "Allow"
-        Action   = ["kms:Decrypt"]
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey"]
         Resource = [var.kms_key_arn]
       },
       {
-        # D-3 re-verify: the workflow reads the LAST archived report for this PR
-        # so the harness can reconcile the run against it. The reports bucket is
-        # CMK-encrypted with var.kms_key_arn -- the SAME key DecryptQaSecret
-        # above already opens -- so kms:Decrypt is already granted; this is the
-        # one statement the read was missing (the role was invoke-one-runtime,
-        # read-one-secret). Scoped to reports/ only, never screenshots: findings
-        # JSON is what re-verify consumes, and screenshot views stay on the
-        # presigned URLs the runtime signs.
-        Sid      = "ReadPriorQaReports"
+        # D-3 read + D-4 write: the workflow reads the LAST archived report for
+        # this PR so the harness can reconcile the run against it, and writes the
+        # two best-effort D-4 ledger files (board.json, fix-verdict.json) under
+        # reports/<pr>/latest/. The reports bucket is CMK-encrypted with
+        # var.kms_key_arn -- the SAME key DecryptQaSecret above already opens --
+        # so this stays one statement on one key. Scoped to reports/ only, never
+        # screenshots: findings JSON is what re-verify consumes, and screenshot
+        # views stay on the presigned URLs the runtime signs.
+        Sid      = "ReadWriteQaReports"
         Effect   = "Allow"
-        Action   = ["s3:GetObject"]
+        Action   = ["s3:GetObject", "s3:PutObject"]
         Resource = ["${aws_s3_bucket.reports.arn}/reports/*"]
       },
     ]

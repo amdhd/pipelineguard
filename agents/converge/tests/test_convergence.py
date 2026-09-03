@@ -571,3 +571,69 @@ class TestVerifyReport:
     def test_blocking_rows_sort_above_the_rest(self):
         rows = conv.verify_report(qa([LOW, A, B]), qa([]))
         assert [r["severity"] for r in rows] == ["CRITICAL", "HIGH", "LOW"]
+
+    # --- D-4: fix_intervened as a fingerprint set (the fix agent's applied list)
+
+    def test_fix_intervened_as_a_set_marks_only_members_fixed(self):
+        """
+        The D-4 fix-PR form: a fix PR reconciles the origin report against its
+        patches' applied list. Only an absent prior finding whose exact
+        fingerprint the fix addressed may be FIXED; an absent finding the fix
+        never touched is NOT_REPRODUCED even though the same fix ran.
+        """
+        applied = {conv.schema.finding_fingerprint(A)}
+        rows = conv.verify_report(qa([A, C]), qa([]), fix_intervened=applied)
+        by_fp = {r["fingerprint"]: r["status"] for r in rows}
+        assert by_fp[conv.schema.finding_fingerprint(A)] == conv.FIXED
+        assert by_fp[conv.schema.finding_fingerprint(C)] == conv.NOT_REPRODUCED
+
+    def test_an_empty_set_behaves_like_no_fix(self):
+        rows = conv.verify_report(qa([A]), qa([]), fix_intervened=set())
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.NOT_REPRODUCED
+
+    def test_a_member_still_present_is_still_failing_even_when_in_the_set(self):
+        """
+        Presence in the re-measurement always wins over the applied set -- a
+        patch that claimed a finding but left the defect is STILL_FAILING, never
+        FIXED.
+        """
+        applied = {conv.schema.finding_fingerprint(A)}
+        rows = conv.verify_report(qa([A]), qa([A]), fix_intervened=applied)
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.STILL_FAILING
+
+    def test_a_fingerprint_outside_the_set_is_not_reproduced(self):
+        """Absent, fix ran, but this finding was NOT one it addressed."""
+        applied = {conv.schema.finding_fingerprint(A)}
+        rows = conv.verify_report(qa([C]), qa([]), fix_intervened=applied)
+        assert len(rows) == 1
+        assert rows[0]["status"] == conv.NOT_REPRODUCED
+
+
+class TestUnmatchedCurrent:
+    """Current findings with no prior counterpart (`conv.unmatched_current`, D-4)."""
+
+    def test_current_only_findings_are_returned(self):
+        prior, current = qa([A]), qa([A, B])
+        out = conv.unmatched_current(prior, current)
+        assert [f["id"] for f in out] == ["F-002"]
+
+    def test_a_rephrased_prior_defect_is_not_unmatched(self):
+        """Same Dice identity as the ledger: a rephrase is the same defect."""
+        rephrased = finding("/fleet", "HIGH", "health score renders a NaN value", "F-099")
+        out = conv.unmatched_current(qa([A]), qa([rephrased]))
+        assert out == []
+
+    def test_an_error_rereport_returns_nothing(self):
+        """A broken re-run cannot read as 'introduced nothing new'."""
+        assert conv.unmatched_current(qa([A]), qa([B], error="schema_violation")) == []
+
+    def test_a_truncated_rereport_returns_nothing(self):
+        assert conv.unmatched_current(qa([A]), qa([B], incomplete=True)) == []
+
+    def test_no_prior_returns_all_current(self):
+        assert conv.unmatched_current(None, qa([A, B])) == [A, B]
+
+    def test_an_empty_prior_returns_all_current(self):
+        assert conv.unmatched_current(qa([]), qa([A])) == [A]

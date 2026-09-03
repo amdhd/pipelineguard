@@ -1,0 +1,37 @@
+{
+  "corpus": "vesselAI QA corpus — versioned seed bugs + human labels",
+  "seeded": [
+    {
+      "id": "S-1",
+      "page": "/voyage",
+      "description": "history returns actual_fuel where the client reads actualFuel",
+      "keywords": ["tofixed", "crash", "typeerror", "undefined", "fuel", "blank"]
+    },
+    {
+      "id": "S-2",
+      "page": "/maintenance",
+      "description": "equipment list response drops healthScore",
+      "keywords": ["health score", "healthscore", "blank", "missing", "nan", "undefined", "empty"]
+    },
+    {
+      "id": "S-3",
+      "page": "/sire",
+      "description": "finding status OPEN vs frontend comparison against 'open'",
+      "keywords": ["status", "open finding", "colour", "color", "styling", "uncategorised"]
+    },
+    {
+      "id": "S-4",
+      "page": "/maintenance",
+      "description": "new fleet-status summary counts the WATCH bucket by comparing e.status against the display label statusLabel.warning ('Watch') instead of the enum 'warning', so the Watch counter always renders 0 while watch-status cards sit below it",
+      "keywords": ["watch", "0 watch", "status counter", "status", "counter", "healthy"],
+      "source": "vesselAI PR #125 (test/qa-seed-equipment-health-summary), run 33773198501, 2026-09-03; agent detected MEDIUM F-001"
+    }
+  ],
+  "labels": {
+    "/voyage::HIGH::voyage history tab crashes with typeerror when clicked": "true-positive",
+    "/voyage::HIGH::voyage history savings column shows large positive dollar figures even when actual fuel exceeds planned fuel, and totals are unrealistically inflated": "false-positive",
+    "/sire::MEDIUM::sire readiness score summary shows '0 green' chapters despite 4 chapters having 0 findings": "false-positive",
+    "/maintenance::MEDIUM::equipment health status counter shows 0 watch units despite main engine having watch status": "S-4"
+  },
+  "notes": "Living corpus consumed by agents/qa/harness/score.py. corpus.example.json stays the shape template. S-1..S-3 + the first three labels were the historical seeded-corpus record; S-4 records the 2026-09-03 planted-defect PR (#125) as a detected seed (seed-id label per score.py), NOT as a P1.7 false-positive datum — seeded PRs cannot contribute to the FP rate. P1.7 real-PR labels will accumulate here as true-positive / false-positive / by-design verdicts."
+}

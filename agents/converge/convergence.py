@@ -845,3 +845,91 @@ def reconcile(rounds: list, labels: dict | None = None) -> list:
         rows,
         key=lambda r: (order.get(r["severity"], 9), r["first_round"], r["page"]),
     )
+
+
+# --- PR re-verify (D-2): the one-before/after ledger -----------------------
+#
+# `reconcile` walks a whole multi-round loop. The PR path asks a narrower
+# question: a report found defects, a fix was attempted, QA ran again -- which
+# of the earlier findings is still there? It reuses the same identity the
+# stopping rule and the round ledger use (page + Dice over significant tokens),
+# so a defect the model rephrased between the two measurements is one row, not
+# two. Two statuses are the round ledger's (same meaning); two belong to
+# having exactly one re-measurement.
+
+STILL_FAILING = "still failing"  # present again in the re-measurement
+UNVERIFIED = "unverified"  # no usable re-measurement exists to judge it by
+
+
+def verify_report(prior: dict, current: dict, *, fix_intervened: bool = False) -> list:
+    """
+    Classify every finding in `prior` against a single re-measurement `current`.
+
+    Both arguments are QA findings JSONs in the schema's shape (top-level
+    `findings` list). Returns one row per prior finding, blocking severities
+    first, each keyed by `schema.finding_fingerprint` so a human can later
+    label it in score.py's vocabulary:
+
+      * **STILL_FAILING** -- the defect is present again in `current`.
+      * **FIXED** -- absent from `current` AND `fix_intervened` is true. Never
+        inferred from silence alone: absent-with-no-known-fix is the round
+        ledger's NOT_REPRODUCED (the first report was noise, or the defect is
+        intermittent -- neither deserves credit as fixed).
+      * **UNVERIFIED** -- `current` is an error or a truncated run, so it
+        cannot re-measure anything. "Fixed" by an empty or partial re-report
+        is exactly the overclaim fix #60 removed from the round ledger.
+
+    Findings new in `current` are not returned -- the findings list above the
+    block already shows them, and this ledger answers "what happened to what
+    was reported before".
+    """
+    prior_findings = prior.get("findings") or []
+
+    if current.get("error") or current.get("incomplete"):
+        # A run that errored or stopped early did not necessarily revisit the
+        # route a prior defect lives on. Absence from it proves nothing.
+        return [
+            {
+                "fingerprint": schema.finding_fingerprint(f),
+                "severity": f["severity"],
+                "page": f["page"],
+                "summary": f["summary"],
+                "status": UNVERIFIED,
+            }
+            for f in prior_findings
+        ]
+    if not prior_findings:
+        return []
+
+    # Two measurements, two run labels: 0 = prior, 1 = current.
+    # `_similarity_clusters` never merges two items with the same label and
+    # merges across labels only when the page agrees and Dice >= 0.5.
+    pairs = [(0, f) for f in prior_findings] + [
+        (1, f) for f in (current.get("findings") or [])
+    ]
+
+    rows = []
+    for cluster in _similarity_clusters(pairs):
+        prior_member = next((m for m in cluster if m[0] == 0), None)
+        if prior_member is None:
+            continue  # new since the prior report
+        _, f = prior_member
+        still_present = any(m[0] == 1 for m in cluster)
+        if still_present:
+            status = STILL_FAILING
+        else:
+            status = FIXED if fix_intervened else NOT_REPRODUCED
+        rows.append(
+            {
+                "fingerprint": schema.finding_fingerprint(f),
+                "severity": f["severity"],
+                "page": f["page"],
+                "summary": f["summary"],
+                "status": status,
+            }
+        )
+
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    return sorted(
+        rows, key=lambda r: (order.get(r["severity"], 9), r["page"], r["summary"])
+    )

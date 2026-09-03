@@ -351,6 +351,47 @@ class TestArchiving:
         monkeypatch.setattr(agent, "REPORTS_BUCKET", "")
         assert agent._archive("run-7", {}) is None
 
+    def test_a_namespace_writes_the_pr_stable_alias(self, agent, monkeypatch):
+        """D-3: with a namespace, the same body lands under latest/ as well as
+        the run-scoped key, so a later run on the PR can fetch it without
+        knowing this run's session id."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+
+        key = agent._archive("run-7", {"overall": "PASS", "findings": []}, report_namespace="pr-125")
+        assert key == "reports/run-7/findings.json"
+        keys = [c.kwargs["Key"] for c in client.put_object.call_args_list]
+        assert keys == ["reports/run-7/findings.json", "reports/pr-125/latest/findings.json"]
+
+    def test_a_failed_alias_does_not_lose_the_run_scoped_copy(self, agent, monkeypatch):
+        """The alias is best-effort; a failure there must not read as no archive
+        at all, since the run-scoped copy is the one the report references."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        client.put_object.side_effect = [None, RuntimeError("denied")]
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+
+        key = agent._archive("run-7", {"overall": "PASS", "findings": []}, report_namespace="pr-125")
+        assert key == "reports/run-7/findings.json"
+
+    def test_an_unsafe_namespace_is_refused(self, agent, monkeypatch):
+        """The namespace becomes a level of an S3 key; it must not smuggle a
+        second one out of the role's own reports/* scope."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+
+        agent._archive("run-7", {}, report_namespace="../escape")
+        assert client.put_object.call_count == 1  # run-scoped key only
+
+    def test_the_namespace_guard_accepts_only_one_safe_segment(self, agent):
+        assert agent._safe_report_namespace("pr-125") == "pr-125"
+        assert agent._safe_report_namespace("gh-123-attempt-2") == "gh-123-attempt-2"
+        assert agent._safe_report_namespace("") is None
+        assert agent._safe_report_namespace("a/b") is None
+        assert agent._safe_report_namespace("../x") is None
+
 
 class TestDerivedBudgets:
     """

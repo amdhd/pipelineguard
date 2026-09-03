@@ -353,7 +353,21 @@ def _screenshot_sink(session_id: str):
     return sink
 
 
-def _archive(session_id: str, findings: dict) -> str | None:
+def _safe_report_namespace(value) -> str | None:
+    """
+    A caller-supplied alias the run is ALSO archived under, so a later run on
+    the same PR can fetch "the last report for this PR" without knowing the
+    run-scoped key (D-3). Restricted to one safe path segment: this string
+    becomes a level of an S3 key, and it must not smuggle a second one
+    (`reports/pr-1/latest/..` would walk the role's own reports/* scope).
+    """
+    if not value:
+        return None
+    value = str(value).strip()
+    return value if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
+
+
+def _archive(session_id: str, findings: dict, *, report_namespace: str | None = None) -> str | None:
     """
     Archive the findings JSON to S3.
 
@@ -365,23 +379,42 @@ def _archive(session_id: str, findings: dict) -> str | None:
 
     Written from the RUNTIME's execution role, not the workflow's. That is what
     keeps the CI-reachable role at invoke-one-runtime, read-one-secret.
+
+    When ``report_namespace`` is given (e.g. ``pr-125``), the same body is also
+    written to ``reports/{namespace}/latest/findings.json`` -- a PR-stable key
+    that every run on that PR overwrites, so "the last report for this PR"
+    never depends on knowing a run-scoped session id. Last write wins, which is
+    the point: the alias always points at the most recent attempt, error or not.
     """
     if not REPORTS_BUCKET:
         logger.warning("REPORTS_BUCKET unset; findings not archived")
         return None
+    namespace = _safe_report_namespace(report_namespace)
+    client = boto3.client("s3", region_name=REGION)
     key = f"reports/{session_id}/findings.json"
     try:
-        boto3.client("s3", region_name=REGION).put_object(
+        client.put_object(
             Bucket=REPORTS_BUCKET,
             Key=key,
             Body=json.dumps(findings, indent=2).encode(),
             ContentType="application/json",
         )
         logger.info("archived findings to s3://%s/%s", REPORTS_BUCKET, key)
-        return key
     except Exception:  # noqa: BLE001 -- archiving must never fail a good run
         logger.warning("could not archive findings", exc_info=True)
         return None
+    if namespace:
+        alias = f"reports/{namespace}/latest/findings.json"
+        try:
+            client.put_object(
+                Bucket=REPORTS_BUCKET,
+                Key=alias,
+                Body=json.dumps(findings, indent=2).encode(),
+                ContentType="application/json",
+            )
+        except Exception:  # noqa: BLE001 -- the alias is best-effort; keep the run-scoped copy
+            logger.warning("could not archive %s alias", alias, exc_info=True)
+    return key
 
 
 def _presign(keys: list[str], expires: int) -> dict[str, str]:
@@ -697,6 +730,10 @@ def _probe_auth(session, token_key: str) -> tuple[bool | None, str]:
 
 def run_qa(payload: dict) -> dict:
     session_id = payload.get("session_id") or _default_session_id()
+    # PR-stable archive alias (D-3). Deliberately NOT schema-validated -- it is a
+    # storage hint, not part of the findings shape -- but restricted to one safe
+    # path segment in _safe_report_namespace before it ever reaches an S3 key.
+    report_namespace = payload.get("report_namespace")
     base_url = payload["target_url"]
     email = payload["email"]
     password = payload["password"]
@@ -959,11 +996,15 @@ def run_qa(payload: dict) -> dict:
             "findings": [],
             "routes_visited": list(session.visited),
             "session_seconds": budget.elapsed_seconds,
-            "archive_key": _archive(session_id, {"error": "unauthenticated", "routes_visited": list(session.visited)}),
+            "archive_key": _archive(
+                session_id,
+                {"error": "unauthenticated", "routes_visited": list(session.visited)},
+                report_namespace=report_namespace,
+            ),
         }
 
     # Archive LAST, so the stored copy is the complete one the harness receives.
-    archived = _archive(session_id, findings)
+    archived = _archive(session_id, findings, report_namespace=report_namespace)
     if archived:
         findings["archive_key"] = archived
     return findings

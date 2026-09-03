@@ -35,6 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 import report  # noqa: E402
 import schema  # noqa: E402  -- the agent's validator, reused deliberately
 
+# converge's re-verify identity is imported lazily in _reverify_rows, not here:
+# the harness must keep running even where the converge package is absent. Put
+# its directory on sys.path up front so that lazy import actually resolves.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "converge"))
+
 DEFAULT_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 
 # InvokeAgentRuntime requires a session id of at least 33 characters.
@@ -74,6 +79,52 @@ def read_credentials(secret_arn: str, region: str = DEFAULT_REGION) -> dict:
     """
     client = boto3.client("secretsmanager", region_name=region)
     return json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
+
+
+def _latest_key(namespace: str) -> str:
+    """The PR-stable key every run on that PR archives under (D-3)."""
+    return f"reports/{namespace}/latest/findings.json"
+
+
+def fetch_prior_report(bucket: str, namespace: str, *, region: str = DEFAULT_REGION) -> dict | None:
+    """
+    Fetch the last report QA wrote for this PR, to re-verify against (D-3).
+
+    Reads only -- the harness never writes; archiving happens under the runtime's
+    execution role. ``None`` means "nothing to re-verify": a first run on a PR,
+    an unreachable bucket, or a corrupted body must not fail the run, they just
+    mean the comment renders without the ``🔁 Prior findings re-verified`` block.
+    """
+    if not bucket or not namespace:
+        return None
+    try:
+        body = boto3.client("s3", region_name=region).get_object(
+            Bucket=bucket, Key=_latest_key(namespace)
+        )["Body"].read()
+    except (ClientError, BotoCoreError):
+        # NoSuchKey on the first run is the common case, not an error.
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
+def _reverify_rows(prior: dict | None, findings: dict) -> list | None:
+    """
+    Reconcile the current run against the prior report, or None when there is no
+    prior to reconcile against. Lazily imports converge so a harness without it
+    still renders (just without the re-verify block).
+    """
+    if not prior:
+        return None
+    try:
+        import convergence
+    except ImportError:  # pragma: no cover -- converge ships in this repo
+        return None
+    # D-3 stage: a plain re-run carries no fix signal, so an absent defect is
+    # NOT_REPRODUCED, never FIXED. D-4 passes the fix agent's "applied" list.
+    return convergence.verify_report(prior, findings, fix_intervened=False)
 
 
 def invoke(runtime_arn: str, payload: dict, *, region: str = DEFAULT_REGION, session_id: str | None = None) -> dict:
@@ -174,6 +225,10 @@ def run(args) -> int:
     if args.secret_arn:
         creds = read_credentials(args.secret_arn, args.region)
 
+    # Read the last report for this PR before invoking, so the current run can
+    # be re-verified against it. None on a first run or an unreachable bucket.
+    prior = fetch_prior_report(args.reports_bucket, args.report_namespace, region=args.region)
+
     payload = {
         "session_id": args.session_label,
         "target_url": args.target_url,
@@ -181,6 +236,10 @@ def run(args) -> int:
         "password": args.password or creds.get("QA_TARGET_PASSWORD", ""),
         "ai_fallback_mode": not args.live_ai,
     }
+    if args.report_namespace:
+        # The runtime archives this run under reports/{namespace}/latest as well
+        # as its run-scoped key, so the NEXT run on this PR can re-verify it.
+        payload["report_namespace"] = args.report_namespace
     for key, value in (
         ("model", args.model),
         ("max_turns", args.max_turns),
@@ -212,7 +271,11 @@ def run(args) -> int:
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(findings, indent=2))
 
-    comment = report.render(findings, runner_minutes=args.runner_minutes)
+    comment = report.render(
+        findings,
+        runner_minutes=args.runner_minutes,
+        reverify_rows=_reverify_rows(prior, findings),
+    )
     if args.comment_out:
         Path(args.comment_out).write_text(comment)
     else:
@@ -271,6 +334,21 @@ def build_parser() -> argparse.ArgumentParser:
         "describes the code in front of it.",
     )
     p.add_argument("--runner-minutes", type=int)
+    p.add_argument(
+        "--reports-bucket",
+        default=os.environ.get("REPORTS_BUCKET", ""),
+        help="S3 bucket holding archived QA reports. Required (with "
+        "--report-namespace) to re-verify this run against the previous report "
+        "on the same PR; the harness only reads it, it never writes.",
+    )
+    p.add_argument(
+        "--report-namespace",
+        help="PR-stable alias (e.g. 'pr-125') this run is archived under and the "
+        "previous report is read from. When set it is forwarded to the runtime so "
+        "the findings JSON lands at reports/<namespace>/latest/findings.json as well "
+        "as the run-scoped key; a later run on the same PR fetches it and renders "
+        "the `Prior findings re-verified` block.",
+    )
     p.add_argument("--json-out", help="Write the raw findings JSON here")
     p.add_argument("--comment-out", help="Write the rendered comment here instead of stdout")
     # Default is the DUMMY key path (PLAN.md Phase 0.5 #4): a live billable

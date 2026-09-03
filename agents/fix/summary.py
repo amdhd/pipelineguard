@@ -86,6 +86,34 @@ def budget_block(budget, model: str) -> dict:
     }
 
 
+def _origin_block(origin: dict) -> list[str]:
+    """
+    The D-4 provenance banner for a fix PR.
+
+    The fix leg only means anything in relation to the origin QA run it answers,
+    so the body says which run that is and which fingerprints the patches claim
+    to address -- the exact set the fix PR's QA run will reconcile as FIXED.
+    """
+    pr = origin.get("pr")
+    repo = origin.get("repo")
+    ref = f"{repo}#{pr}" if repo else f"#{pr}"
+    fps = origin.get("applied_fingerprints") or []
+    lines = [
+        "### Origin",
+        "",
+        f"This PR is the **fix leg** of QA on {ref}. It reconciles the origin "
+        f"findings at `{origin.get('findings_key', '?')}`: merge this, and the "
+        "origin PR's next QA run re-verifies the fingerprints below as FIXED.",
+        "",
+        f"Applied fingerprints ({len(fps)}):",
+    ]
+    if fps:
+        lines += [f"- `{fp}`" for fp in fps]
+    else:
+        lines.append("_none -- nothing was patched in this run._")
+    return lines
+
+
 def render(result: dict, *, budget=None, model: str = "", prices: dict | None = None) -> str:
     """Render the whole summary. `result` is what main.run assembles."""
     applied = result.get("applied", [])
@@ -109,7 +137,14 @@ def render(result: dict, *, budget=None, model: str = "", prices: dict | None = 
             " this run is PARTIAL, not complete."
         )
 
-    parts = [
+    parts: list[str] = []
+    origin = result.get("origin")
+    if origin:
+        # The origin banner leads the body -- the fix loop only reads as one
+        # loop when a reader of the fix PR is told which QA run it answers.
+        parts += _origin_block(origin)
+        parts += ["", "---", ""]
+    parts += [
         "## Bug-fix agent",
         "",
         verdict,

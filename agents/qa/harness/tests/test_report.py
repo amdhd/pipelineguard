@@ -114,3 +114,99 @@ class TestReverifyBlock:
         """Markdown tables treat `|` as a column separator."""
         out = report.render_reverify([_row("still failing", summary="billing | amounts column")])
         assert "billing \\| amounts column" in out
+
+
+def _board_row(status, *, source="origin-run", label=None, **over):
+    """A board row exactly as the harness's _board_rows emits one: the re-verify
+    shape plus the D-4 attribution (source) and the human label slot."""
+    r = _row(status, **over)
+    r["source"] = source
+    r["label"] = label
+    return r
+
+
+class TestBoard:
+    """The D-4 reconciliation board renderer."""
+
+    def test_the_header_is_final_only_when_a_row_is_fixed(self):
+        """
+        A clean run that closed a fix leg reads as a FINAL board; a clean re-run
+        with no fix chain must not overclaim, so it reads as a plain
+        Reconciliation board.
+        """
+        final = report.render_board(
+            [_board_row("fixed"), _board_row("not reproduced", severity="LOW")]
+        )
+        assert "Final reconciliation board" in final
+        assert "1 fixed" in final
+
+        plain = report.render_board(
+            [_board_row("not reproduced"), _board_row("still failing")]
+        )
+        assert "Reconciliation board" in plain
+        assert "Final reconciliation board" not in plain
+        assert "no finding was fixed" in plain
+
+    def test_every_status_keeps_the_reverify_vocabulary(self):
+        out = report.render_board([_board_row("fixed"), _board_row("not reproduced"), _board_row("still failing", severity="MEDIUM")])
+        assert "STILL FAILING" in out and "FIXED" in out and "NOT REPRODUCED" in out
+
+    def test_unlabelled_rows_are_marked_and_explained(self):
+        out = report.render_board([_board_row("fixed")])
+        assert "_needs a human_" in out
+        assert "never counted as resolved" in out
+
+    def test_a_human_label_is_rendered_verbatim(self):
+        out = report.render_board([_board_row("fixed", label="true-positive")])
+        assert "true-positive" in out
+        assert "_needs a human_" not in out
+        assert "never counted as resolved" not in out
+
+    def test_a_fix_verdict_attribution_names_its_provenance(self):
+        out = report.render_board(
+            [_board_row("fixed", source="fix-verdict"), _board_row("not reproduced", severity="LOW")]
+        )
+        assert "fix-verdict.json" in out
+        assert "reconciled against" in out
+
+    def test_the_board_replaces_the_plain_reverify_table(self):
+        """
+        The board is a superset of the re-verify table, so a run that has a
+        board renders it instead of both blocks.
+        """
+        out = report.render(
+            _findings(findings=[]),
+            reverify_rows=[_row("still failing")],
+            board_rows=[_board_row("fixed")],
+        )
+        assert "Final reconciliation board" in out
+        assert "Prior findings re-verified" not in out
+
+    def test_no_board_when_no_rows_are_supplied(self):
+        assert "Reconciliation board" not in report.render(_findings(findings=[]))
+        assert report.render_board([]) == ""
+
+
+class TestUnmatched:
+    """The `New findings not in the origin report` note (D-4)."""
+
+    def test_a_new_blocking_finding_carries_the_fail_caveat(self):
+        out = report.render_unmatched([_finding(id="F-9", severity="HIGH", summary="new regressed tab")])
+        assert "New findings not in the origin report" in out
+        assert "HIGH/CRITICAL and fail this check" in out
+        assert "new regressed tab" in out
+
+    def test_a_non_blocking_new_finding_does_not_claim_to_fail(self):
+        out = report.render_unmatched([_finding(id="F-9", severity="LOW", summary="cosmetic")])
+        assert "fail this check" not in out
+
+    def test_empty_renders_nothing(self):
+        assert report.render_unmatched([]) == ""
+
+    def test_render_appends_the_note_after_the_board(self):
+        out = report.render(
+            _findings(findings=[]),
+            board_rows=[_board_row("fixed")],
+            unmatched=[_finding(id="F-9", summary="regressed tab")],
+        )
+        assert out.index("New findings not in the origin report") > out.index("Final reconciliation board")

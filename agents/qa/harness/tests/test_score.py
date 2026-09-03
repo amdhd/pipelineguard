@@ -142,3 +142,69 @@ class TestRungComparison:
         a = _run(_f(id="F-001"))
         b = _run(_f(id="F-047"))
         assert score.compare(a, b)["agreement"] == pytest.approx(1.0)
+
+
+def _board_row(fp, *, status="fixed", label=None):
+    return {
+        "fingerprint": fp, "severity": "HIGH", "page": "/voyage",
+        "summary": "Fuel chart renders blank", "status": status,
+        "source": "origin-run", "label": label,
+    }
+
+
+def _board(*rows):
+    return {"schema": "pipelineguard/board/v1", "rows": list(rows)}
+
+
+class TestBoardIngest:
+    """
+    D-4: a clean origin run's board.json lets a human label rows (or carry
+    labels already harvested) straight into a score, without ever letting a
+    board row count as anything a human did not write.
+    """
+
+    def test_unlabelled_board_rows_add_no_labels(self):
+        """A board nobody has labelled must score exactly like no board."""
+        fp = schema.finding_fingerprint(_f())
+        board = _board(_board_row(fp, label=None))
+        corpus = score.effective_corpus({}, board)
+        result = score.score(_run(_f()), corpus)
+        assert result["false_positive_rate"] is None
+        assert result["unlabelled"] == 1
+        assert score.board_summary(board)["labelled"] == 0
+
+    def test_a_board_false_positive_label_feeds_the_rate(self):
+        fp = schema.finding_fingerprint(_f())
+        board = _board(_board_row(fp, label=score.FALSE_POSITIVE))
+        corpus = score.effective_corpus({}, board)
+        result = score.score(_run(_f()), corpus)
+        assert result["labelled"] == 1
+        assert result["false_positive_rate"] == pytest.approx(1.0)
+
+    def test_a_board_by_design_label_counts_against_the_rate(self):
+        fp = schema.finding_fingerprint(_f())
+        board = _board(_board_row(fp, label=score.BY_DESIGN))
+        corpus = score.effective_corpus({}, board)
+        assert score.score(_run(_f()), corpus)["false_positive_rate"] == pytest.approx(1.0)
+
+    def test_a_board_true_positive_label_does_not_count_against(self):
+        fp = schema.finding_fingerprint(_f())
+        board = _board(_board_row(fp, label=score.TRUE_POSITIVE))
+        corpus = score.effective_corpus({}, board)
+        result = score.score(_run(_f()), corpus)
+        assert result["false_positive_rate"] == pytest.approx(0.0)
+        assert result["true_positives"] == 1
+
+    def test_an_existing_corpus_label_wins_over_a_board_row(self):
+        """
+        A seed-id (or an earlier human verdict) in the corpus must never be
+        flipped by a later board row -- the board supplements, it does not
+        overrule.
+        """
+        a = _f()
+        fp = schema.finding_fingerprint(a)
+        corpus = {"labels": {fp: score.TRUE_POSITIVE}}
+        board = _board(_board_row(fp, label=score.FALSE_POSITIVE))
+        effective = score.effective_corpus(corpus, board)
+        assert effective["labels"][fp] == score.TRUE_POSITIVE
+        assert score.score(_run(a), effective)["false_positive_rate"] == pytest.approx(0.0)

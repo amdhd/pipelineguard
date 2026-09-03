@@ -861,7 +861,9 @@ STILL_FAILING = "still failing"  # present again in the re-measurement
 UNVERIFIED = "unverified"  # no usable re-measurement exists to judge it by
 
 
-def verify_report(prior: dict, current: dict, *, fix_intervened: bool = False) -> list:
+def verify_report(
+    prior: dict, current: dict, *, fix_intervened: bool | set[str] | None = None
+) -> list:
     """
     Classify every finding in `prior` against a single re-measurement `current`.
 
@@ -871,18 +873,38 @@ def verify_report(prior: dict, current: dict, *, fix_intervened: bool = False) -
     label it in score.py's vocabulary:
 
       * **STILL_FAILING** -- the defect is present again in `current`.
-      * **FIXED** -- absent from `current` AND `fix_intervened` is true. Never
-        inferred from silence alone: absent-with-no-known-fix is the round
-        ledger's NOT_REPRODUCED (the first report was noise, or the defect is
-        intermittent -- neither deserves credit as fixed).
+      * **FIXED** -- absent from `current` AND a fix is known to have
+        intervened for it. Never inferred from silence alone:
+        absent-with-no-known-fix is the round ledger's NOT_REPRODUCED (the
+        first report was noise, or the defect is intermittent -- neither
+        deserves credit as fixed).
       * **UNVERIFIED** -- `current` is an error or a truncated run, so it
         cannot re-measure anything. "Fixed" by an empty or partial re-report
         is exactly the overclaim fix #60 removed from the round ledger.
+
+    `fix_intervened` says which prior findings a fix addressed, in two forms:
+
+      * `True` -- every absent finding is FIXED (a fix ran that touched the
+        report wholesale). `False` / `None` -- no fix intervened at all.
+      * a set of fingerprints -- only the absent findings whose fingerprint is
+        in the set are FIXED; the rest are NOT_REPRODUCED. This is the D-4
+        fix-PR form: the fix agent's "applied" list says precisely which
+        findings its patches addressed, and only those may be called fixed.
+        An exact fingerprint match only -- a dispatched findings file that
+        rephrased a summary or drifted a severity misses the set and degrades
+        to NOT_REPRODUCED, the safe direction (never overclaim FIXED).
 
     Findings new in `current` are not returned -- the findings list above the
     block already shows them, and this ledger answers "what happened to what
     was reported before".
     """
+
+    def _fix_intervened_for(fix_intervened, fingerprint: str) -> bool:
+        if fix_intervened is True:
+            return True
+        if not fix_intervened:  # None, False, or an empty set/list
+            return False
+        return fingerprint in fix_intervened
     prior_findings = prior.get("findings") or []
 
     if current.get("error") or current.get("incomplete"):
@@ -914,14 +936,17 @@ def verify_report(prior: dict, current: dict, *, fix_intervened: bool = False) -
         if prior_member is None:
             continue  # new since the prior report
         _, f = prior_member
+        fp = schema.finding_fingerprint(f)
         still_present = any(m[0] == 1 for m in cluster)
         if still_present:
             status = STILL_FAILING
         else:
-            status = FIXED if fix_intervened else NOT_REPRODUCED
+            status = (
+                FIXED if _fix_intervened_for(fix_intervened, fp) else NOT_REPRODUCED
+            )
         rows.append(
             {
-                "fingerprint": schema.finding_fingerprint(f),
+                "fingerprint": fp,
                 "severity": f["severity"],
                 "page": f["page"],
                 "summary": f["summary"],
@@ -933,3 +958,38 @@ def verify_report(prior: dict, current: dict, *, fix_intervened: bool = False) -
     return sorted(
         rows, key=lambda r: (order.get(r["severity"], 9), r["page"], r["summary"])
     )
+
+
+def unmatched_current(prior: dict | None, current: dict) -> list:
+    """
+    Current-run findings with no counterpart in `prior` (page + Dice identity).
+
+    These are NOT verify rows: `verify_report` answers "what happened to what
+    was reported before"; this answers "what does this run report that the
+    prior did not", so a fix-PR run can surface new defects / regression
+    candidates alongside the reconcile table. Absence from a run that errored
+    or stopped early proves nothing about what it would have found, so that
+    returns [] -- a broken re-run must not read as "this branch introduced
+    nothing new".
+    """
+    if current.get("error") or current.get("incomplete"):
+        return []
+    current_findings = current.get("findings") or []
+    prior_findings = (prior or {}).get("findings") or []
+    if not prior_findings:
+        return list(current_findings)
+
+    # Same identity as verify_report: same page, Dice >= 0.5 over significant
+    # tokens. A current finding that shares a cluster with ANY prior finding
+    # (the prior reported the same defect, however rephrased) is not new.
+    index_of = {id(f): i for i, f in enumerate(current_findings)}
+    matched = [False] * len(current_findings)
+    pairs = [(0, f) for f in prior_findings] + [(1, f) for f in current_findings]
+    for cluster in _similarity_clusters(pairs):
+        if not any(m[0] == 0 for m in cluster):
+            continue
+        for m in cluster:
+            if m[0] == 1:
+                matched[index_of[id(m[1])]] = True
+
+    return [f for i, f in enumerate(current_findings) if not matched[i]]

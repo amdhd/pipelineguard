@@ -543,7 +543,10 @@ class TestSeverityDefault:
         If the schema's BLOCKING ever changes, this default should move with it
         rather than drift into an unrelated pair of words.
         """
-        import schema as qa_schema
+        # Through the loader, not a bare `import schema` -- the venv ships a
+        # site-packages module of that name, and this test only ever worked
+        # because the QA test session happened to import the right one first.
+        qa_schema = fix_harness._qa_schema()
 
         assert set(fix_harness.DEFAULT_SEVERITIES.split(",")) == set(qa_schema.BLOCKING)
 
@@ -654,3 +657,164 @@ class TestTheBudgetBlock:
         budget = json.loads(out.read_text())["budget"]
         assert budget["calls"] == 1
         assert budget["spent"] == 4300
+
+
+F_ORIGIN = "/::MEDIUM::dashboard greeting renders 'captain captain' due to duplicate title prefix"
+
+
+class TestOriginBanner:
+    """The D-4 `### Origin` provenance banner in the PR body."""
+
+    def test_a_fix_pr_body_opens_with_the_origin_banner(self):
+        result = {
+            "applied": [],
+            "skipped": [],
+            "origin": {
+                "repo": "amdhd/vesselAI",
+                "pr": "125",
+                "findings_key": "reports/pr-125/latest/findings.json",
+                "applied_fingerprints": [F_ORIGIN],
+            },
+        }
+        out = fix_summary.render(result)
+        # The banner leads the body so a reader of the fix PR is told which QA
+        # run it answers before anything else.
+        assert out.startswith("### Origin")
+        assert "amdhd/vesselAI#125" in out
+        assert "reports/pr-125/latest/findings.json" in out
+        assert F_ORIGIN in out
+
+    def test_a_run_without_origin_has_no_banner(self):
+        out = fix_summary.render({"applied": [], "skipped": []})
+        assert not out.startswith("### Origin")
+        assert "### Origin" not in out
+
+    def test_a_run_that_patched_nothing_says_so_in_the_banner(self):
+        out = fix_summary.render({
+            "applied": [], "skipped": [{"finding_id": "F-001", "reason": "no source"}],
+            "origin": {"repo": "amdhd/vesselAI", "pr": "125", "findings_key": "k", "applied_fingerprints": []},
+        })
+        assert "0)" in out and "nothing was patched" in out
+
+
+class TestOriginSidecar:
+    """The D-4 qa-fix-origin.json committed by an origin fix run."""
+
+    def _stub(self, monkeypatch, payload):
+        bedrock = _Bedrock(payload)
+        monkeypatch.setattr(fix_model, "client", lambda *a, **k: bedrock)
+        return bedrock
+
+    def test_an_origin_run_writes_the_sidecar_and_sets_origin(self, tree, monkeypatch, tmp_path):
+        """
+        End to end: an origin run resolves each applied finding_id to its origin
+        fingerprint (against the WHOLE report, before the severity filter) and
+        writes the sidecar the fix PR's QA run will reconcile against.
+        """
+        self._stub(
+            monkeypatch,
+            {
+                "edits": [
+                    {
+                        "finding_id": "F-001",
+                        "file": "frontend/src/pages/Dashboard.tsx",
+                        "old_string": "{greeting}, Captain {firstName}",
+                        "new_string": "{greeting}, {firstName}",
+                        "rationale": "the name already carries the rank",
+                    }
+                ],
+                "skipped": [],
+            },
+        )
+        summary = tmp_path / "summary.md"
+        json_out = tmp_path / "result.json"
+        code = fix_harness.run(_args(
+            repo=tree, summary_out=summary, json_out=json_out,
+            origin_pr="125", origin_repo="amdhd/vesselAI",
+        ))
+
+        assert code == 0
+        sidecar = json.loads((tree / "qa-fix-origin.json").read_text())
+        assert sidecar["schema"] == "pipelineguard/fix-origin/v1"
+        assert sidecar["origin"] == {"repo": "amdhd/vesselAI", "pr": "125"}
+        # The findings key is derived when --origin-findings-key is absent.
+        assert sidecar["origin_findings_key"] == "reports/pr-125/latest/findings.json"
+        assert sidecar["applied_fingerprints"] == [F_ORIGIN]
+        # The machine-readable result carries the same provenance for the summary.
+        result = json.loads(json_out.read_text())
+        assert result["origin"]["pr"] == "125"
+        assert result["origin"]["applied_fingerprints"] == [F_ORIGIN]
+
+    def test_an_origin_run_honours_an_explicit_findings_key(self, tree, monkeypatch, tmp_path):
+        self._stub(
+            monkeypatch,
+            {
+                "edits": [
+                    {
+                        "finding_id": "F-001",
+                        "file": "frontend/src/pages/Dashboard.tsx",
+                        "old_string": "{greeting}, Captain {firstName}",
+                        "new_string": "{greeting}, {firstName}",
+                        "rationale": "the name already carries the rank",
+                    }
+                ],
+                "skipped": [],
+            },
+        )
+        fix_harness.run(_args(
+            repo=tree, summary_out=tmp_path / "s.md",
+            origin_pr="125", origin_repo="amdhd/vesselAI",
+            origin_findings_key="reports/pr-125/33782331480/findings.json",
+        ))
+        sidecar = json.loads((tree / "qa-fix-origin.json").read_text())
+        assert sidecar["origin_findings_key"] == "reports/pr-125/33782331480/findings.json"
+
+    def test_plain_runs_leave_no_sidecar(self, tree, monkeypatch, tmp_path):
+        """No --origin-pr: existing fixture-dispatch behaviour is unchanged."""
+        self._stub(
+            monkeypatch,
+            {
+                "edits": [
+                    {
+                        "finding_id": "F-001",
+                        "file": "frontend/src/pages/Dashboard.tsx",
+                        "old_string": "{greeting}, Captain {firstName}",
+                        "new_string": "{greeting}, {firstName}",
+                        "rationale": "the name already carries the rank",
+                    }
+                ],
+                "skipped": [],
+            },
+        )
+        fix_harness.run(_args(repo=tree, summary_out=tmp_path / "s.md"))
+        assert not (tree / "qa-fix-origin.json").exists()
+
+    def test_a_run_that_could_not_read_its_input_writes_no_sidecar(self, tree, tmp_path):
+        """Early exits (bad input, stale) happen before the sidecar, so a run
+        that will not open a PR never leaves one behind."""
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not json")
+        fix_harness.run(_args(repo=tree, findings=bad, origin_pr="125", origin_repo="amdhd/vesselAI"))
+        assert not (tree / "qa-fix-origin.json").exists()
+
+    def test_unresolvable_applied_ids_are_dropped_not_emitted(self):
+        """
+        A patch whose finding_id cannot be resolved against the origin report is
+        dropped from the applied set. It can never be called FIXED downstream,
+        which is the safe direction.
+        """
+        fixture_finding = json.loads(FIXTURE.read_text())["findings"][0]
+        by_id = {"F-001": fixture_finding}
+        fps = fix_harness._applied_fingerprints(
+            [
+                {"finding_id": "F-001", "path": "a", "lines": 1, "rationale": "yes"},
+                {"finding_id": "F-999", "path": "b", "lines": 2, "rationale": "stale id"},
+                {"finding_id": "F-001", "path": "c", "lines": 1, "rationale": "duplicate"},
+            ],
+            by_id,
+        )
+        assert fps == [F_ORIGIN]
+
+    def test_the_origin_flags_have_safe_defaults(self):
+        args = fix_harness.build_parser().parse_args(["--findings", "x.json"])
+        assert args.origin_pr == "" and args.origin_repo == "" and args.origin_findings_key == ""

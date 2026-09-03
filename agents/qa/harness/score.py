@@ -136,6 +136,55 @@ def compare(a: dict, b: dict) -> dict:
     }
 
 
+def board_labels(board: dict) -> dict:
+    """
+    The human labels a reconciliation board carries (D-4).
+
+    A board row's `label` slot is null until a human writes one, and only the
+    three label words mean anything downstream -- so unlabelled rows are absent
+    here, never counted as anything. A row labelled by-design is returned too:
+    for the RATE it is a not-a-defect, the same as a false positive.
+    """
+    out: dict = {}
+    for row in board.get("rows") or []:
+        label = row.get("label")
+        if label in LABELS and row.get("fingerprint"):
+            out[row["fingerprint"]] = label
+    return out
+
+
+def board_summary(board: dict) -> dict:
+    """Counts over a reconciliation board, for the line a scorer prints."""
+    rows = board.get("rows") or []
+    labelled = sum(1 for r in rows if r.get("label") in LABELS)
+    return {
+        "rows": len(rows),
+        "fixed": sum(1 for r in rows if r.get("status") == "fixed"),
+        "still_failing": sum(1 for r in rows if r.get("status") == "still failing"),
+        "not_reproduced": sum(1 for r in rows if r.get("status") == "not reproduced"),
+        "unverified": sum(1 for r in rows if r.get("status") == "unverified"),
+        "labelled": labelled,
+        "unlabelled": len(rows) - labelled,
+    }
+
+
+def effective_corpus(corpus: dict | None, board: dict | None) -> dict:
+    """
+    The labelled corpus as seen through a board's labels (D-4).
+
+    Existing corpus labels ALWAYS win: a seed-id (or an earlier human verdict)
+    already in the corpus must not be flipped by a board row. Board labels are
+    added only where the corpus has no opinion yet.
+    """
+    corpus = corpus or {}
+    labels = dict(corpus.get("labels") or {})
+    for fp, label in board_labels(board or {}).items():
+        labels.setdefault(fp, label)
+    merged = dict(corpus)
+    merged["labels"] = labels
+    return merged
+
+
 def _pct(value) -> str:
     return "not measured" if value is None else f"{value:.0%}"
 
@@ -185,6 +234,11 @@ def main(argv=None) -> int:  # pragma: no cover -- thin CLI wrapper
     p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     p.add_argument("--findings", help="findings JSON from a run")
     p.add_argument("--corpus", help="seeded bugs + human labels")
+    p.add_argument(
+        "--board",
+        help="board.json from a clean origin run (D-4); the human labels it "
+        "carries join the corpus, without ever overriding an existing label",
+    )
     p.add_argument("--compare", nargs=2, metavar=("A", "B"), help="two findings files")
     args = p.parse_args(argv)
 
@@ -196,7 +250,16 @@ def main(argv=None) -> int:  # pragma: no cover -- thin CLI wrapper
         p.error("--findings is required unless --compare is given")
     findings = json.loads(Path(args.findings).read_text())
     corpus = json.loads(Path(args.corpus).read_text()) if args.corpus else {}
-    print(render(score(findings, corpus)))
+    board = json.loads(Path(args.board).read_text()) if args.board else None
+    if board is not None:
+        summary = board_summary(board)
+        print(
+            f"Board {Path(args.board).name}: {summary['rows']} row(s), "
+            f"{summary['fixed']} fixed, {summary['labelled']} human-labelled, "
+            f"{summary['unlabelled']} awaiting a label."
+        )
+        print()
+    print(render(score(findings, effective_corpus(corpus, board))))
     return 0
 
 

@@ -469,6 +469,20 @@ resource "aws_iam_role_policy" "github_qa" {
         Action   = ["kms:Decrypt"]
         Resource = [var.kms_key_arn]
       },
+      {
+        # D-3 re-verify: the workflow reads the LAST archived report for this PR
+        # so the harness can reconcile the run against it. The reports bucket is
+        # CMK-encrypted with var.kms_key_arn -- the SAME key DecryptQaSecret
+        # above already opens -- so kms:Decrypt is already granted; this is the
+        # one statement the read was missing (the role was invoke-one-runtime,
+        # read-one-secret). Scoped to reports/ only, never screenshots: findings
+        # JSON is what re-verify consumes, and screenshot views stay on the
+        # presigned URLs the runtime signs.
+        Sid      = "ReadPriorQaReports"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${aws_s3_bucket.reports.arn}/reports/*"]
+      },
     ]
   })
 }

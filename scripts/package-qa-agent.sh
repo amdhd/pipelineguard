@@ -69,6 +69,9 @@ echo "==> Bucket:   ${BUCKET}"
 echo "==> Target:   ${PLATFORM} / python ${PY_VERSION}"
 
 # --- vendor dependencies FOR THE TARGET, not for this machine ---
+# Installed from the hash-locked closure (requirements.lock), not the direct-pin
+# requirements.txt: --require-hashes makes a rebuild from the same commit
+# byte-identical (P2.5) instead of re-resolving whatever PyPI has that day.
 echo "==> Installing dependencies for ${PLATFORM}..."
 python3 -m pip install \
   --quiet --disable-pip-version-check \
@@ -77,7 +80,8 @@ python3 -m pip install \
   --implementation cp \
   --python-version "${PY_VERSION}" \
   --only-binary=:all: \
-  --requirement "${SRC}/requirements.txt"
+  --require-hashes \
+  --requirement "${SRC}/requirements.lock"
 
 # --- copy the agent itself ---
 # Flat layout: AgentCore runs `agent.py` from the zip root, so the sibling
@@ -97,7 +101,7 @@ while IFS= read -r so; do
     *) BAD="${BAD}\n  WRONG OS   ${so#${BUILD}/} -- ${desc}" ; continue ;;
   esac
   case "${desc}" in
-    *aarch64*|*ARM\ aarch64*) found_arch="aarch64" ;;
+    *aarch64*)                 found_arch="aarch64" ;;
     *x86-64*)                 found_arch="x86_64" ;;
     *)                        found_arch="unknown" ;;
   esac

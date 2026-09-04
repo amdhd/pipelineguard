@@ -96,6 +96,18 @@ jobs:
       - name: pytest
         run: pytest -q
 
+      # SCA on the agent's runtime closure -- the one scan no existing gate
+      # covers (npm audit covers the app; checkov/trivy cover infra). Audits the
+      # hash-locked requirements.lock, so versions are fixed and the result is
+      # stable instead of whatever PyPI resolves that day. A real gate: the
+      # current closure audits clean (P2.5, 2026-09-04), so a newly introduced
+      # HIGH/CRITICAL prod dependency blocks the PR rather than being swept
+      # under `|| true` -- a step that always goes green tells nobody anything.
+      - name: pip-audit (agent runtime closure)
+        run: |
+          pip install pip-audit==2.10.1
+          pip-audit -r agents/qa/agent/requirements.lock
+
   node-app:
     name: App (build · test)
     runs-on: ubuntu-latest
@@ -124,3 +136,30 @@ jobs:
       # under `|| true` — a step that always goes green tells nobody anything.
       - name: npm audit (high+)
         run: npm audit --omit=dev --audit-level=high --prefix app
+
+  workflow-script-lint:
+    name: Workflows + scripts (actionlint · shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # actionlint over the workflow YAML, so a malformed `on:` or step breaks
+      # the PR, not a live dispatch. Downloaded pinned -- a linter release is
+      # not a reason to turn CI red. linux_x86_64 for the ubuntu-latest runner.
+      - name: actionlint
+        run: |
+          curl -sSfL -o actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar xzf actionlint.tgz actionlint
+          ./actionlint -color
+
+      # shellcheck over the scripts at warning+ -- style is advisory, the same
+      # split as tflint's --minimum-failure-severity=error. Every script is
+      # currently clean at this severity, so a newly introduced warning blocks
+      # the PR instead of drifting in. Downloaded pinned, same reason.
+      - name: shellcheck
+        run: |
+          curl -sSfL -o shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          tar xJf shellcheck.tar.xz
+          shellcheck-v0.11.0/shellcheck -S warning scripts/*.sh

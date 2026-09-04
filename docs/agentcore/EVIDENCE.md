@@ -25,7 +25,7 @@ the CDP idle-socket fix).
 
 | # | Exit criterion | Result |
 |---|---|---|
-| 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL** — cost and seconds present; runner minutes absent, and inference rendered `unpriced` |
+| 1 | Comment carries token cost, session seconds and runner minutes | ⚠️ **PARTIAL (first measurement, 2026-08-27)** → **RESOLVED (P1.2, 2026-09-01)** — cost and seconds were present; runner minutes were absent and inference rendered `unpriced` only because the workflow did not yet pass `--runner-minutes` and the price table was unmerged. Both closed by P1.2 (AUDIT.md). |
 | 2 | Stack up from a cold cache in under ~5 min | ✅ **PASS** — 2m47s and 2m30s end-to-end, including the agent |
 | 3 | Health gate refuses to invoke when `seed` is broken | ✅ **PASS** — verified by negative test, agent step skipped |
 | 4 | False-positive rate | ✅ **BEST MEASURED — 0 findings on healthy `main` (twelfth pass, 33535141706); the merged-pass Leg B (33529796841) produced only the known `/voyage` savings fixture FP, labelled false positive.** The carve-out that reopened the baseline is withdrawn; the candidate layer + coverage rule measure clean on the FP side — see the twelfth pass |
@@ -66,6 +66,11 @@ Both gaps are mechanical, and neither is the agent's fault:
   agent and harness were at different versions in the same run.
 - runner minutes — the workflow never passes `--runner-minutes`. See the
   workflow review in this directory.
+
+**Both gaps were closed by P1.2 (2026-09-01)** — the workflow now passes a real
+`--runner-minutes` and prices from the merged table, so criterion 1 is
+**RESOLVED** (AUDIT.md P1.2). The bullets above are the record of the first
+measurement, not the current state.
 
 ---
 
@@ -1126,9 +1131,12 @@ produces patches a reviewer rejects — which is why the loop never auto-merges.
   work, and that was unassisted; the human gate is a feature, not a failure.
 
 **Phase 2 status after this record:** the demonstration criterion (P1.4) is
-DONE. This does not declare Phase 2 finished — the audit keeps P2.3 (fork-PR
-guard) and P2.4 (version pinning) open — and it says nothing about Phase 3,
-whose live run (P1.3) remains outstanding.
+DONE. Written 2026-08-31, this note kept P2.3 (fork-PR guard) and P2.4 (version
+pinning) open; both closed 2026-09-02 (AUDIT.md), and P2.5 (hash-locked
+closure) closed 2026-09-04 — **no P2.x item remains open**. Phase 3's live run
+(P1.3) follows in the next section; the one item still open across the phases is
+Phase 1's **P1.7** — a real FP rate over ≥3 human-labelled PRs (runway READY
+2026-09-04, `MEASUREMENT-P1-7.md`).
 
 ---
 

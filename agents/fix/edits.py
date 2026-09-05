@@ -107,6 +107,7 @@ def plan(
     *,
     applied_files: frozenset = frozenset(),
     applied_lines: int = 0,
+    read_only: frozenset = frozenset(),
 ) -> dict:
     """
     Decide what would happen, without writing anything.
@@ -123,6 +124,14 @@ def plan(
     a five-file cap -- and those numbers exist to bound the thing the exit
     criterion measures, "a human can review it in under ten minutes", which is a
     property of the PR and not of any one finding inside it.
+
+    `read_only` is the manifest-declared contract context for this finding, and
+    it is enforced HERE rather than only asked for in the prompt. The prompt
+    says "reference only"; this is what makes that true. The failure it guards
+    is specific and plausible: shown a type that disagrees with the wire, a
+    model can silence the type-checker by editing the type -- leaving the crash
+    exactly where it was and the declaration now lying in the other direction.
+    See contracts.py.
     """
     to_apply: list[dict] = []
     to_skip: list[dict] = []
@@ -134,6 +143,16 @@ def plan(
             continue
 
         relative = path_rules.normalise(edit["file"])
+        if relative in read_only:
+            to_skip.append(
+                {
+                    "edit": edit,
+                    "status": SKIPPED,
+                    "reason": f"{relative} is read-only API contract context, not editable "
+                    "source; it was shown so the cause could be identified, not patched",
+                }
+            )
+            continue
         target, reason = _resolve(root, relative)
         if target is None:
             to_skip.append({"edit": edit, "status": SKIPPED, "reason": reason})

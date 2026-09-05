@@ -216,7 +216,12 @@ def propose(
     """
     budget.check()
 
-    message = fix_prompt.build(finding, selection["files"], excluded=selection.get("excluded"))
+    message = fix_prompt.build(
+        finding,
+        selection["files"],
+        excluded=selection.get("excluded"),
+        contract=selection.get("contract"),
+    )
 
     try:
         response = bedrock.converse(

@@ -295,6 +295,21 @@ def run(args) -> int:
         selection = sources.select(finding, root)
         result["excluded"].extend(selection["excluded"])
 
+        # Recorded per finding, because "why did it show me those files" has to
+        # be answerable from the artefact alone. A manifest warning in
+        # particular must not stay in the log: a stale anchor silently degrades
+        # to whole-file context, which still works and would otherwise never be
+        # noticed until someone re-read the manifest by hand.
+        if selection.get("contract") or selection.get("contract_warnings"):
+            result.setdefault("contract", {})[fid] = {
+                "feature": selection.get("contract_feature"),
+                "shown": [entry["path"] for entry in selection.get("contract", [])],
+                "warnings": selection.get("contract_warnings", []),
+            }
+        for warning in selection.get("contract_warnings", []):
+            if warning.startswith("manifest_stale"):
+                result["errors"].append(f"{fid}: {warning}")
+
         if selection["reason"]:
             result["skipped"].append({"finding_id": fid, "reason": selection["reason"]})
             continue
@@ -304,7 +319,16 @@ def run(args) -> int:
             # a real tree without spending a token, which is what makes the
             # smoke test's first run free.
             shown = ", ".join(f["path"] for f in selection["files"])
-            result["skipped"].append({"finding_id": fid, "reason": f"dry run; would show: {shown}"})
+            # The contract half is named separately, not merged into `shown`.
+            # The dry run is the free verification path for exactly this
+            # feature, and a flat list would not answer the question it exists
+            # to answer -- did the contract files arrive as READ-ONLY, or did
+            # they take editable slots from the files that need patching.
+            readonly = ", ".join(f["path"] for f in selection.get("contract", []))
+            reason = f"dry run; would show: {shown}"
+            if readonly:
+                reason += f"; contract context (read-only): {readonly}"
+            result["skipped"].append({"finding_id": fid, "reason": reason})
             continue
 
         try:
@@ -342,6 +366,7 @@ def run(args) -> int:
             root,
             applied_files=frozenset(applied_files),
             applied_lines=applied_lines,
+            read_only=frozenset(e["path"] for e in selection.get("contract", [])),
         )
         result["skipped"].extend(
             {"finding_id": s["edit"].get("finding_id", fid), "reason": s["reason"]}

@@ -47,6 +47,7 @@ run would make every recall measurement above it meaningless.
 import re
 from pathlib import Path
 
+import contracts as contract_rules
 import paths as path_rules
 
 # Files worth showing a code-fixing model. Deliberately code only: a finding
@@ -60,6 +61,21 @@ SOURCE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 # built on.
 MAX_FILES = 8
 MAX_BYTES = 96_000
+
+# THE READ-ONLY CONTRACT POOL IS BUDGETED SEPARATELY, and that separation is the
+# whole point rather than an implementation detail.
+#
+# Measured on vesselAI PR #130 (d4-demo/BASELINE.md, 2026-09-05): 131 files were
+# withheld at `file cap (8)`, including the three that carried the contract. If
+# contract context competed inside MAX_FILES, declaring five files for a feature
+# would leave three slots for everything else -- taking the budget from exactly
+# the editable set that produced the two CORRECT selections in that run.
+#
+# A manifest that made selection worse would be worse than no manifest. So the
+# pools do not touch: the editable set keeps its eight files and 96KB, and this
+# is additional.
+MAX_CONTEXT_FILES = 6
+MAX_CONTEXT_BYTES = 24_000
 
 # A single file larger than this is not read at all. A 500KB generated bundle
 # would consume the entire byte cap and teach the model nothing.
@@ -205,9 +221,16 @@ def select(finding: dict, root: Path) -> dict:
     """
     The bounded file set for one finding.
 
-    Returns {"files": [{path, text, score}], "excluded": [...], "terms": [...],
-    "reason": str | None}. A non-None reason means no source was located and the
-    finding must be reported as skipped -- never patched on a guess.
+    Returns {"files": [{path, text, score}], "contract": [{path, text}],
+    "excluded": [...], "terms": [...], "reason": str | None,
+    "contract_feature": str | None, "contract_warnings": [...]}.
+
+    A non-None reason means no source was located and the finding must be
+    reported as skipped -- never patched on a guess.
+
+    "files" is EDITABLE. "contract" is READ-ONLY reference declared by the
+    target repo's .qa-contracts.json; see contracts.py for why it exists and
+    why it is not simply better ranking.
     """
     terms = search_terms(finding)
     seeded: list[str] = []
@@ -218,6 +241,14 @@ def select(finding: dict, root: Path) -> dict:
         if normalised and path_rules.reject_reason(normalised) is None:
             if (root / normalised).is_file():
                 seeded.append(normalised)
+
+    # Manifest-declared context. `editable: true` entries join `seeded` and are
+    # scored at suspected-source weight, because the repo has said outright that
+    # the fix will land there -- a stronger claim than any term match.
+    contract = contract_rules.for_finding(finding, root)
+    for relative in contract["editable"]:
+        if (root / relative).is_file() and relative not in seeded:
+            seeded.append(relative)
 
     scored: list[tuple[int, str, str]] = []
     oversized: list[dict] = []
@@ -274,6 +305,39 @@ def select(finding: dict, root: Path) -> dict:
         chosen.append({"path": relative, "text": text, "score": score})
         total += size
 
+    # PRECEDENCE: a path that earned an editable slot is NEVER also served as
+    # read-only reference. Beyond the wasted bytes, the alternative is a trap --
+    # backend/src/routes/voyage.ts is both the API boundary AND where #130's
+    # correct fix belonged, so a manifest listing it must not be able to make it
+    # unpatchable. Editable always wins.
+    editable_paths = {entry["path"] for entry in chosen}
+    contract_files: list[dict] = []
+    contract_bytes = 0
+    for entry in contract["readonly"]:
+        if entry["path"] in editable_paths:
+            continue
+        size = len(entry["text"].encode("utf-8"))
+        if len(contract_files) >= MAX_CONTEXT_FILES:
+            excluded.append(
+                {
+                    "path": entry["path"],
+                    "score": 0,
+                    "reason": f"contract file cap ({MAX_CONTEXT_FILES})",
+                }
+            )
+            continue
+        if contract_bytes + size > MAX_CONTEXT_BYTES:
+            excluded.append(
+                {
+                    "path": entry["path"],
+                    "score": 0,
+                    "reason": f"contract byte cap ({MAX_CONTEXT_BYTES})",
+                }
+            )
+            continue
+        contract_files.append(entry)
+        contract_bytes += size
+
     reason = None
     if not chosen and oversized:
         # A distinct reason from "nothing matched". This one is actionable --
@@ -290,4 +354,14 @@ def select(finding: dict, root: Path) -> dict:
         top = ", ".join(term for term, _ in terms[:6]) or "none"
         reason = f"no allow-listed source matched this finding (terms tried: {top})"
 
-    return {"files": chosen, "excluded": excluded, "terms": terms, "reason": reason, "bytes": total}
+    return {
+        "files": chosen,
+        "contract": contract_files,
+        "excluded": excluded,
+        "terms": terms,
+        "reason": reason,
+        "bytes": total,
+        "contract_bytes": contract_bytes,
+        "contract_feature": contract["feature"],
+        "contract_warnings": contract["warnings"],
+    }

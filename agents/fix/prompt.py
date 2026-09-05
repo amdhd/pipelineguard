@@ -74,9 +74,13 @@ JSON object in a ```json fenced block, as the LAST thing in your message.
 
 # What you may change
 
-ONLY the files shown to you below. You cannot see the rest of the repository and
-must not pretend to: naming a file you were not shown is an automatic rejection,
-not a request for it.
+ONLY the files under "The source you may change". You cannot see the rest of the
+repository and must not pretend to: naming a file you were not shown is an
+automatic rejection, not a request for it.
+
+Files under "API contract context" are REFERENCE ONLY. They are there so you can
+work out what the data actually looks like. An edit naming one of them is
+rejected unapplied.
 
 Make the SMALLEST change that fixes the reported defect. Do not reformat, do not
 rename, do not tidy neighbouring code, do not add comments explaining yourself,
@@ -199,6 +203,35 @@ steps to reproduce:
 """
 
 
+def _contract_block(contract: list[dict]) -> str:
+    """
+    The read-only half of the context.
+
+    Placed BEFORE the editable source deliberately. The model should know what
+    the data's declared shape is before it reads the code that consumes it --
+    that ordering is the difference between "this key looks odd" and "this key
+    contradicts the type two files away".
+    """
+    # GROUPED BY PATH, because a manifest may legitimately declare two regions
+    # of one file -- a request type and a response type in the same types.ts.
+    # Rendering those as two `--- types.ts ---` headers reads as the same file
+    # shown twice, which invites the model to treat the second as a correction
+    # of the first. One header per file, excerpts separated and marked as such.
+    grouped: dict[str, list[str]] = {}
+    for entry in contract:
+        grouped.setdefault(entry["path"], []).append(entry["text"])
+
+    blocks = []
+    for path, chunks in grouped.items():
+        if len(chunks) == 1:
+            body = chunks[0]
+        else:
+            body = "\n\n// … (separate excerpt from the same file) …\n\n".join(chunks)
+        label = "excerpt" if len(chunks) == 1 else f"{len(chunks)} excerpts"
+        blocks.append(f"--- {path} ({label}, not editable) ---\n{body}")
+    return "\n\n".join(blocks)
+
+
 def _files_block(files: list[dict]) -> str:
     blocks = []
     for entry in files:
@@ -206,9 +239,39 @@ def _files_block(files: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def build(finding: dict, files: list[dict], *, excluded: list[dict] | None = None) -> str:
-    """The user message for one finding: the report, then the files."""
-    parts = [_finding_block(finding), "", "# The source you may change", "", _files_block(files)]
+def build(
+    finding: dict,
+    files: list[dict],
+    *,
+    excluded: list[dict] | None = None,
+    contract: list[dict] | None = None,
+) -> str:
+    """The user message for one finding: the report, the contract, then the files."""
+    parts = [_finding_block(finding)]
+
+    if contract:
+        # WHY THIS SECTION EXISTS. vesselAI #130: the model was shown the
+        # crashing component AND the route that fed it, with the wrong key
+        # visible, and still fixed the wrong field. What it lacked was the
+        # declared type and the formatter signature -- the two things that turn
+        # an odd-looking key into a contract violation. See contracts.py.
+        parts += [
+            "",
+            "# API contract context — READ ONLY",
+            "",
+            "These files define the SHAPE and FLOW of the data this defect is "
+            "about: the types the code asserts, the calls that cross the "
+            "client/server boundary, and the helpers the values are passed to. "
+            "They are here so you can find the true cause instead of inferring "
+            "one from the type system, which may itself be what is wrong.",
+            "",
+            "You may NOT edit them. An edit naming one of these files is "
+            "rejected. If the fix genuinely belongs in one, SKIP and say so.",
+            "",
+            _contract_block(contract),
+        ]
+
+    parts += ["", "# The source you may change", "", _files_block(files)]
 
     if excluded:
         # Told to the model, not just to the reviewer. A model that knows a

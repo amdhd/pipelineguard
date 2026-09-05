@@ -83,6 +83,14 @@ So slices are anchored to a literal string rather than to line numbers, and an
 anchor that no longer matches does NOT silently fall back to a guessed offset.
 It includes the whole file and records a `manifest_stale` warning that surfaces
 in the run summary and the result JSON.
+
+An AMBIGUOUS anchor is the same bug wearing a different costume, and it was
+found while authoring vesselAI's own manifest rather than reasoned about in
+advance: `getDocuments: async` appears in both knowledgeApi and sireApi in one
+api.ts, so a sire feature anchored on it would have been handed the KNOWLEDGE
+slice and told it was the sire contract. Taking the first match is a guess
+presented as a fact. Both failures resolve the same way -- show the whole file,
+warn loudly -- because too much true context beats a little false context.
 """
 
 import json
@@ -225,16 +233,35 @@ def _slice(text: str, entry: dict, path: str) -> tuple[str, str | None]:
     anchor = entry.get("anchor")
     if isinstance(anchor, str) and anchor.strip():
         lines = text.splitlines()
-        for i, line in enumerate(lines):
-            if anchor in line:
-                span = entry.get("span", DEFAULT_SPAN)
-                if not isinstance(span, int) or not 1 <= span <= MAX_SPAN:
-                    span = DEFAULT_SPAN
-                return "\n".join(lines[i : i + span]), None
-        return text, (
-            f"manifest_stale: anchor {anchor!r} not found in {path}; "
-            "showing the whole file instead of a guessed line range"
-        )
+        hits = [i for i, line in enumerate(lines) if anchor in line]
+
+        if not hits:
+            return text, (
+                f"manifest_stale: anchor {anchor!r} not found in {path}; "
+                "showing the whole file instead of a guessed line range"
+            )
+
+        if len(hits) > 1:
+            # AMBIGUITY IS THE SAME BUG AS STALENESS, and it was found the hard
+            # way while authoring vesselAI's manifest: `getDocuments: async`
+            # appears in both knowledgeApi and sireApi in the same api.ts, so
+            # the sire feature would have been handed the knowledge slice and
+            # told it was the sire contract.
+            #
+            # Taking the first match is a guess wearing the costume of a fact,
+            # which is exactly what this module exists to prevent. Refuse to
+            # slice: the whole file is merely too much context, and too much
+            # true context beats a little false context every time.
+            return text, (
+                f"manifest_ambiguous: anchor {anchor!r} matches {len(hits)} lines "
+                f"in {path} (first at line {hits[0] + 1}); showing the whole file. "
+                "Make the anchor unique."
+            )
+
+        span = entry.get("span", DEFAULT_SPAN)
+        if not isinstance(span, int) or not 1 <= span <= MAX_SPAN:
+            span = DEFAULT_SPAN
+        return "\n".join(lines[hits[0] : hits[0] + span]), None
 
     span_lines = entry.get("lines")
     if isinstance(span_lines, list) and len(span_lines) == 2:

@@ -239,6 +239,40 @@ class TestSlicing:
         assert "interface Vessel" in types_block["text"]  # the whole file
         assert any(w.startswith("manifest_stale") for w in resolved["warnings"])
 
+    def test_ambiguous_anchor_refuses_to_slice(self, tree):
+        """
+        FOUND WHILE AUTHORING vesselAI's manifest, not reasoned about in
+        advance: `getDocuments: async` appears in both knowledgeApi and sireApi
+        in one api.ts. Anchoring the sire feature on it would have handed the
+        model the KNOWLEDGE slice and labelled it the sire contract -- a guess
+        presented as a fact, which is the precise failure this module exists to
+        prevent. Same resolution as a stale anchor: whole file, loud warning.
+        """
+        lib = tree / "frontend" / "src" / "lib"
+        (lib / "api.ts").write_text(
+            "export const knowledgeApi = {\n  getDocuments: async () => {},\n}\n"
+            "export const sireApi = {\n  getDocuments: async () => {},\n}\n"
+        )
+        write_manifest(
+            tree,
+            {
+                "version": 1,
+                "features": [
+                    {
+                        "id": "sire",
+                        "match": {"page_prefix": "/voyage"},
+                        "context": [
+                            {"path": "frontend/src/lib/api.ts", "anchor": "getDocuments: async"}
+                        ],
+                    }
+                ],
+            },
+        )
+        resolved = contracts.for_finding(FINDING, tree)
+        block = resolved["readonly"][0]["text"]
+        assert "knowledgeApi" in block and "sireApi" in block  # the whole file
+        assert any(w.startswith("manifest_ambiguous") for w in resolved["warnings"])
+
     def test_line_range_past_end_of_file_warns(self, tree):
         broken = {
             "version": 1,

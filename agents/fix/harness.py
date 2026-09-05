@@ -307,7 +307,7 @@ def run(args) -> int:
                 "warnings": selection.get("contract_warnings", []),
             }
         for warning in selection.get("contract_warnings", []):
-            if warning.startswith("manifest_stale"):
+            if warning.startswith(("manifest_stale", "manifest_ambiguous")):
                 result["errors"].append(f"{fid}: {warning}")
 
         if selection["reason"]:

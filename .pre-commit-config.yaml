@@ -1,0 +1,16 @@
+# Local secret-scanning hook. Optional but recommended:
+#
+#   pip install pre-commit && pre-commit install
+#
+# This is the only control in the chain that runs BEFORE a push. GitHub's push
+# protection and the CI gate both act after the commit exists -- and on a public
+# repo a pushed branch is already public, so anything CI finds is already out.
+# Catching it here is the difference between a mistake and an incident.
+#
+# Scans STAGED changes only, so it stays fast; the CI gate is what covers
+# history. Same .gitleaks.toml, so the two agree on what counts as a secret.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks

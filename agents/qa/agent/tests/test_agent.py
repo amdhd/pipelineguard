@@ -414,10 +414,20 @@ class TestArchivedCopyCarriesNoCredentials:
         agent._archive("run-7", findings, **kwargs)
         return [json.loads(c.kwargs["Body"]) for c in client.put_object.call_args_list]
 
+    # Every value here is a placeholder, and deliberately so. The first version
+    # of this test reused the real key id from the leak it was written for --
+    # dead, but still a real AWS key id sitting in the tree, and the gitleaks
+    # gate flagged it on sight. A test about not committing credentials is the
+    # worst possible place to commit one. ASIAIOSFODNN7EXAMPLE is AWS's own
+    # documentation form, so it reads as fake to a human and to a scanner.
+    #
+    # The test does not care what the values are. It asserts that the parameter
+    # NAMES are gone from the archived copy, so the strings below only have to
+    # look like a presigned URL.
     SIGNED = (
         "https://b.s3.amazonaws.com/screenshots/run-7/a.png"
-        "?AWSAccessKeyId=ASIASFXPCSBR57AI6FKU&Signature=abc%3D"
-        "&x-amz-security-token=IQoJb3JpZ2luX2Vj&Expires=1788494798"
+        "?AWSAccessKeyId=ASIAIOSFODNN7EXAMPLE&Signature=EXAMPLE-SIGNATURE%3D"
+        "&x-amz-security-token=EXAMPLE-SESSION-TOKEN&Expires=1788494798"
     )
 
     def test_the_stored_screenshot_list_has_no_url(self, agent, monkeypatch):

@@ -26,9 +26,22 @@ to tune on:
   Judge a run against this fixture on whether the loop worked end to end, never
   on whether the agent chose right.
 
-The `screenshots/…` URLs inside point at the private reports bucket. They are
-unsigned, they 403 for everyone, and the objects behind them have expired. They
-are kept because the JSON is a verbatim record of a real run, not an edited one.
+The `screenshots/…` URLs inside point at the private reports bucket, and the
+objects behind them have expired. The JSON is otherwise a verbatim record of a
+real run -- with one deliberate edit, in both fixtures.
+
+**The query strings were stripped, and must stay stripped.** As emitted, these
+URLs were *presigned*: `_presign` in `agents/qa/agent/agent.py` signs each
+screenshot so a PR reviewer can open evidence in a block-public-access bucket,
+so every URL carried `AWSAccessKeyId`, `Signature`, and the runtime role's
+`x-amz-security-token`. Committing that verbatim into a public repo published
+the QA runtime's STS session tokens; secret scanning flagged it. The signature
+is scoped to one object and dies at `Expires`, and a presigned URL never carries
+the secret access key -- so the blast radius was one GET per link, for a few
+hours -- but it is credential material and does not belong in git. What is left
+is the bare object URL: it still identifies the evidence, and it 403s for
+everyone. When refreshing a fixture from a real run, strip the query string
+before committing.
 
 ## `findings-33137979741.json`
 

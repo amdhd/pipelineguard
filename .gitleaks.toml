@@ -1,0 +1,44 @@
+# gitleaks config for the CI secret-scanning gate.
+#
+# The gate scans FULL history, not just the working tree. A tree scan would pass
+# a secret that a branch adds in one commit and removes in a later one -- which
+# still ships the secret in history once the branch merges. History is what an
+# attacker clones, so history is what is worth scanning.
+#
+# That choice only works if the known-remediated commits are allowlisted, which
+# is what this file is for. Keep the default ruleset; add nothing else.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+The pre-redaction fix-harness fixtures. These three commits carry S3 presigned
+URLs whose query strings held an AWSAccessKeyId, a Signature, and the QA runtime
+role's x-amz-security-token (key ids ASIASFXPCSBR57AI6FKU and
+ASIASFXPCSBRTZJ2DODI -- 19 hits across 11 URLs).
+
+Remediated in PR #77: the query strings were stripped from the tree, and the
+credentials are dead twice over -- a presigned URL never carries the secret
+access key, and these STS sessions expired 2026-09-04. History was deliberately
+left intact rather than force-pushed over a public repo.
+
+This allowlists three specific commits, NOT a path and NOT a rule: a new
+presigned URL committed into these same fixtures still fails the gate. Verified
+against a synthetic key before the gate was added.
+"""
+commits = [
+  "547e6432007f9c04ae0199707569ad97b1f3bf33",
+  "ac8c356b74837618d2aea6938e70469f756d2e76",
+  # PR #79's archive-stripping tests, which built their sample presigned URL
+  # out of the real key id above. Replaced with AWS's ASIAIOSFODNN7EXAMPLE
+  # documentation form in PR #80; this commit keeps the original in history.
+  # Found by this gate before it merged -- its first real catch.
+  "96b7a63178d1e34bc9ce8e66ff087828a4bd5eac",
+]
+
+# Deliberately NOT allowlisted: 7e8a0a1f11a4154eaf53f7900fd3738dce34d3f2, the
+# pre-squash copy of the same fixture. It is unreachable from every pushed ref
+# -- only a local backup tag (backup/before-rebase-phase2, never pushed) holds
+# it -- so a clone never has it and the scan never sees it. Listing it would be
+# a no-op that the "allowlisted commits still exist" CI guard then fails on.

@@ -163,3 +163,50 @@ jobs:
             https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
           tar xJf shellcheck.tar.xz
           shellcheck-v0.11.0/shellcheck -S warning scripts/*.sh
+
+  secret-scan:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the scan below is a *history* scan, so a shallow
+          # clone would silently scan almost nothing and pass.
+          fetch-depth: 0
+
+      # The gate that was missing when PR #77 landed: presigned S3 URLs, whose
+      # query strings carry an AWSAccessKeyId and the runtime role's
+      # x-amz-security-token, reached public main inside committed fixtures and
+      # only GitHub's own scanner caught them -- after they were already public.
+      #
+      # Scans history rather than the working tree on purpose. A tree scan
+      # passes a branch that adds a secret in one commit and removes it in a
+      # later one, which still ships the secret in history once merged. The
+      # three pre-redaction commits are allowlisted by SHA in .gitleaks.toml --
+      # by commit, not by path, so a *new* secret in those same fixtures still
+      # fails. Verified against a synthetic key before this gate was added.
+      #
+      # Downloaded pinned rather than via gitleaks-action, matching actionlint
+      # and shellcheck above: a linter release is not a reason to turn CI red.
+      # The allowlist in .gitleaks.toml pins three commit SHAs. If history is
+      # ever rewritten those SHAs stop existing, gitleaks re-reports the old
+      # fixtures under their new SHAs, and the gate goes red for a reason that
+      # looks nothing like its actual cause. Fail here instead, with the fix.
+      - name: Allowlisted commits still exist
+        run: |
+          missing=0
+          for sha in $(grep -oE '"[0-9a-f]{40}"' .gitleaks.toml | tr -d '"'); do
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              echo "::error::.gitleaks.toml allowlists $sha, which is not in this history."
+              echo "History was rewritten. Refresh the SHAs in .gitleaks.toml."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+          tar xzf gitleaks.tar.gz gitleaks
+          ./gitleaks git . --no-banner --redact --config .gitleaks.toml

@@ -40,8 +40,12 @@ is scoped to one object and dies at `Expires`, and a presigned URL never carries
 the secret access key -- so the blast radius was one GET per link, for a few
 hours -- but it is credential material and does not belong in git. What is left
 is the bare object URL: it still identifies the evidence, and it 403s for
-everyone. When refreshing a fixture from a real run, strip the query string
-before committing.
+everyone.
+
+Reports archived after that PR no longer need this: `_archive` strips presigned
+URLs before writing, so a fixture pulled fresh out of S3 arrives clean. The rule
+survives for anything older -- if you refresh a fixture from a report predating
+that change, strip the query string before committing.
 
 ## `findings-33137979741.json`
 

@@ -30,6 +30,11 @@ against a synthetic key before the gate was added.
 commits = [
   "547e6432007f9c04ae0199707569ad97b1f3bf33",
   "ac8c356b74837618d2aea6938e70469f756d2e76",
+  # PR #79's archive-stripping tests, which built their sample presigned URL
+  # out of the real key id above. Replaced with AWS's ASIAIOSFODNN7EXAMPLE
+  # documentation form in PR #80; this commit keeps the original in history.
+  # Found by this gate before it merged -- its first real catch.
+  "96b7a63178d1e34bc9ce8e66ff087828a4bd5eac",
 ]
 
 # Deliberately NOT allowlisted: 7e8a0a1f11a4154eaf53f7900fd3738dce34d3f2, the

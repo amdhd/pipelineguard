@@ -393,6 +393,92 @@ class TestArchiving:
         assert agent._safe_report_namespace("../x") is None
 
 
+class TestArchivedCopyCarriesNoCredentials:
+    """
+    The archived report must not contain presigned URLs.
+
+    A presigned URL carries an AWSAccessKeyId, a Signature, and the runtime
+    role's x-amz-security-token. PR #77 removed two such URLs from committed
+    fixtures, but the fixtures were only the symptom: they were pulled verbatim
+    out of the S3 archive, which stored the presigned copy. Until the archive
+    stops storing credentials, the next fixture reintroduces them.
+
+    The links are also the shortest-lived thing in the report -- capped at the
+    bucket lifecycle -- so a durable record gains nothing by keeping them.
+    """
+
+    def _archived_bodies(self, agent, monkeypatch, findings, **kwargs):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        client = MagicMock()
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+        agent._archive("run-7", findings, **kwargs)
+        return [json.loads(c.kwargs["Body"]) for c in client.put_object.call_args_list]
+
+    SIGNED = (
+        "https://b.s3.amazonaws.com/screenshots/run-7/a.png"
+        "?AWSAccessKeyId=ASIASFXPCSBR57AI6FKU&Signature=abc%3D"
+        "&x-amz-security-token=IQoJb3JpZ2luX2Vj&Expires=1788494798"
+    )
+
+    def test_the_stored_screenshot_list_has_no_url(self, agent, monkeypatch):
+        body, = self._archived_bodies(agent, monkeypatch, {
+            "screenshots": [{"key": "screenshots/run-7/a.png", "label": "a", "url": self.SIGNED}],
+        })
+        assert "url" not in body["screenshots"][0]
+        assert "AWSAccessKeyId" not in json.dumps(body)
+
+    def test_the_key_survives_because_it_is_what_identifies_the_evidence(self, agent, monkeypatch):
+        """Stripping the URL must not strip the reference. The key is what a
+        reader presigns again later; losing it would make the archive useless."""
+        body, = self._archived_bodies(agent, monkeypatch, {
+            "screenshots": [{"key": "screenshots/run-7/a.png", "label": "a", "url": self.SIGNED}],
+        })
+        assert body["screenshots"][0]["key"] == "screenshots/run-7/a.png"
+        assert body["screenshots"][0]["label"] == "a"
+
+    def test_a_per_finding_screenshot_url_is_stripped_too(self, agent, monkeypatch):
+        """_attach_candidate_evidence puts a signed url on the finding as well as
+        in the top-level list; stripping only one of the two still leaks."""
+        body, = self._archived_bodies(agent, monkeypatch, {
+            "findings": [{
+                "finding_id": "F-001",
+                "screenshot": {"key": "screenshots/run-7/a.png", "url": self.SIGNED},
+            }],
+        })
+        assert "url" not in body["findings"][0]["screenshot"]
+        assert body["findings"][0]["screenshot"]["key"] == "screenshots/run-7/a.png"
+        assert "x-amz-security-token" not in json.dumps(body)
+
+    def test_the_pr_stable_alias_is_stripped_as_well(self, agent, monkeypatch):
+        """The alias is a second durable object. Stripping only the run-scoped
+        copy would leave the credentials at a PR-stable, guessable key."""
+        bodies = self._archived_bodies(agent, monkeypatch, {
+            "screenshots": [{"key": "screenshots/run-7/a.png", "url": self.SIGNED}],
+        }, report_namespace="pr-125")
+        assert len(bodies) == 2
+        assert all("AWSAccessKeyId" not in json.dumps(b) for b in bodies)
+
+    def test_the_callers_dict_keeps_its_urls(self, agent, monkeypatch):
+        """The harness renders the PR comment from the returned dict and still
+        needs working links -- only the STORED copy must be credential-free. If
+        stripping mutated the caller's dict, every screenshot in every PR comment
+        would silently become unopenable."""
+        findings = {
+            "screenshots": [{"key": "screenshots/run-7/a.png", "url": self.SIGNED}],
+            "findings": [{"finding_id": "F-001",
+                          "screenshot": {"key": "screenshots/run-7/a.png", "url": self.SIGNED}}],
+        }
+        self._archived_bodies(agent, monkeypatch, findings)
+        assert findings["screenshots"][0]["url"] == self.SIGNED
+        assert findings["findings"][0]["screenshot"]["url"] == self.SIGNED
+
+    def test_a_report_without_screenshots_is_unchanged(self, agent, monkeypatch):
+        """Most runs find nothing and carry no screenshots at all; the stripper
+        must not invent keys or drop the fields that are actually there."""
+        body, = self._archived_bodies(agent, monkeypatch, {"overall": "PASS", "findings": []})
+        assert body == {"overall": "PASS", "findings": []}
+
+
 class TestDerivedBudgets:
     """
     The defaults have to describe a run that can FINISH.

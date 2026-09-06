@@ -367,6 +367,45 @@ def _safe_report_namespace(value) -> str | None:
     return value if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
 
 
+def _without_presigned_urls(findings: dict) -> dict:
+    """
+    The archive copy, with every presigned ``url`` dropped.
+
+    A presigned URL is a credential: it carries an AWSAccessKeyId, a Signature,
+    and -- because the runtime holds a role, not a user -- the role's
+    x-amz-security-token. It is also the shortest-lived thing in the report,
+    capped at the bucket lifecycle, so a reader who opens the archive later
+    finds a dead link no matter what.
+
+    Storing one in a durable record is therefore all cost. The keys stay, and a
+    key is what actually identifies the evidence; anyone who needs a working
+    link can presign it again from the key, with their own credentials.
+
+    This is the fix for the leak in PR #77: findings JSON pulled out of S3 and
+    committed as a test fixture carried live STS session tokens into a public
+    repo, because the archived copy was the presigned one.
+    """
+    stripped = {**findings}
+    if isinstance(stripped.get("screenshots"), list):
+        stripped["screenshots"] = [
+            {k: v for k, v in shot.items() if k != "url"} if isinstance(shot, dict) else shot
+            for shot in stripped["screenshots"]
+        ]
+    if isinstance(stripped.get("findings"), list):
+        rewritten = []
+        for finding in stripped["findings"]:
+            if isinstance(finding, dict) and isinstance(finding.get("screenshot"), dict):
+                finding = {
+                    **finding,
+                    "screenshot": {
+                        k: v for k, v in finding["screenshot"].items() if k != "url"
+                    },
+                }
+            rewritten.append(finding)
+        stripped["findings"] = rewritten
+    return stripped
+
+
 def _archive(session_id: str, findings: dict, *, report_namespace: str | None = None) -> str | None:
     """
     Archive the findings JSON to S3.
@@ -391,6 +430,10 @@ def _archive(session_id: str, findings: dict, *, report_namespace: str | None = 
         return None
     namespace = _safe_report_namespace(report_namespace)
     client = boto3.client("s3", region_name=REGION)
+    # Strip presigned URLs before they reach a durable object. The dict the
+    # caller keeps is untouched -- the harness still needs working links for the
+    # PR comment; it is only the stored copy that must not carry credentials.
+    findings = _without_presigned_urls(findings)
     key = f"reports/{session_id}/findings.json"
     try:
         client.put_object(
@@ -1003,7 +1046,9 @@ def run_qa(payload: dict) -> dict:
             ),
         }
 
-    # Archive LAST, so the stored copy is the complete one the harness receives.
+    # Archive LAST, so the stored copy is the complete one the harness receives
+    # -- minus the presigned URLs, which _archive strips. See
+    # _without_presigned_urls: a credential does not belong in a durable object.
     archived = _archive(session_id, findings, report_namespace=report_namespace)
     if archived:
         findings["archive_key"] = archived

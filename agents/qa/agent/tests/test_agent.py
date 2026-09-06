@@ -414,19 +414,18 @@ class TestArchivedCopyCarriesNoCredentials:
         agent._archive("run-7", findings, **kwargs)
         return [json.loads(c.kwargs["Body"]) for c in client.put_object.call_args_list]
 
-    # Every value here is a placeholder, and deliberately so. The first version
-    # of this test reused the real key id from the leak it was written for --
-    # dead, but still a real AWS key id sitting in the tree, and the gitleaks
-    # gate flagged it on sight. A test about not committing credentials is the
-    # worst possible place to commit one. ASIAIOSFODNN7EXAMPLE is AWS's own
-    # documentation form, so it reads as fake to a human and to a scanner.
+    # No value here is key-SHAPED, which took two tries to get right. The first
+    # version reused the real key id from the leak (caught by the gitleaks gate
+    # in #78); the second used AWS's own published documentation example, and
+    # GitHub's scanner raised a fresh alert on it within minutes -- "obviously
+    # fake to a human" is not a property scanners have.
     #
-    # The test does not care what the values are. It asserts that the parameter
-    # NAMES are gone from the archived copy, so the strings below only have to
-    # look like a presigned URL.
+    # So: nothing that matches ASIA/AKIA + 16. The test asserts that the
+    # parameter NAMES are gone from the archived copy and never looks at the
+    # values, so they only have to make the string read as a presigned URL.
     SIGNED = (
         "https://b.s3.amazonaws.com/screenshots/run-7/a.png"
-        "?AWSAccessKeyId=ASIAIOSFODNN7EXAMPLE&Signature=EXAMPLE-SIGNATURE%3D"
+        "?AWSAccessKeyId=EXAMPLE-KEY-ID&Signature=EXAMPLE-SIGNATURE%3D"
         "&x-amz-security-token=EXAMPLE-SESSION-TOKEN&Expires=1788494798"
     )
 

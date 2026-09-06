@@ -15,8 +15,9 @@ useDefault = true
 description = """
 The pre-redaction fix-harness fixtures. These three commits carry S3 presigned
 URLs whose query strings held an AWSAccessKeyId, a Signature, and the QA runtime
-role's x-amz-security-token (key ids ASIASFXPCSBR57AI6FKU and
-ASIASFXPCSBRTZJ2DODI -- 19 hits across 11 URLs).
+role's x-amz-security-token (two key ids, both ASIASFXPCSBR... , ending 6FKU
+and DODI -- 19 hits across 11 URLs; written truncated because a full id in
+this file is one more place a scanner finds one).
 
 Remediated in PR #77: the query strings were stripped from the tree, and the
 credentials are dead twice over -- a presigned URL never carries the secret
@@ -31,8 +32,8 @@ commits = [
   "547e6432007f9c04ae0199707569ad97b1f3bf33",
   "ac8c356b74837618d2aea6938e70469f756d2e76",
   # PR #79's archive-stripping tests, which built their sample presigned URL
-  # out of the real key id above. Replaced with AWS's ASIAIOSFODNN7EXAMPLE
-  # documentation form in PR #80; this commit keeps the original in history.
+  # out of the real key id above. Replaced in #80, then replaced again in #81
+  # with a value that is not key-shaped at all; this commit keeps the original.
   # Found by this gate before it merged -- its first real catch.
   "96b7a63178d1e34bc9ce8e66ff087828a4bd5eac",
 ]

@@ -2,11 +2,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A CI/CD pipeline that automatically blocks deploys that are too expensive or too insecure.**
+**Delivery guardrails that block a change before it ships — plus a DevOps AI agent that reviews the
+running UI on a pull request.**
 
-An AWS-native delivery pipeline for a containerized Node.js API, provisioned **100% in Terraform**
-(zero click-ops). The point isn't the app it ships — it's the two custom **quality gates** that
-halt the pipeline before a costly or vulnerable change ever reaches production:
+Two programs, one repo, all of it **Terraform** (zero click-ops):
+
+**1. The pipeline gates.** An AWS-native delivery pipeline for a containerized Node.js API. The
+point isn't the app it ships — it's the two custom **quality gates** that halt the pipeline before a
+costly or vulnerable change reaches production:
 
 - **💰 Cost Gate** — runs [Infracost](https://www.infracost.io/) on every Terraform plan and
   **blocks the deploy** if the projected monthly cost increase exceeds a threshold (default **$50/mo**).
@@ -15,16 +18,17 @@ halt the pipeline before a costly or vulnerable change ever reaches production:
   **Claude** (`claude-haiku-4-5`) to summarise the findings, posts a report as a **GitHub PR comment**,
   and **blocks the deploy** on any HIGH/CRITICAL issue.
 
+**2. The UI-QA agent.** A **Bedrock AgentCore** runtime that drives a cloud browser over the app
+under test on a pull request, reports what it finds as a PR comment, and can propose fixes for a
+human to review. It is deployed and measured, not a demo script — and its limits are recorded
+alongside its results in [`docs/agentcore/EVIDENCE.md`](docs/agentcore/EVIDENCE.md). See
+[The UI-QA agent](#the-ui-qa-agent-bedrock-agentcore).
+
 > Portfolio project demonstrating **DevOps · DevSecOps · FinOps** in one repo — platform-level
 > guardrails a whole team can rely on, not just "an app I deployed."
 
-**Status:** runs in a dev environment (`ap-southeast-1`), brought up on demand and torn down between demos — see [Deploy it](#deploy-it).
-
-![PipelineGuard — overview: the pipeline blocks deploys that are too expensive or too insecure](docs/images/pipelineguard-brief.png)
-
-![Three disciplines in one — the DevOps, DevSecOps, and FinOps responsibilities this project demonstrates](docs/images/2image.png)
-
-![Mapping the AWS SAA-C03 Well-Architected pillars to what the project implements](docs/images/3image.png)
+**Status:** the QA core runs continuously in `ap-southeast-1` (~$1.40/mo); the demo pipeline is
+brought up on demand and torn down between demos — see [Deploy it](#deploy-it).
 
 ---
 
@@ -52,13 +56,67 @@ flowchart LR
 
 Full diagram and component map: [`docs/architecture.md`](docs/architecture.md).
 
+## The UI-QA agent (Bedrock AgentCore)
+
+The gates above read a plan and an image. Neither can tell you the dashboard renders `NaN`. That is
+what the agent is for: on a pull request it opens the running app in a cloud browser, works through
+the views, and reports what it actually saw.
+
+![AgentCore UI-QA agent — the always-on QA core: a GitHub OIDC role invokes a Bedrock AgentCore runtime that drives a cloud browser over the app under test and writes findings to S3](docs/images/agentcore-qa-agent.drawio.png)
+
+*Editable source: [`docs/images/agentcore-qa-agent.drawio`](docs/images/agentcore-qa-agent.drawio) ·
+walkthrough: [`docs/images/agentcore-qa-agent.md`](docs/images/agentcore-qa-agent.md)*
+
+**Two programs, two places.** The agent — rubric, deterministic candidate layer, browser driving —
+runs inside the AgentCore runtime. The harness on the GitHub runner holds no rubric: it invokes the
+runtime, re-validates the findings JSON against the schema, prices the run and posts the comment.
+The runtime writes its own reports, which is what keeps the CI-reachable OIDC role down to two
+statements — invoke one runtime, read one secret.
+
+**The QA target is a separate repo** (`amdhd/vesselAI`, a React/Node app with a documented history
+of frontend/backend contract drift). It is brought up from its own `docker-compose.prod.yml` inside
+the GitHub runner and exposed through an ephemeral tunnel, so the agent tests a real running stack
+without provisioning one per run.
+
+**The parts that keep it honest:**
+
+- **A deterministic candidate layer.** The runtime mechanically detects signals — repeated empty
+  SVGs, console errors, failed requests — and the model *must* assess every candidate: `confirmed`
+  becomes a finding, `refuted` costs it a one-line reason. The model cannot quietly ignore evidence,
+  and the contract is enforced in the schema and the tests.
+- **Structured output, validated twice.** Findings are JSON against a schema, validated in the
+  runtime and again by the harness before anything is posted.
+- **Every run is priced.** The comment carries token cost, session seconds and runner minutes. A
+  typical run is **~$0.03–0.28** and finishes in well under a minute; the runtime bills per session
+  and nothing while idle.
+- **Kill switches in the account, not in the workflow.** `qa_pr_enabled` and `fix_agent_enabled` are
+  Terraform variables: flipping one revokes the identity at the account, with no change in the
+  target repo.
+- **Fix loop, human-gated.** The fix harness proposes edits from the findings, but never commits or
+  opens a PR — the workflow does that, after a compile-and-test gate. A separate convergence layer
+  decides continue / stall / done and makes no model calls at all.
+
+**What is measured, and what isn't** (full record in
+[`docs/agentcore/EVIDENCE.md`](docs/agentcore/EVIDENCE.md)):
+
+| | Result |
+|---|---|
+| Recall against seeded bugs | **6/9** — two of three seed classes caught 3/3; the third is a written-off miss with the reason recorded, not silently dropped |
+| False positives on a healthy branch | **0 findings** on `main` in the best measured pass |
+| False-positive rate on real, human-authored PRs | ⚠️ **not measured** — 0 of the 3 labelled PRs the protocol requires |
+| Model rungs benchmarked | Sonnet 4.6 vs Haiku 4.5; Sonnet is the default because Haiku missed the semantic seed |
+
+So: it finds real defects on a real app and reports them at a known cost. It is not a replacement
+for a QA engineer, and its false-positive rate outside a seeded corpus is still an open number.
+
 ## Three disciplines, one repo
 
 | | What proves it |
 |---|---|
 | **DevOps** | Modular Terraform · CodePipeline/CodeBuild CI/CD · immutable SHA-tagged ECR artifacts · self-healing deploys (ECS circuit breaker + auto-rollback) |
 | **DevSecOps** | Shift-left security gate: Trivy scans the image, Checkov scans the IaC, Claude summarises to the PR, HIGH/CRITICAL fails the pipeline |
-| **FinOps** | Infracost cost gate blocks budget-busting changes · cost-aware design (single NAT, right-sized Fargate) · destroy-when-idle keeps spend near $0 |
+| **FinOps** | Infracost cost gate blocks budget-busting changes · cost-aware design (single NAT, right-sized Fargate) · destroy-when-idle keeps spend near $0 · every agent run priced in its own PR comment |
+| **AI agent ops** | A Bedrock AgentCore runtime deployed and versioned like any other artifact: immutable zip pinned by S3 version id, hash-locked dependency closure, least-privilege execution role, session caps and account-level kill switches, results measured against a corpus rather than asserted |
 
 ## Tech stack
 
@@ -72,6 +130,9 @@ Full diagram and component map: [`docs/architecture.md`](docs/architecture.md).
 | Cost analysis | Infracost |
 | Security scanning | Trivy + Checkov |
 | AI summary | Anthropic Claude (`claude-haiku-4-5`) |
+| UI-QA agent | Bedrock AgentCore Runtime + AgentCore Browser (PUBLIC mode, session-billed) |
+| Agent model | Bedrock — Claude Sonnet 4.6 default, Haiku 4.5 opt-in (inference profiles) |
+| Agent CI | GitHub Actions + OIDC role (no long-lived keys) |
 | IaC | Terraform ≥ 1.7 |
 | Secrets | Secrets Manager |
 | Notifications | Slack webhook + SNS |
@@ -81,11 +142,18 @@ Full diagram and component map: [`docs/architecture.md`](docs/architecture.md).
 
 ```
 app/          Sample Express API (the deployed workload) + Dockerfile + tests
-infra/        All Terraform: networking, ecr, ecs, pipeline, gates modules (see infra/README.md)
+infra/        All Terraform, two roots: layer1_persistent (KMS + qa_agent) and
+              layer2_ephemeral (networking, ecr, ecs, pipeline, gates) — see infra/README.md
 gates/        Lambda source: cost_gate (zip) + security_gate (container image, Dockerfile)
+agents/       qa/agent    — the UI-QA agent that runs inside AgentCore (rubric, candidates, browser)
+              qa/harness  — the GitHub-runner CLI: invoke, validate, price, comment
+              fix         — proposes edits from findings (never commits or opens the PR)
+              converge    — the loop's stopping rule: continue / stall / done
 buildspecs/   CodeBuild YAMLs for each pipeline stage
 scripts/      bootstrap · demo-up · demo-down · apply-dev (layer1) · destroy-dev · local-scan
+              package-qa-agent · seed-qa-secret · reopen-corpus
 docs/         architecture.md, deploy.md, runbook.md
+docs/agentcore/  PLAN.md (phased build spec) · EVIDENCE.md (measurements) · AUDIT.md · DISCOVERY.md
 ```
 
 ## Deploy it
@@ -105,7 +173,18 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 #    (~$1.40/mo idle). It carries the AgentCore runtime the vesselAI QA workflow
 #    invokes. apply-dev.sh uses infra/layer1_persistent/dev.tfvars, which pins
 #    qa_agent_code_key / qa_agent_code_version_id ON PURPOSE.
-./scripts/apply-dev.sh -auto-approve
+#    On a COLD account the zip does not exist yet and the runtime is count-gated
+#    off, so the first bring-up is three steps:
+./scripts/apply-dev.sh -var qa_agent_code_key=""   # buckets, roles, secret, KMS
+./scripts/package-qa-agent.sh                      # build + upload the agent zip,
+                                                   # then commit the printed
+                                                   # key/version id into dev.tfvars
+./scripts/apply-dev.sh -auto-approve               # creates the runtime
+
+# 1b. QA target credentials, seeded out-of-band for the same reason as the gate
+#     secrets below (Terraform owns the container, never the material).
+export QA_TARGET_EMAIL="..." QA_TARGET_PASSWORD="..."
+./scripts/seed-qa-secret.sh dev ap-southeast-1
 
 # 2. DEMO layer bring-up (layer2_ephemeral: networking + ECR + ECS + ALB +
 #    pipeline + gates). Cold-start two-phase inside demo-up.sh (security-gate
@@ -134,6 +213,12 @@ export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 Full walkthrough — remote state, the GitHub connection, troubleshooting — is in
 [`docs/runbook.md`](docs/runbook.md).
 
+Shipping a change to the agent is its own short sequence: `./scripts/package-qa-agent.sh` builds the
+Linux aarch64 zip and prints the new S3 object version id → commit that id into
+`infra/layer1_persistent/dev.tfvars` → `./scripts/apply-dev.sh`. A zip bump is an **in-place** update
+(the runtime version increments; the ARN holds), so a plan that proposes a replace means something
+else is wrong.
+
 ## Running the gates (operational notes)
 
 - **How the gates are invoked.** The `CostGate` and `SecurityGate` stages are CodeBuild steps that
@@ -159,9 +244,8 @@ Full walkthrough — remote state, the GitHub connection, troubleshooting — is
 # App
 npm ci --prefix app && npm test --prefix app
 
-# Gate handlers (unit tests)
-pip install pytest boto3
-pytest gates/cost_gate/tests gates/security_gate/tests
+# Gate handlers + agent/harness unit tests (repo venv, not system python)
+.venv/bin/python -m pytest
 
 # Local security scan (needs docker + trivy + checkov)
 ./scripts/local-scan.sh
@@ -184,6 +268,11 @@ The choices that took real thought — and double as interview talking points:
   (layer1_persistent) stays up at ~$1.40/mo, and the demo stack (layer2_ephemeral) is destroyed
   between demos — NAT + ALB are hourly-rate and can't scale to zero, so "off" means destroyed.
   `demo-down.sh` empties ECR first so `destroy` can't hang and never touches layer1.
+- **The agent is deployed like an artifact, not like a script.** The zip lives in its own versioned
+  S3 bucket (separate from reports, which expire after 7 days) and the runtime pins one **object
+  version id**, committed to `dev.tfvars` — so a deploy is immutable and a rollback is a variable
+  change. Its dependency closure is hash-locked and installed with `--require-hashes`, so two
+  rebuilds from one commit are byte-identical.
 - **Least-privilege everywhere.** Each Lambda and ECS task gets its own IAM role; secrets live only
   in Secrets Manager (never env vars); ECS tasks run in private subnets, reachable only from the ALB.
 
@@ -223,10 +312,6 @@ the threshold and re-apply if an increase is intentional.
 Everything is Terraform · least-privilege IAM · secrets only in Secrets Manager · default tags on all
 resources · gates never silently pass · ECS circuit breaker · immutable ECR tags · bounded log
 retention · S3 versioning · typed Python handlers.
-
-## Contributing
-
-Setup, the non-negotiables, and the pre-PR checklist are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 

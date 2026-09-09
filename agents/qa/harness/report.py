@@ -5,9 +5,12 @@ The comment is the product. Findings that a reviewer cannot act on are findings
 that did not happen, so this module cares about two things the rest of the
 harness does not:
 
-  * Evidence must be REACHABLE. The reports bucket is block-public-access, so a
-    bare S3 key is unopenable. The agent returns presigned URLs; they get
-    rendered as links.
+  * Evidence must be IDENTIFIABLE. The reports bucket is block-public-access,
+    so the comment names the S3 key and the reader presigns it themselves. It
+    used to render the agent's presigned URL inline, which read better but
+    published a credential into a public, permanent record -- and expired
+    within the hour regardless, because the runtime signs with STS session
+    credentials. See redact.py.
   * Cost must be legible and honest -- all three meters, and "unpriced" where a
     price is genuinely unknown rather than a $0.00 that reads as free.
 """
@@ -60,12 +63,11 @@ def _finding_block(f: dict) -> str:
     lines += [f"{i}. {s}" for i, s in enumerate(f.get("steps_to_reproduce", []), 1)]
 
     shot = f.get("screenshot")
-    if isinstance(shot, dict) and shot.get("url"):
-        # Inline, not a bare key. A reviewer should not have to go and fetch the
-        # evidence for the finding they are being asked to judge.
-        lines += ["", f"![{f['id']} evidence]({shot['url']})"]
-    elif isinstance(shot, dict) and shot.get("key"):
-        lines += ["", f"_Screenshot at `{shot['key']}` (no presigned URL returned)._"]
+    if isinstance(shot, dict) and shot.get("key"):
+        # The KEY, never a link. redact.py has already removed the presigned URL
+        # by the time this runs; not rendering one is the second half of that,
+        # so a future caller handing us a signed link cannot republish it.
+        lines += ["", f"_Evidence: `{shot['key']}` in the reports bucket — presign it to view._"]
 
     src = f.get("suspected_source")
     lines += ["", f"**Suspected source:** {f'`{src}`' if src else '_not identified_'}", "", "</details>"]

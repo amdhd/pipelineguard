@@ -146,10 +146,27 @@ jobs:
       # actionlint over the workflow YAML, so a malformed `on:` or step breaks
       # the PR, not a live dispatch. Downloaded pinned -- a linter release is
       # not a reason to turn CI red. linux_x86_64 for the ubuntu-latest runner.
+      #
+      # CHECKSUMS on all three downloads here and in the secret-scan job below.
+      # The repo hash-locks every Python transitive with --require-hashes and
+      # explains at length why (agents/qa/agent/requirements.lock), then used to
+      # fetch three binaries over `curl | tar` and execute them unverified --
+      # including gitleaks, the secret gate itself. A version tag is mutable;
+      # a digest is not.
+      #
+      # What this buys and what it does not: pinning detects a CHANGED asset --
+      # a re-pointed tag, a replaced upload -- it does not prove today's asset
+      # is good. actionlint's and gitleaks' values come from their published
+      # checksums files and were cross-checked against the served bytes;
+      # shellcheck publishes none, so its value is the digest of the release
+      # asset. Bumping a version now means updating its hash in the same
+      # commit, which is the point.
       - name: actionlint
         run: |
+          sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
           curl -sSfL -o actionlint.tgz \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "${sha256}  actionlint.tgz" | sha256sum -c -
           tar xzf actionlint.tgz actionlint
           ./actionlint -color
 
@@ -159,8 +176,10 @@ jobs:
       # the PR instead of drifting in. Downloaded pinned, same reason.
       - name: shellcheck
         run: |
+          sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
           curl -sSfL -o shellcheck.tar.xz \
             https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "${sha256}  shellcheck.tar.xz" | sha256sum -c -
           tar xJf shellcheck.tar.xz
           shellcheck-v0.11.0/shellcheck -S warning scripts/*.sh
 
@@ -206,7 +225,9 @@ jobs:
 
       - name: gitleaks
         run: |
+          sha256=a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
           curl -sSfL -o gitleaks.tar.gz \
             https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz
+          echo "${sha256}  gitleaks.tar.gz" | sha256sum -c -
           tar xzf gitleaks.tar.gz gitleaks
           ./gitleaks git . --no-banner --redact --config .gitleaks.toml

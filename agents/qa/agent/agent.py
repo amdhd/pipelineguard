@@ -364,6 +364,14 @@ def _safe_report_namespace(value) -> str | None:
     if not value:
         return None
     value = str(value).strip()
+    # `.` and `..` pass the charset check below but are the two names that carry
+    # PATH semantics. Harmless on S3 as it stands -- `reports/../latest/x` is a
+    # literal key there, not a traversal -- but the point of this guard is that
+    # its result is safe to use as a path segment, and the day one of these is
+    # joined onto a filesystem path that assumption is what breaks. Cheaper to
+    # reject here than to remember the caveat later.
+    if value in {".", ".."}:
+        return None
     return value if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
 
 
@@ -406,6 +414,26 @@ def _without_presigned_urls(findings: dict) -> dict:
     return stripped
 
 
+# A JSON string value carrying any of the query parameters that make a URL a
+# credential. Matched against the SERIALIZED body, so it does not care which
+# field the URL sits under -- which is exactly the point. The strip above works
+# by field NAME, and the field nobody anticipated is the one that leaks: rename
+# `url`, add a second URL-bearing field, or nest a screenshot one level deeper
+# and the strip silently no-ops with every test still green. A URL cannot
+# contain a bare double quote, so bounding on quotes keeps a match to the one
+# string value it found.
+#
+# Deliberately NOT matching a bare `Signature=`: `AWSAccessKeyId` is present in
+# every SigV2 presigned URL and `X-Amz-Credential` in every SigV4 one, so the
+# key id already catches both shapes, and the looser pattern would redact an
+# ordinary finding that happens to say "signature".
+_CREDENTIALED_STRING = re.compile(
+    r'"[^"]*(?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token'
+    r'|AWSAccessKeyId)[^"]*"',
+    re.IGNORECASE,
+)
+
+
 def _archive(session_id: str, findings: dict, *, report_namespace: str | None = None) -> str | None:
     """
     Archive the findings JSON to S3.
@@ -429,17 +457,43 @@ def _archive(session_id: str, findings: dict, *, report_namespace: str | None = 
         logger.warning("REPORTS_BUCKET unset; findings not archived")
         return None
     namespace = _safe_report_namespace(report_namespace)
+    # A rejected namespace silently produced one object instead of two, which
+    # reads downstream as "the alias write failed" -- a different problem with a
+    # different fix. Name the actual cause.
+    if report_namespace and not namespace:
+        logger.warning(
+            "report_namespace %r is not one safe path segment; archiving to the "
+            "run-scoped key only",
+            report_namespace,
+        )
     client = boto3.client("s3", region_name=REGION)
     # Strip presigned URLs before they reach a durable object. The dict the
     # caller keeps is untouched -- the harness still needs working links for the
     # PR comment; it is only the stored copy that must not carry credentials.
     findings = _without_presigned_urls(findings)
+    # Backstop, on the serialized bytes rather than on field names. Loud on
+    # purpose: an ERROR here means the structural strip above has a hole, and
+    # this archive is the object the leaked fixtures of PR #77 were copied out
+    # of. Scrub rather than refuse -- a missing archive breaks the Phase 3
+    # convergence check, which compares finding sets across rounds, and a
+    # redacted string costs nothing the reader needed.
+    body, redacted = _CREDENTIALED_STRING.subn(
+        '"[redacted credential]"', json.dumps(findings, indent=2)
+    )
+    if redacted:
+        logger.error(
+            "archive backstop redacted %d credential-bearing string(s) from %s; "
+            "a field carrying a presigned URL is not being stripped by name",
+            redacted,
+            session_id,
+        )
+    body = body.encode()
     key = f"reports/{session_id}/findings.json"
     try:
         client.put_object(
             Bucket=REPORTS_BUCKET,
             Key=key,
-            Body=json.dumps(findings, indent=2).encode(),
+            Body=body,
             ContentType="application/json",
         )
         logger.info("archived findings to s3://%s/%s", REPORTS_BUCKET, key)
@@ -452,7 +506,7 @@ def _archive(session_id: str, findings: dict, *, report_namespace: str | None = 
             client.put_object(
                 Bucket=REPORTS_BUCKET,
                 Key=alias,
-                Body=json.dumps(findings, indent=2).encode(),
+                Body=body,
                 ContentType="application/json",
             )
         except Exception:  # noqa: BLE001 -- the alias is best-effort; keep the run-scoped copy

@@ -129,11 +129,21 @@ jobs:
       - name: Test
         run: npm test --prefix app
 
-      # SCA on the app's dependency tree — the one scan the pipeline's image +
-      # IaC gates don't cover. A real gate at high+: the current tree passes
-      # (its only finding is a LOW body-parser awaiting `npm audit fix`), so a
-      # new HIGH/CRITICAL prod dependency blocks the PR instead of being swept
-      # under `|| true` — a step that always goes green tells nobody anything.
+      # SCA on the app's PRODUCTION dependencies — the one scan the pipeline's
+      # image + IaC gates don't cover. A real gate: the prod tree is clean at
+      # every severity, so a new HIGH/CRITICAL prod dependency blocks the PR
+      # instead of being swept under `|| true` — a step that always goes green
+      # tells nobody anything.
+      #
+      # SCOPE, because the flags are easy to over-read: `--omit=dev` means the
+      # test/build toolchain is NOT scanned here, and `--audit-level=high` means
+      # a MODERATE prod finding does not fail. Both are deliberate; neither is
+      # "the app's dependency tree is clean". As of 2026-09-09 the dev tree
+      # carries 4 advisories (the vitest → vite → esbuild chain, 1 critical) and
+      # Dependabot alerts on them. They are NOT fixable here: the fix is vitest
+      # 5, which requires Node >=22.12, and this app pins Node 20 in the runner
+      # above and in BOTH stages of app/Dockerfile. Closing them is a Node
+      # version bump for the deployed image, not a dependency bump.
       - name: npm audit (high+)
         run: npm audit --omit=dev --audit-level=high --prefix app
 

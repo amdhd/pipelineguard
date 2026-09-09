@@ -33,6 +33,22 @@ The QA runtime is PUBLIC-mode (no VPC/ENI/NAT) and independent of layer2 — tha
 
    **A zip bump does NOT recreate the runtime.** Measured 2026-09-02 (#66): the plan reads `0 to add, 1 to change, 0 to destroy`, `agent_runtime_version` increments (3 → 4), and the ARN holds. AgentCore regenerates the ARN when the runtime is **destroyed and recreated** — which is what the 2026-08-30 incident did by dropping `count` to 0, not what shipping new code does. Expect an in-place update; if a plan on an agent-code change proposes a *replace* or a *destroy*, something else is wrong — stop and read it before applying.
 
+   **The tfvars edit is the step that ships the code — packaging only uploads it.** Skip it and `apply-dev.sh` re-applies the version id already pinned: a clean, green, entirely empty deploy. Measured 2026-09-09 (#83): a zip was built and uploaded, the tfvars pin was never touched, the plan read `0 to change`, and every check afterwards still passed. **The ARN comparison cannot catch this.** It only detects a destroy/recreate, so it matches trivially when nothing was deployed at all — a passing ARN check means "not recreated", never "deployed". Two signals are load-bearing instead:
+
+   * **The plan says `1 to change`.** `0 to change` on an agent-code change means the pin never moved. Stop, fix tfvars, re-plan — do not read it as "already up to date".
+   * **The live runtime reports the version id you just built:**
+
+     ```
+     aws bedrock-agentcore-control get-agent-runtime \
+       --agent-runtime-id pipelineguard_qa_dev_runtime-<suffix> \
+       --profile pipelineguard --region ap-southeast-1 \
+       --query '{version:agentRuntimeVersion,code:agentRuntimeArtifact}'
+     ```
+
+     `agentRuntimeVersion` increments (6 as of #83) and the nested `versionId` must equal `qa_agent_code_version_id` in tfvars. If it does not, what is running is not what you built.
+
+   Same class of bug, one step earlier: `package-qa-agent.sh` zips the **working tree**, so packaging from a stale checkout produces a fresh version id for old code — which then passes every signal above. Package only after the change is merged and pulled into the main checkout.
+
 ### Architecture (so you don't conflate the two programs)
 
 - **The agent** lives in the AgentCore runtime, packaged as a flat-layout zip from `agents/qa/agent/`. It drives a cloud Chromium browser and emits findings JSON.

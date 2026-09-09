@@ -14,6 +14,7 @@ exercised by a real invoke instead.
 """
 
 import json
+import logging
 import sys
 import types
 from pathlib import Path
@@ -391,6 +392,31 @@ class TestArchiving:
         assert agent._safe_report_namespace("") is None
         assert agent._safe_report_namespace("a/b") is None
         assert agent._safe_report_namespace("../x") is None
+        # Both clear the charset check -- they are only letters from its set --
+        # and both are names with path meaning. `../x` above never reached the
+        # charset check at all; it was rejected for the slash.
+        assert agent._safe_report_namespace("..") is None
+        assert agent._safe_report_namespace(".") is None
+
+    def test_a_rejected_namespace_says_so(self, agent, monkeypatch, caplog):
+        """One object instead of two otherwise looks like a failed alias write,
+        which is a different problem with a different fix."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        monkeypatch.setattr("boto3.client", lambda *a, **k: MagicMock())
+
+        with caplog.at_level(logging.WARNING, logger="qa-agent"):
+            agent._archive("run-7", {}, report_namespace="../escape")
+        assert "not one safe path segment" in caplog.text
+
+    def test_a_valid_namespace_stays_quiet(self, agent, monkeypatch, caplog):
+        """The warning has to mean something; firing it on the happy path is how
+        a log line becomes noise nobody reads."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "bucket")
+        monkeypatch.setattr("boto3.client", lambda *a, **k: MagicMock())
+
+        with caplog.at_level(logging.WARNING, logger="qa-agent"):
+            agent._archive("run-7", {}, report_namespace="pr-125")
+        assert "not one safe path segment" not in caplog.text
 
 
 class TestArchivedCopyCarriesNoCredentials:
@@ -486,6 +512,58 @@ class TestArchivedCopyCarriesNoCredentials:
         must not invent keys or drop the fields that are actually there."""
         body, = self._archived_bodies(agent, monkeypatch, {"overall": "PASS", "findings": []})
         assert body == {"overall": "PASS", "findings": []}
+
+    # -- The backstop. Everything above pins the strip that works by field NAME;
+    # these pin the guard on the serialized body, which is what covers the field
+    # name nobody has thought of yet.
+
+    def test_a_url_under_an_unanticipated_field_never_reaches_s3(self, agent, monkeypatch):
+        """The regression test for the whole class of bug.
+
+        _without_presigned_urls strips `screenshots[].url` and
+        `findings[].screenshot.url` BY NAME. Rename either field, add a second
+        URL-bearing one, or nest a screenshot a level deeper, and it silently
+        no-ops -- credentials return to the archive with every other test in
+        this class still green. That is exactly how PR #77 happened: the
+        fixtures were copied verbatim out of this object.
+        """
+        body, = self._archived_bodies(agent, monkeypatch, {
+            "findings": [{
+                "finding_id": "F-001",
+                # A field the stripper has never heard of.
+                "evidence_screenshot": {"key": "screenshots/run-7/a.png", "url": self.SIGNED},
+            }],
+        })
+        serialized = json.dumps(body)
+        assert "AWSAccessKeyId" not in serialized
+        assert "x-amz-security-token" not in serialized
+        # Redacted, not dropped: the finding itself still has to survive.
+        assert body["findings"][0]["finding_id"] == "F-001"
+
+    def test_the_backstop_covers_the_pr_stable_alias_too(self, agent, monkeypatch):
+        """Both durable objects or neither. The alias sits at a guessable key,
+        so covering only the run-scoped copy is the worse of the two halves."""
+        bodies = self._archived_bodies(agent, monkeypatch, {
+            "notes": [self.SIGNED],
+        }, report_namespace="pr-125")
+        assert len(bodies) == 2
+        assert all("AWSAccessKeyId" not in json.dumps(b) for b in bodies)
+
+    def test_the_backstop_leaves_a_clean_report_alone(self, agent, monkeypatch):
+        """It runs on EVERY archive, so a false positive would quietly corrupt
+        every stored report. Note the summary says "signature" -- matching a
+        bare `Signature=` would have redacted this finding; the pattern keys on
+        the access key id instead, which every presigned URL carries anyway."""
+        clean = {
+            "overall": "FAIL",
+            "findings": [{
+                "finding_id": "F-001",
+                "summary": "Signature pad does not clear between entries",
+                "screenshot": {"key": "screenshots/run-7/a.png"},
+            }],
+        }
+        body, = self._archived_bodies(agent, monkeypatch, clean)
+        assert body == clean
 
 
 class TestDerivedBudgets:

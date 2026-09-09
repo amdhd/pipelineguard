@@ -7,7 +7,7 @@
 # something else does the noticing -- otherwise "frozen" quietly becomes
 # "abandoned". This is that something.
 #
-# ONLY agents/qa/agent IS LISTED, on purpose. Dependabot's value here is raising
+# ONLY agents/qa/agent IS LISTED AMONG THE PYTHON DIRS, on purpose. Dependabot's value here is raising
 # an exact pin. agents/fix/requirements.txt declares `boto3>=1.34.0`, a floor
 # that already admits every new release, so there is nothing for a bump PR to
 # change; agents/converge/requirements.txt is a comment-only declaration (the
@@ -28,3 +28,23 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
+
+  # The workflows themselves. Every `uses:` in ci.yml sits on a major tag, and
+  # nothing was watching them -- the same "a pin buys reproducibility and costs
+  # you security patches" trade as the pip block above, one layer down. Unlike
+  # that block, a merged bump here DOES change what runs: CI executes the
+  # workflow from the repo, not from a deployed artifact.
+  #
+  # npm is still deliberately absent. app/'s production tree is clean; what
+  # remains is the vitest -> vite -> esbuild dev chain, whose fix needs Node
+  # >=22.12 against an app pinned to Node 20 in the runner and in both stages of
+  # app/Dockerfile. Dependabot would open bump PRs that cannot merge until that
+  # decision is made, and a queue of unmergeable PRs teaches people to ignore
+  # the queue. Add it once the Node version moves.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(ci)"

@@ -11,6 +11,6 @@
 # history. Same .gitleaks.toml, so the two agree on what counts as a secret.
 repos:
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.28.0
+    rev: v8.30.1
     hooks:
       - id: gitleaks

@@ -66,8 +66,14 @@ jobs:
       # Mirrors the pipeline's security gate: HIGH/CRITICAL misconfigurations
       # fail the check. The repo is hardened to 0 findings (see #4), so this
       # stays green until a change reintroduces one — which is the whole point.
+      #
+      # Pinned by commit digest, not by the `v12` tag: this is the one
+      # THIRD-PARTY action in this file, it runs on every PR, and a tag can be
+      # re-pointed at any commit by whoever owns the repo. Same reasoning as the
+      # binary checksums below. The first-party actions/* stay on major tags --
+      # a different trust boundary, and the churn is not worth it.
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@v12
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12
         with:
           directory: infra
           quiet: true

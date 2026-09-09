@@ -131,15 +131,23 @@ class TestReport:
         out = report.render(f)
         assert out.index("CRITICAL") < out.index("MEDIUM") < out.index("LOW")
 
-    def test_presigned_screenshot_is_rendered_as_an_image(self):
-        """A bare S3 key is unopenable -- the bucket blocks public access."""
+    def test_the_screenshot_key_is_named_not_linked(self):
+        """The comment is public and permanent, and a presigned URL is a real
+        key id and session token. The key is what a reader presigns for
+        themselves. redact.py has normally removed the url long before this
+        runs; the renderer refusing to emit one it is handed anyway is the
+        second half of the same guarantee."""
         f = _findings(findings=[_finding(screenshot={"key": "screenshots/a.png", "url": "https://signed"})])
-        assert "![F-001 evidence](https://signed)" in report.render(f)
-
-    def test_screenshot_without_a_url_says_so(self):
-        f = _findings(findings=[_finding(screenshot={"key": "screenshots/a.png"})])
         out = report.render(f)
-        assert "no presigned URL" in out
+        assert "`screenshots/a.png`" in out
+        assert "https://signed" not in out
+        assert "![F-001 evidence]" not in out
+
+    def test_a_screenshot_with_no_key_renders_no_evidence_line(self):
+        """No key means nothing to point at -- an evidence line naming nothing
+        is worse than none at all."""
+        f = _findings(findings=[_finding(screenshot={})])
+        assert "reports bucket" not in report.render(f)
 
     def test_failed_run_is_not_rendered_as_a_pass(self):
         out = report.render({"error": "schema_violation", "detail": "not JSON", "findings": []})

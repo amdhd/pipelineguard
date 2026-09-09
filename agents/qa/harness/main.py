@@ -35,6 +35,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
 
+import redact  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402  -- the agent's validator, reused deliberately
 
@@ -472,6 +473,14 @@ def run(args) -> int:
             payload[key] = value
 
     findings = validate(invoke(args.runtime_arn, payload, region=args.region))
+
+    # Redact HERE, at the one point both durable sinks flow from: the
+    # `--json-out` artifact below and the rendered comment further down. The
+    # agent presigns screenshot URLs so a reviewer could open the evidence
+    # inline, but both of this harness's outputs land in public, permanent
+    # records, and a presigned URL is a real key id and session token. Nothing
+    # downstream needs the links. See redact.py.
+    findings = redact.without_credentials(findings)
 
     # PROVENANCE. Stamped by the harness, not the agent: the agent drives a
     # browser against a tunnel and has no idea what commit built the thing it is

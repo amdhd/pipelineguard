@@ -210,3 +210,120 @@ class TestUnmatched:
             unmatched=[_finding(id="F-9", summary="regressed tab")],
         )
         assert out.index("New findings not in the origin report") > out.index("Final reconciliation board")
+
+
+class TestFindingTextCannotRestructureTheComment:
+    """
+    Finding text is UNTRUSTED and the chain is three steps long: text the
+    application under test renders -> the model's summary/evidence/actual -> a
+    comment on a public repo. The model is not the adversary; the page it reads
+    is, and the model copies what it reads.
+
+    The repo had already settled this on the other consumer of the same four
+    fields -- `agents/fix/prompt.py` sanitises them before they reach the fix
+    model -- but the renderer trusted them, and it is the one that publishes.
+    A summary carrying `</summary></details>` closed the block and rendered
+    everything after it as top-level comment body.
+
+    `test_finding_text_with_a_pipe_does_not_break_the_table` above is this same
+    test for the table renderers; these are its siblings for the details block
+    and for the tag case the pipe escape never covered.
+    """
+
+    BREAKOUT = "legit</summary></details>\n\n## Injected heading\n<details><summary>x"
+
+    def _finding(self, **over):
+        f = {
+            "id": "F-1", "severity": "HIGH", "page": "/voyage",
+            "summary": "s", "evidence": "e", "expected": "x", "actual": "y",
+            "steps_to_reproduce": ["one"],
+        }
+        f.update(over)
+        return f
+
+    def test_a_summary_cannot_close_the_details_block(self):
+        out = report._finding_block(self._finding(summary=self.BREAKOUT))
+        assert "</summary></details>" not in out
+        assert out.count("<details>") == 1
+        assert out.count("</details>") == 1
+
+    def test_the_escaped_text_is_still_readable(self):
+        """Escaping must show the text, not delete it -- the finding still has to be read."""
+        out = report._finding_block(self._finding(summary=self.BREAKOUT))
+        assert "legit" in out
+        assert "&lt;/summary&gt;&lt;/details&gt;" in out
+
+    def test_a_newline_cannot_escape_the_summary_line(self):
+        out = report._finding_block(self._finding(summary="a\nb"))
+        summary_line = out.splitlines()[0]
+        assert "a b" in summary_line
+        assert summary_line.endswith("</summary>")
+
+    def test_every_model_controlled_field_is_escaped(self):
+        """Not just summary. Each of these is model output reaching the same comment."""
+        for field in ("evidence", "expected", "actual", "page"):
+            out = report._finding_block(self._finding(**{field: "<img src=x>"}))
+            assert "<img src=x>" not in out, f"{field} was interpolated raw"
+            assert "&lt;img src=x&gt;" in out, f"{field} was not escaped"
+
+    def test_the_evidence_key_is_escaped(self):
+        """
+        The comment names the S3 key rather than linking it (the presigned URL
+        is stripped upstream by redact.py). That key is NOT ours: it ends in the
+        label the model chose, `screenshots/<session>/<label>.png`, so it
+        carries model text into the comment like every other field here.
+        """
+        out = report._finding_block(
+            self._finding(screenshot={"key": "screenshots/s/<img src=x>.png"})
+        )
+        assert "<img src=x>" not in out
+        assert "&lt;img src=x&gt;" in out
+
+    def test_no_presigned_link_is_ever_rendered(self):
+        """
+        Guards the other half of the upstream guarantee: even handed a signed
+        url, the renderer must name the key instead of republishing a credential
+        into a public, permanent record.
+        """
+        out = report._finding_block(
+            self._finding(screenshot={"key": "k", "url": "https://signed.example/x?X-Amz-Signature=a"})
+        )
+        assert "https://signed.example" not in out
+        assert "X-Amz-Signature" not in out
+        assert "`k`" in out
+
+    def test_a_reproduction_step_cannot_inject_a_tag_or_a_line(self):
+        out = report._finding_block(self._finding(steps_to_reproduce=["go\n<b>bold</b>"]))
+        assert "<b>bold</b>" not in out
+        assert "1. go &lt;b&gt;bold&lt;/b&gt;" in out
+
+    def test_the_blocks_own_structure_still_renders(self):
+        """
+        The fix must not escape the template's OWN html -- <details>, <summary>
+        and <code> are what make the comment collapsible and readable, and
+        escaping them wholesale would break the rendering this test protects.
+        """
+        out = report._finding_block(self._finding())
+        for tag in ("<details>", "<summary>", "</summary>", "<b>", "<code>", "</details>"):
+            assert tag in out
+
+    def test_a_suspected_source_is_escaped(self):
+        out = report._finding_block(self._finding(suspected_source="<script>x</script>"))
+        assert "<script>" not in out
+
+    def test_a_tag_in_a_table_cell_is_escaped_too(self):
+        """The pipe escape predates this and never covered tags."""
+        rows = [{"fingerprint": "f", "severity": "HIGH", "page": "/x",
+                 "summary": "<img src=x>", "status": "fixed"}]
+        assert "<img src=x>" not in report.render_reverify(rows)
+
+    def test_a_pipe_in_a_page_no_longer_breaks_the_table(self):
+        """
+        `page` was interpolated into all three tables with no escaping at all --
+        the guard was applied to `summary` and stopped there.
+        """
+        rows = [{"fingerprint": "f", "severity": "HIGH", "page": "/a|b",
+                 "summary": "s", "status": "fixed"}]
+        line = [ln for ln in report.render_reverify(rows).splitlines() if "/a" in ln][0]
+        assert "`/a\\|b`" in line
+        assert line.count("|") - line.count("\\|") == 4  # the four real cell borders

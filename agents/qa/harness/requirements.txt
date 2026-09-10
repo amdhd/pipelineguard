@@ -1,0 +1,41 @@
+# Runtime deps for the QA harness -- the half that runs on the GitHub runner,
+# NOT inside the AgentCore runtime.
+#
+# WHY THIS FILE EXISTS. Every other Python component in this repo declares its
+# deps, including `agents/converge`, whose declaration is deliberately empty
+# ("an empty declaration is the declaration"). This one declared nothing at all,
+# so it was the only component whose closure no gate could see: `pip-audit` in
+# CI pointed at `agents/qa/agent/requirements.lock` and nothing pointed here.
+#
+# That gap was not theoretical. At the time this file was written the resolved
+# environment carried `urllib3 1.26.20`, which has five open advisories
+# (PYSEC-2026-141/-1994/-1996/-1998/-1999) and no fix on the 1.26 branch, while
+# the agent lock beside it pinned 2.7.0 and audited clean. Same repo, two
+# dependency stories, one of them invisible.
+#
+# PINNED WITH ==, INCLUDING TRANSITIVES. `boto3` and `botocore` are the only
+# direct imports (`main.py`, `score.py`), but a floor on those would leave
+# `urllib3` free to resolve back to a vulnerable line, which is the exact
+# failure this file closes. The versions are the boto3 subtree of the agent's
+# measured closure, so both halves of the system run the same SDK rather than
+# whatever each side resolved on a different day.
+#
+# NOT HASH-LOCKED, unlike `agents/qa/agent/requirements.lock`, and the
+# difference is real rather than an oversight. That file locks a REBUILT
+# ARTIFACT -- the deployment zip has to reconstruct byte-identically from a
+# commit, so `--require-hashes` is load-bearing. The harness is not built; it
+# runs from the checkout. Pinning fixes the versions the audit reasons about,
+# which is what this file is for.
+#
+# SCOPE, STATED PLAINLY: this pin is authoritative for CI. The PRODUCTION
+# harness runs on `amdhd/vesselAI`'s runner, whose install step lives in that
+# repo's workflow and is out of this repo's edit scope -- so until that workflow
+# installs from this file, CI is green on these versions while production
+# resolves its own. Flagged there, not silently forked here.
+boto3==1.43.87
+botocore==1.43.87
+jmespath==1.1.0
+python-dateutil==2.9.0.post0
+s3transfer==0.19.2
+six==1.17.0
+urllib3==2.7.0

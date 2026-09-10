@@ -468,7 +468,13 @@ def run(args) -> int:
         ("max_tokens_per_call", args.max_tokens_per_call),
         ("requests_per_minute", args.requests_per_minute),
         ("presign_expires", args.presign_expires),
+        ("auth_token_key", args.auth_token_key),
     ):
+        # `is not None`, not truthiness: an EMPTY auth_token_key is a real
+        # instruction (disable the probe, record auth_probe="not_configured"),
+        # and truthiness would silently drop it and re-apply the vesselAI
+        # default -- turning "do not check" into "check for the wrong key",
+        # which discards every finding.
         if value is not None:
             payload[key] = value
 
@@ -638,6 +644,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds a screenshot link stays valid. NOTE: the agent signs with the "
         "runtime's temporary credentials, so a link cannot outlive them (typically "
         "~1 hour) no matter what is set here.",
+    )
+    # The agent has always accepted this and the harness could not reach it --
+    # the same gap `--max-tokens-per-call` above was added to close, and the
+    # expensive one, because this knob gates the false-PASS guard. The agent
+    # defaults to vesselAI's `vm_token`, so pointing it at any other target made
+    # `is_authenticated()` false, discarded every finding, and returned
+    # `error: unauthenticated` -- a correct guard firing on a wrong premise,
+    # after a browser session had already been paid for.
+    #
+    # `test_every_agent_payload_key_has_a_cli_flag` is what stops this recurring
+    # a third time.
+    p.add_argument(
+        "--auth-token-key",
+        help="localStorage key the target writes its session token to, used to MEASURE "
+        "whether the agent got past the login page. Defaults to the agent's own "
+        "'vm_token' (vesselAI). Pass an empty string to disable the check: the run "
+        "then records auth_probe='not_configured' and the comment carries an "
+        "'Auth was not verified' caveat, rather than guessing.",
     )
     p.add_argument(
         "--target-commit",

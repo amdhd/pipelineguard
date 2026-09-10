@@ -668,3 +668,89 @@ class TestReadTimeout:
 
     def test_an_explicit_label_still_wins(self):
         assert self._parse("--session-label", "pr-123").session_label == "pr-123"
+
+
+class TestEveryAgentKnobIsReachable:
+    """
+    The agent reads its configuration out of the invoke payload; the harness is
+    the only thing that builds that payload. A key the agent accepts and the CLI
+    cannot set is therefore not configurable AT ALL -- it is a constant with a
+    misleading amount of machinery around it.
+
+    That has now happened twice. `--max-tokens-per-call` was added because the
+    agent's own error message told the reader to raise a flag that did not
+    exist. `--auth-token-key` was added because the agent defaulted to
+    vesselAI's `vm_token` and nothing could change it, so pointing the agent at
+    any other target failed `is_authenticated()`, discarded every finding, and
+    reported `error: unauthenticated` -- after a browser session had been paid
+    for.
+
+    This test is the thing that stops a third one. It reads agent.py as TEXT
+    rather than importing it: the module needs bedrock_agentcore at import time,
+    and a drift test that depends on a stub is a drift test that gets skipped.
+
+    A new `payload.get("x")` in the agent fails this until someone decides how
+    `x` is reached -- a flag, or an entry in the exceptions below with a reason.
+    """
+
+    # Keys the CLI reaches under a different name, or deliberately does not
+    # expose. Each needs a reason, because the point of the test is to force the
+    # decision rather than to be silenced.
+    _NOT_A_DIRECT_FLAG = {
+        "session_id": "--session-label",
+        "report_namespace": "--report-namespace",
+        "ai_fallback_mode": "--live-ai, inverted (the flag asserts a LIVE key; "
+                            "the payload field asserts fallback)",
+    }
+
+    def _payload_keys(self):
+        import re
+
+        source = (_HARNESS.parent / "agent" / "agent.py").read_text()
+        return set(re.findall(r'payload\.get\(\s*"([a-z_]+)"', source))
+
+    def _flags(self):
+        import main as harness
+
+        return {
+            option.lstrip("-").replace("-", "_")
+            for action in harness.build_parser()._actions
+            for option in action.option_strings
+        }
+
+    def test_the_agent_is_actually_read(self):
+        """Guards the regex itself: a rename that returns nothing must not pass."""
+        keys = self._payload_keys()
+        assert "target_url" not in keys, "target_url is payload[...], not payload.get(...)"
+        assert {"model", "max_routes", "deadline_seconds"} <= keys
+
+    def test_every_payload_key_has_a_flag_or_a_stated_reason(self):
+        unreachable = {
+            key
+            for key in self._payload_keys()
+            if key not in self._flags() and key not in self._NOT_A_DIRECT_FLAG
+        }
+        assert not unreachable, (
+            f"agent.py reads {sorted(unreachable)} from the payload and no CLI flag "
+            "sets them. Add the flag, or record why not in _NOT_A_DIRECT_FLAG."
+        )
+
+    def test_auth_token_key_is_reachable(self):
+        """The specific gap this class was written for."""
+        assert "auth_token_key" in self._payload_keys()
+        assert "auth_token_key" in self._flags()
+
+    def test_an_empty_auth_token_key_is_forwarded_not_dropped(self):
+        """
+        Empty means "disable the probe and say so" -- a real instruction, and the
+        one a truthiness check would silently swallow, re-applying the vesselAI
+        default and discarding every finding on a target that authenticates
+        differently.
+        """
+        import main as harness
+
+        args = harness.build_parser().parse_args(
+            ["--runtime-arn", "a", "--target-url", "u", "--auth-token-key", ""]
+        )
+        assert args.auth_token_key == ""
+        assert args.auth_token_key is not None

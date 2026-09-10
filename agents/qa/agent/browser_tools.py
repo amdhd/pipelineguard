@@ -384,6 +384,16 @@ class BrowserSession:
         if self.cdp is not None:
             self.cdp.close()
 
+    @property
+    def settle_timeouts(self) -> int:
+        """Navigations/clicks whose network never went idle. See cdp.wait_for_network_idle."""
+        return self.cdp.settle_timeouts if self.cdp is not None else 0
+
+    @property
+    def settle_timeout_seconds(self) -> float:
+        """Wall-clock those timeouts cost. Read AFTER close(): the counters outlive the socket."""
+        return self.cdp.settle_timeout_seconds if self.cdp is not None else 0.0
+
     def is_authenticated(self, token_key: str) -> bool | None:
         """
         Did the app actually authenticate? MEASURED, not asked.

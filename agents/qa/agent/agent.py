@@ -110,10 +110,14 @@ class Pacer:
 #   1. Checkpoints chain tools -> system -> messages, and the model's MINIMUM is
 #      evaluated against the CUMULATIVE tokens across all three. Rung minima
 #      differ: sonnet (the default) 1,024, haiku 4,096. This agent's system
-#      prompt plus tool specs is ~2k tokens, so on sonnet a checkpoint after the
-#      static content alone now CACHES; on haiku it needs the conversation to
-#      push the prefix past its minimum. Either way the rolling checkpoint at
-#      the end of the messages does the job automatically.
+#      prompt plus tool specs is ~3,900 tokens (MEASURED -- see _BASE_TOKENS;
+#      this note used to say ~2k), so on sonnet a checkpoint after the static
+#      content alone CACHES with room to spare. On haiku the same prefix lands
+#      just UNDER the 4,096 minimum -- roughly 5% short, not the 2x the old
+#      figure implied -- so it still needs the conversation to push it over, and
+#      an edit that trims the rubric would quietly widen that gap. Either way
+#      the rolling checkpoint at the end of the messages does the job
+#      automatically.
 #   2. For Claude models Bedrock offers SIMPLIFIED cache management: place ONE
 #      checkpoint at the end, and it looks back ~20 content blocks for the
 #      longest matching prefix. That removes the usual need to keep old
@@ -173,7 +177,22 @@ def _place_cache_point(messages: list[dict]) -> list[dict]:
 # Deriving the budget from the route cap makes them unable to disagree: ask for
 # fewer routes and the budget falls with them, which is exactly what the
 # schedule trigger's reduced route set wants.
-_BASE_TOKENS = 2_000  # system prompt + tool specs, re-sent every turn
+# MEASURED, not estimated. The system prompt is 13,799 chars and the tool specs
+# 1,745, so the static prefix re-sent on every turn is ~15,540 chars -- about
+# 3,900 tokens at 4 chars/token, and ~3,450 even at a conservative 4.5. It sat
+# at 2,000 for as long as this derivation existed, understating the real prefix
+# by roughly 1.9x.
+#
+# It never bit, and the honest reason is that the quadratic term dominates: the
+# correction raises the derived ceiling only 3.5% at eight routes, against real
+# runs consuming 90k-400k of a 3.34M cap (AUDIT.md §3). Corrected anyway,
+# because this function's own docstring argues that a budget short of the run it
+# was derived from is the bug it exists to remove -- and because the SAME figure
+# is what the prompt-caching note above reasons from, where the margin is real.
+#
+# Pinned by test_the_static_prefix_matches_the_budget_constant, so editing the
+# rubric cannot silently invalidate either consumer again.
+_BASE_TOKENS = 3_900  # system prompt + tool specs, re-sent every turn
 _TOKENS_PER_TURN = 1_700  # one tool result (6k chars) + the assistant message
 _TURNS_PER_ROUTE = 3.5  # measured: navigate, read, and usually a click to reach a tab
 _LOGIN_TURNS = 6  # navigate, type, type, click, verify, and one to spare
@@ -338,12 +357,60 @@ class Budget:
         return int(time.monotonic() - self.started)
 
 
+def _safe_path_segment(value) -> str | None:
+    """
+    One S3 key segment, or None.
+
+    THE RULE, IN ONE PLACE. Two different caller-supplied strings become levels
+    of an S3 key -- the report namespace and the screenshot label -- and only the
+    first was guarded. Same rule, same reason, so it lives here once rather than
+    as two regexes that can drift apart.
+
+    `.` and `..` are rejected separately from the charset because they PASS it
+    while being the two names that carry path semantics. Harmless on S3 as it
+    stands -- `reports/../latest/x` is a literal key there, not a traversal --
+    but the point of this guard is that its result is safe to use as a path
+    SEGMENT, and the day one of these is joined onto a filesystem path that
+    assumption is what breaks.
+    """
+    if not value:
+        return None
+    value = str(value).strip()
+    if value in {".", ".."}:
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
+
+
+# What an unusable screenshot label becomes. A label is a hint, not evidence --
+# losing the capture over one would cost the run a screenshot it had already
+# paid a browser session to take.
+_FALLBACK_LABEL = "screenshot"
+
+
 def _screenshot_sink(session_id: str):
     """Upload screenshots straight to S3 under the agent's own execution role."""
     s3 = boto3.client("s3", region_name=REGION)
+    counter = {"n": 0}
 
     def sink(label: str, png: bytes) -> str:
-        key = f"screenshots/{session_id}/{label}.png"
+        # THE LABEL IS MODEL-CHOSEN and lands in an S3 key, which makes it the
+        # same class of input as report_namespace -- and the more exposed of the
+        # two, since that one comes from the harness. It was unguarded.
+        #
+        # Substitute rather than refuse: rejecting would throw away a capture the
+        # run has already paid for, and the label carries no information the key
+        # needs. Numbered on collision so two rejected labels in one run cannot
+        # overwrite each other's evidence -- the same reason the session id
+        # stopped being second-resolution.
+        safe = _safe_path_segment(label)
+        if safe is None:
+            counter["n"] += 1
+            safe = f"{_FALLBACK_LABEL}-{counter['n']}"
+            logger.warning(
+                "screenshot label %r is not one safe path segment; stored as %r",
+                label, safe,
+            )
+        key = f"screenshots/{session_id}/{safe}.png"
         if not REPORTS_BUCKET:
             logger.warning("REPORTS_BUCKET unset; screenshot %s not persisted", key)
             return key
@@ -361,18 +428,9 @@ def _safe_report_namespace(value) -> str | None:
     becomes a level of an S3 key, and it must not smuggle a second one
     (`reports/pr-1/latest/..` would walk the role's own reports/* scope).
     """
-    if not value:
-        return None
-    value = str(value).strip()
-    # `.` and `..` pass the charset check below but are the two names that carry
-    # PATH semantics. Harmless on S3 as it stands -- `reports/../latest/x` is a
-    # literal key there, not a traversal -- but the point of this guard is that
-    # its result is safe to use as a path segment, and the day one of these is
-    # joined onto a filesystem path that assumption is what breaks. Cheaper to
-    # reject here than to remember the caveat later.
-    if value in {".", ".."}:
-        return None
-    return value if re.fullmatch(r"[A-Za-z0-9._-]+", value) else None
+    # Delegates to the shared guard: the screenshot label needs the identical
+    # rule, and two copies of it would be two places to fix the next hole in.
+    return _safe_path_segment(value)
 
 
 def _without_presigned_urls(findings: dict) -> dict:
@@ -434,6 +492,34 @@ _CREDENTIALED_STRING = re.compile(
 )
 
 
+def _credential_paths(node, prefix: str = "") -> list[str]:
+    """
+    Where credential-bearing strings actually sit, as dotted paths.
+
+    The scrub below works on the SERIALIZED body, which is what makes it immune
+    to a field name nobody anticipated -- but it also means a match knows only
+    that one happened, not where. That produced a confidently wrong log line: a
+    finding whose evidence legitimately QUOTES a presigned URL from the page
+    under test would be reported as "a field carrying a presigned URL is not
+    being stripped by name", sending the reader to look for a hole in
+    _without_presigned_urls that does not exist.
+
+    Walking for the paths costs one pass over a dict that is already in memory
+    and turns that line into something actionable: `findings[0].evidence` reads
+    as a quote to check, `screenshots[3].signed_url` reads as a real hole.
+    """
+    out: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            out += _credential_paths(v, f"{prefix}.{k}" if prefix else str(k))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            out += _credential_paths(v, f"{prefix}[{i}]")
+    elif isinstance(node, str) and _CREDENTIALED_STRING.search(f'"{node}"'):
+        out.append(prefix or "<root>")
+    return out
+
+
 def _archive(session_id: str, findings: dict, *, report_namespace: str | None = None) -> str | None:
     """
     Archive the findings JSON to S3.
@@ -481,11 +567,20 @@ def _archive(session_id: str, findings: dict, *, report_namespace: str | None = 
         '"[redacted credential]"', json.dumps(findings, indent=2)
     )
     if redacted:
+        # Loud on purpose -- but NAMING the paths, because the two causes want
+        # different responses. A path under `screenshots[]` or `findings[].
+        # screenshot` is a real hole in the strip above. A path under
+        # `findings[].evidence` is the agent quoting a URL it found on the page,
+        # which is working as intended and wants no fix at all.
+        paths = _credential_paths(findings)
         logger.error(
-            "archive backstop redacted %d credential-bearing string(s) from %s; "
-            "a field carrying a presigned URL is not being stripped by name",
+            "archive backstop redacted %d credential-bearing string(s) from %s at %s; "
+            "a path under screenshots/ or findings[].screenshot means the "
+            "strip-by-name has a hole, while one under findings[].evidence is "
+            "the agent quoting a URL it saw on the page",
             redacted,
             session_id,
+            ", ".join(paths[:10]) or "an unwalkable path",
         )
     body = body.encode()
     key = f"reports/{session_id}/findings.json"
@@ -1063,6 +1158,15 @@ def run_qa(payload: dict) -> dict:
     # because it is otherwise indistinguishable from a slow agent, and the two
     # want opposite responses: raise the quota, or shorten the run.
     findings["paced_seconds"] = round(pacer.total_waited, 1)
+    # The OTHER clock, reported for the same reason. A target holding a
+    # connection open -- SSE, a websocket, a polling interval -- never lets
+    # _inflight reach zero, so every navigate and click pays the full 15s settle
+    # timeout instead of ~0.5s. Twenty such calls is 300s of a 600s deadline,
+    # and until now the only trace was an INFO log nobody reads when a report
+    # comes back. A non-zero count here says the run was slow because the PAGE
+    # never settled, not because the agent was.
+    findings["settle_timeouts"] = session.settle_timeouts
+    findings["settle_timeout_seconds"] = round(session.settle_timeout_seconds, 1)
     findings["authenticated"] = authenticated
     # "measured" / "not_configured". The report keys off this: a run whose auth
     # state is UNKNOWN must not read like one whose probe actually ran.

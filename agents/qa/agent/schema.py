@@ -77,6 +77,19 @@ def validate_finding(finding: object, index: int) -> None:
         shot = finding["screenshot"]
         _require(isinstance(shot, dict), f"{where}.screenshot must be an object or null")
         _require("key" in shot, f"{where}.screenshot is missing 'key'")
+        # TYPE-CHECKED LIKE EVERY OTHER STRING FIELD, and for a sharper reason
+        # than symmetry. The key's presence was checked and its type was not, so
+        # a model returning a list or a dict here reached
+        # `shot.get("key") in urls` in agent.run_qa -- a dict lookup on an
+        # unhashable value, which raises TypeError. invoke() catches SchemaError
+        # and KeyError, so that one escaped as a 500 and the harness reported
+        # `runtime_unavailable`: "the agent crashed" rather than "the agent
+        # produced nonsense". Those are the two states this schema exists to
+        # keep apart, and it is the only input that could collapse them.
+        _require(
+            isinstance(shot["key"], str),
+            f"{where}.screenshot.key must be a string, got {type(shot['key']).__name__}",
+        )
 
 
 def validate(payload: object) -> dict:

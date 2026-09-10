@@ -1060,3 +1060,172 @@ class TestInteractionBudget:
         measured_seconds_per_turn = 7.6
         at_cap = agent.turns_for(agent.DEFAULT_MAX_ROUTES) * measured_seconds_per_turn
         assert at_cap < agent.DEFAULT_DEADLINE_SECONDS
+
+
+class TestScreenshotLabelIsASafeSegment:
+    """
+    The label is MODEL-CHOSEN and becomes a level of an S3 key, which makes it
+    the same class of input as report_namespace -- and the more exposed of the
+    two, since that one comes from the harness. Only the namespace was guarded.
+
+    Contained today: S3 keys are literal, so `screenshots/s/../../reports/x` is
+    a key inside the screenshots/* prefix rather than a traversal out of it, and
+    the runtime role's scope holds either way. PR #83 made exactly this argument
+    about the sibling segment and then wrote the guard anyway, on the grounds
+    that the containment is incidental and a filesystem join later is what would
+    break. Same reasoning, same rule -- now single-sourced in
+    _safe_path_segment so the two cannot drift.
+    """
+
+    def _sink(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "some-bucket")
+        return agent._screenshot_sink("run-42")
+
+    def test_an_ordinary_label_is_untouched(self, agent, monkeypatch):
+        sink = self._sink(agent, monkeypatch)
+        assert sink("blank-chart", b"png") == "screenshots/run-42/blank-chart.png"
+
+    @pytest.mark.parametrize(
+        "label", ["../../reports/pr-1/latest/findings", "..", ".", "a/b", "x y", ""]
+    )
+    def test_an_unsafe_label_never_shapes_the_key(self, agent, monkeypatch, label):
+        key = self._sink(agent, monkeypatch)(label, b"png")
+        assert key.startswith("screenshots/run-42/")
+        assert key.count("/") == 2, f"{key!r} gained a path level"
+        assert ".." not in key
+
+    def test_a_rejected_label_still_stores_the_capture(self, agent, monkeypatch):
+        """
+        SUBSTITUTE, never refuse. The run has already paid a browser session for
+        these bytes, and the label carries nothing the key needs.
+        """
+        key = self._sink(agent, monkeypatch)("../evil", b"png")
+        assert key == "screenshots/run-42/screenshot-1.png"
+
+    def test_two_rejected_labels_do_not_overwrite_each_other(self, agent, monkeypatch):
+        """
+        Numbered for the same reason the session id stopped being second-
+        resolution: two rejected labels collapsing to one key would silently
+        destroy the first capture's evidence.
+        """
+        sink = self._sink(agent, monkeypatch)
+        assert sink("../a", b"png") != sink("../b", b"png")
+
+    def test_the_namespace_guard_and_the_label_guard_are_one_rule(self, agent):
+        """Two copies of this would be two places to fix the next hole in."""
+        for value in ("..", ".", "a/b", "pr 1", ""):
+            assert agent._safe_report_namespace(value) is None
+            assert agent._safe_path_segment(value) is None
+        assert agent._safe_report_namespace("pr-125") == agent._safe_path_segment("pr-125")
+
+
+class TestBackstopNamesWhereItMatched:
+    """
+    The scrub works on the SERIALIZED body, which is what makes it immune to a
+    field name nobody anticipated -- and also what left it unable to say where a
+    match was. The log line therefore asserted one cause for both: "a field
+    carrying a presigned URL is not being stripped by name".
+
+    That is a confident wrong diagnosis when the match is a finding legitimately
+    QUOTING a URL it saw on the page. The two want opposite responses -- fix the
+    strip, or nothing at all -- so the line now names the paths.
+    """
+
+    def test_a_real_strip_hole_is_located(self, agent):
+        findings = {"screenshots": [{"key": "k", "signed": "https://x?AWSAccessKeyId=AKIA1"}]}
+        assert agent._credential_paths(findings) == ["screenshots[0].signed"]
+
+    def test_a_quoted_url_in_evidence_is_located_as_evidence(self, agent):
+        findings = {"findings": [{"id": "F-1", "evidence": "page showed ?X-Amz-Signature=abc"}]}
+        assert agent._credential_paths(findings) == ["findings[0].evidence"]
+
+    def test_a_clean_report_names_nothing(self, agent):
+        assert agent._credential_paths({"findings": [{"id": "F-1", "evidence": "NaN"}]}) == []
+
+    def test_the_error_line_carries_the_paths(self, agent, monkeypatch, caplog):
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "b")
+        monkeypatch.setattr("boto3.client", lambda *a, **k: MagicMock())
+        with caplog.at_level(logging.ERROR):
+            agent._archive("s-1", {"screenshots": [{"signed": "u?X-Amz-Credential=c"}]})
+        assert "screenshots[0].signed" in caplog.text
+
+    def test_the_scrub_still_happens(self, agent, monkeypatch):
+        """Naming the path must not replace the redaction it explains."""
+        monkeypatch.setattr(agent, "REPORTS_BUCKET", "b")
+        client = MagicMock()
+        monkeypatch.setattr("boto3.client", lambda *a, **k: client)
+        agent._archive("s-1", {"screenshots": [{"signed": "u?AWSAccessKeyId=AKIA1"}]})
+        body = client.put_object.call_args.kwargs["Body"].decode()
+        assert "AWSAccessKeyId" not in body
+        assert "[redacted credential]" in body
+
+
+class TestStaticPrefixMatchesTheBudgetConstant:
+    """
+    _BASE_TOKENS sat at 2,000 against a measured ~3,900 -- understating the
+    static prefix re-sent on every turn by roughly 1.9x.
+
+    TWO consumers read that figure, and only one of them tolerated the error.
+    The budget derivation barely noticed (the quadratic term dominates; the
+    correction moves the eight-route ceiling 3.5%). The prompt-caching note
+    reasons from the same number to conclude that the prefix clears sonnet's
+    1,024 minimum and not haiku's 4,096 -- and at ~3,900 that second half is
+    true by about 5%, not by the 2x the old figure implied.
+
+    So this pins the constant to the real thing: an edit that trims the rubric
+    cannot silently invalidate either consumer again.
+    """
+
+    CHARS_PER_TOKEN = 4
+    TOLERANCE = 0.20
+
+    def _measured_tokens(self, agent):
+        import json as _json
+        import browser_tools
+        import rubric
+
+        chars = len(
+            rubric.build_system_prompt(
+                ai_fallback_mode=True, max_routes=agent.DEFAULT_MAX_ROUTES
+            )
+        ) + len(_json.dumps(browser_tools.tool_specs()))
+        return chars / self.CHARS_PER_TOKEN
+
+    def test_the_constant_matches_what_is_actually_sent(self, agent):
+        measured = self._measured_tokens(agent)
+        drift = abs(agent._BASE_TOKENS - measured) / measured
+        assert drift <= self.TOLERANCE, (
+            f"_BASE_TOKENS is {agent._BASE_TOKENS} but the static prefix measures "
+            f"~{measured:,.0f} tokens ({drift:.0%} off). Update the constant AND the "
+            "prompt-caching note above it -- both reason from this number."
+        )
+
+    def test_the_old_value_would_now_fail_this(self, agent):
+        """The regression this pins, stated as a number rather than a promise."""
+        measured = self._measured_tokens(agent)
+        assert abs(2_000 - measured) / measured > self.TOLERANCE
+
+    def test_the_prefix_does_not_depend_on_the_route_cap(self, agent):
+        """
+        A single constant is only honest if the prefix is actually constant. The
+        route LIST is always the full set; max_routes appears as a numeral.
+        """
+        import rubric
+
+        lengths = {
+            len(rubric.build_system_prompt(ai_fallback_mode=True, max_routes=r))
+            for r in (1, 3, 4, 8)
+        }
+        assert len(lengths) == 1
+
+    def test_the_prefix_clears_sonnets_cache_minimum(self, agent):
+        """The half of the caching note that holds comfortably."""
+        assert self._measured_tokens(agent) > 1_024
+
+    def test_the_prefix_still_sits_under_haikus_cache_minimum(self, agent):
+        """
+        The half that is close. If a rubric edit ever pushes this over 4,096 the
+        note above _BASE_TOKENS becomes wrong in the other direction, and that is
+        worth failing a test over.
+        """
+        assert self._measured_tokens(agent) < 4_096

@@ -32,6 +32,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30.0
 
+# How many console errors / failed requests are held between drains.
+#
+# EACH ENTRY was already truncated to 500 chars; the LIST was not bounded at
+# all, and a drain only happens on the next read -- however long the model
+# spends thinking. A page stuck in a React error loop emits thousands a second,
+# and 50,000 entries measured at 23.8 MB resident. That is precisely the "the
+# page silently broke" case this agent exists to visit, so the shape is not
+# hypothetical.
+#
+# 200 is ten times what drain_events() returns, so the cap cannot change what
+# the model sees: the drain already truncates to 20. This is a memory bound and
+# nothing else.
+MAX_HELD_EVENTS = 200
+
 
 class CDPError(RuntimeError):
     pass
@@ -62,6 +76,10 @@ class CDPSession:
         self.failed_requests: list[str] = []
         self._inflight = 0
         self._last_activity = time.monotonic()
+        # How often wait_for_network_idle gave up rather than settling, and what
+        # that cost. Reported with the run: see the note on that method.
+        self.settle_timeouts = 0
+        self.settle_timeout_seconds = 0.0
 
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -119,6 +137,17 @@ class CDPSession:
             self._reader_stopped = "session closed" if self._closed else reason
             self._cv.notify_all()
 
+    def _hold(self, bucket: list[str], entry: str) -> None:
+        """
+        Append, up to MAX_HELD_EVENTS. Called with _lock held.
+
+        Drops the NEWEST past the cap rather than rotating out the oldest: on a
+        page emitting thousands of identical errors the first ones are the
+        diagnostic ones, and drain_events() reads from the front anyway.
+        """
+        if len(bucket) < MAX_HELD_EVENTS:
+            bucket.append(entry)
+
     def _on_event(self, msg: dict) -> None:
         """Called with _lock held."""
         method = msg.get("method", "")
@@ -128,21 +157,22 @@ class CDPSession:
         if method == "Runtime.exceptionThrown":
             detail = params.get("exceptionDetails", {})
             text = detail.get("exception", {}).get("description") or detail.get("text", "")
-            self.console_errors.append(f"uncaught: {text}"[:500])
+            self._hold(self.console_errors, f"uncaught: {text}"[:500])
         elif method == "Runtime.consoleAPICalled" and params.get("type") in ("error", "warning"):
             args = " ".join(str(a.get("value", a.get("description", ""))) for a in params.get("args", []))
-            self.console_errors.append(f"{params['type']}: {args}"[:500])
+            self._hold(self.console_errors, f"{params['type']}: {args}"[:500])
         elif method == "Log.entryAdded":
             entry = params.get("entry", {})
             if entry.get("level") in ("error", "warning"):
-                self.console_errors.append(f"{entry['level']}: {entry.get('text','')}"[:500])
+                self._hold(self.console_errors, f"{entry['level']}: {entry.get('text','')}"[:500])
         elif method == "Network.requestWillBeSent":
             self._inflight += 1
         elif method in ("Network.loadingFinished", "Network.loadingFailed"):
             self._inflight = max(0, self._inflight - 1)
             if method == "Network.loadingFailed":
-                self.failed_requests.append(
-                    f"{params.get('errorText','failed')}: {params.get('type','')}"[:500]
+                self._hold(
+                    self.failed_requests,
+                    f"{params.get('errorText','failed')}: {params.get('type','')}"[:500],
                 )
 
     def send(self, method: str, params: dict | None = None, timeout: float = DEFAULT_TIMEOUT) -> dict:
@@ -215,23 +245,47 @@ class CDPSession:
             raise CDPError(detail.get("exception", {}).get("description") or detail.get("text", "JS error"))
         return result.get("result", {}).get("value")
 
-    def wait_for_network_idle(self, quiet_ms: int = 500, timeout: float = 15.0) -> None:
+    def wait_for_network_idle(self, quiet_ms: int = 500, timeout: float = 15.0) -> bool:
         """
         Approximate Playwright's networkidle: no in-flight requests, and nothing
         new for quiet_ms. An SPA fires load long before its data has arrived, so
         waiting on the load event alone reads a half-rendered page and produces
         false "blank chart" findings.
+
+        Returns True if the network settled, False if it timed out.
+
+        WHY THE RETURN VALUE AND THE COUNTERS EXIST. `_inflight` rises on
+        `requestWillBeSent` and falls on `loadingFinished`/`loadingFailed`. A
+        connection that stays open -- an EventSource, a websocket, a polling
+        interval -- gives the first event and never the second, or keeps
+        `_last_activity` fresh forever. Either way this can never settle, so
+        EVERY navigate and click pays the full timeout instead of ~0.5s: 20 such
+        calls turn 10s into 300s, half the default 600s deadline, and the run
+        dies on the clock with no indication why.
+
+        A log line at INFO was the only signal, and nothing reads the runtime's
+        logs when a report comes back. So the cost is counted and reported with
+        the run instead -- the same argument `paced_seconds` already makes for
+        the other clock: time spent waiting is otherwise indistinguishable from
+        a slow agent, and the two want opposite responses. Tuning the 15s or the
+        idle heuristic is deliberately NOT part of this; measure first.
         """
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
         quiet = quiet_ms / 1000.0
         while time.monotonic() < deadline:
             with self._lock:
                 idle = self._inflight == 0
                 since = time.monotonic() - self._last_activity
             if idle and since >= quiet:
-                return
+                return True
             time.sleep(0.1)
+        elapsed = time.monotonic() - started
+        with self._lock:
+            self.settle_timeouts += 1
+            self.settle_timeout_seconds += elapsed
         logger.info("network did not settle within %.1fs; continuing", timeout)
+        return False
 
     def drain_events(self) -> dict:
         with self._lock:

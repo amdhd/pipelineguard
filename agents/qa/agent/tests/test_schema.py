@@ -213,3 +213,54 @@ class TestCandidateAssessments:
     def test_rejects_a_non_object_assessment(self):
         with pytest.raises(schema.SchemaError, match="is not an object"):
             schema.validate(self._assessments("cand-1"))
+
+
+class TestScreenshotKeyType:
+    """
+    The key's PRESENCE was checked and its TYPE was not, while every sibling
+    string field was type-checked. That asymmetry had a specific cost: a model
+    returning a list or dict here reached `shot.get("key") in urls` in
+    run_qa -- a dict lookup on an unhashable value, raising TypeError. invoke()
+    catches SchemaError and KeyError, so it escaped as a 500 and the harness
+    reported `runtime_unavailable`.
+
+    That is the ONE input that could make "the agent produced nonsense" read as
+    "the agent crashed", which are the two states this schema exists to keep
+    apart. Caught here rather than guarded at the presign loop, because the
+    schema is where the decision belongs and a guard downstream would leave the
+    same value free to break the next consumer.
+    """
+
+    def _finding(self, shot):
+        return {
+            "id": "F-1", "severity": "LOW", "page": "/x", "summary": "s",
+            "evidence": "e", "steps_to_reproduce": ["a"],
+            "expected": "x", "actual": "y", "screenshot": shot,
+        }
+
+    def test_a_string_key_is_accepted(self):
+        schema.validate_finding(self._finding({"key": "screenshots/a.png"}), 0)
+
+    @pytest.mark.parametrize("bad", [["a"], {"k": "v"}, 3, None, True])
+    def test_a_non_string_key_is_rejected(self, bad):
+        with pytest.raises(schema.SchemaError, match="screenshot.key must be a string"):
+            schema.validate_finding(self._finding({"key": bad}), 0)
+
+    def test_the_error_names_the_type_it_got(self):
+        """A schema violation the reader cannot act on costs the same as a crash."""
+        with pytest.raises(schema.SchemaError, match="got list"):
+            schema.validate_finding(self._finding({"key": ["a"]}), 0)
+
+    def test_a_null_screenshot_is_still_fine(self):
+        """Optional stays optional -- this tightens the type, not the requirement."""
+        schema.validate_finding(self._finding(None), 0)
+
+    def test_the_unhashable_key_can_no_longer_reach_a_dict_lookup(self):
+        """
+        The actual failure, reproduced end-to-end: validate() must reject before
+        anything does `shot.get("key") in urls`.
+        """
+        payload = {"overall": "PASS", "pages_tested": 1,
+                   "findings": [self._finding({"key": ["unhashable"]})]}
+        with pytest.raises(schema.SchemaError):
+            schema.validate(payload)

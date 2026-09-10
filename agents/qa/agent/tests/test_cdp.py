@@ -200,3 +200,149 @@ def test_a_timed_out_command_does_not_wedge_later_ones(fake_ws):
         assert session.send("Runtime.evaluate", timeout=5) == {"second": True}
     finally:
         session.close()
+
+
+class TestHeldEventsAreBounded:
+    """
+    Each entry was already truncated to 500 chars; the LIST was not bounded at
+    all, and a drain only happens on the next read -- however long the model
+    spends thinking. A page in a React error loop emits thousands a second:
+    50,000 entries measured at 23.8 MB resident, which is exactly the "the page
+    silently broke" case this agent exists to visit.
+
+    The cap cannot change what the model sees. drain_events() already truncates
+    to 20, so this is a memory bound and nothing else -- which is why the tests
+    below assert the drain output is unchanged.
+    """
+
+    def _session(self, fake_ws):
+        fake_ws()
+        return cdp.CDPSession("ws://fake", {})
+
+    def _flood(self, session, n, method="Runtime.exceptionThrown"):
+        for _ in range(n):
+            session._on_event({"method": method,
+                               "params": {"exceptionDetails": {"text": "boom"}}})
+
+    def test_console_errors_stop_accumulating_at_the_cap(self, fake_ws):
+        session = self._session(fake_ws)
+        try:
+            self._flood(session, 50_000)
+            assert len(session.console_errors) == cdp.MAX_HELD_EVENTS
+        finally:
+            session.close()
+
+    def test_failed_requests_are_capped_too(self, fake_ws):
+        session = self._session(fake_ws)
+        try:
+            for _ in range(5_000):
+                session._on_event({"method": "Network.loadingFailed",
+                                   "params": {"errorText": "net::ERR", "type": "XHR"}})
+            assert len(session.failed_requests) == cdp.MAX_HELD_EVENTS
+        finally:
+            session.close()
+
+    def test_the_earliest_entries_are_the_ones_kept(self, fake_ws):
+        """
+        On a page repeating one error, the FIRST occurrences are the diagnostic
+        ones and drain_events reads from the front -- so the cap drops the
+        newest rather than rotating the oldest out.
+        """
+        session = self._session(fake_ws)
+        try:
+            for i in range(cdp.MAX_HELD_EVENTS + 50):
+                session._on_event({"method": "Log.entryAdded",
+                                   "params": {"entry": {"level": "error", "text": f"e{i}"}}})
+            assert "e0" in session.console_errors[0]
+            assert not any("e250" in e for e in session.console_errors)
+        finally:
+            session.close()
+
+    def test_what_the_model_sees_is_unchanged(self, fake_ws):
+        """The drain already truncated to 20; the cap must not alter that."""
+        session = self._session(fake_ws)
+        try:
+            self._flood(session, 50_000)
+            drained = session.drain_events()
+            assert len(drained["console_errors"]) == 20
+        finally:
+            session.close()
+
+    def test_a_drain_frees_the_hold_so_a_long_run_can_keep_collecting(self, fake_ws):
+        session = self._session(fake_ws)
+        try:
+            self._flood(session, 1_000)
+            session.drain_events()
+            assert session.console_errors == []
+            self._flood(session, 5)
+            assert len(session.console_errors) == 5
+        finally:
+            session.close()
+
+
+class TestSettleTimeoutsAreCounted:
+    """
+    `_inflight` rises on requestWillBeSent and falls on loadingFinished/Failed.
+    A connection that stays open -- EventSource, websocket, polling interval --
+    gives the first and never the second, so wait_for_network_idle can never
+    settle and every navigate/click pays the full timeout instead of ~0.5s.
+    Twenty such calls is 300s of a 600s deadline.
+
+    The only trace was an INFO log, and nothing reads the runtime's logs when a
+    report comes back. Counting it is the same argument paced_seconds already
+    makes for the other clock: time spent waiting is indistinguishable from a
+    slow agent, and the two want opposite responses.
+    """
+
+    def _session(self, fake_ws):
+        fake_ws()
+        return cdp.CDPSession("ws://fake", {})
+
+    def test_a_settled_network_returns_true_and_counts_nothing(self, fake_ws):
+        session = self._session(fake_ws)
+        try:
+            session._last_activity = time.monotonic() - 5
+            assert session.wait_for_network_idle(quiet_ms=10, timeout=2.0) is True
+            assert session.settle_timeouts == 0
+            assert session.settle_timeout_seconds == 0.0
+        finally:
+            session.close()
+
+    def test_a_request_that_never_finishes_times_out_and_is_counted(self, fake_ws):
+        session = self._session(fake_ws)
+        try:
+            session._on_event({"method": "Network.requestWillBeSent", "params": {}})
+            assert session.wait_for_network_idle(quiet_ms=10, timeout=0.3) is False
+            assert session.settle_timeouts == 1
+            assert session.settle_timeout_seconds >= 0.3
+        finally:
+            session.close()
+
+    def test_a_stream_that_keeps_talking_never_settles(self, fake_ws):
+        """
+        The OTHER shape, and the one a polling SPA actually produces: inflight
+        does reach zero, but activity keeps refreshing so the quiet period never
+        elapses. Modelled by asking for a quiet window longer than the timeout,
+        which is what a page talking every few hundred ms amounts to -- no
+        patching of time, so the test cannot outlive its own assumptions.
+        """
+        session = self._session(fake_ws)
+        try:
+            session._last_activity = time.monotonic()
+            assert session._inflight == 0
+            assert session.wait_for_network_idle(quiet_ms=5_000, timeout=0.3) is False
+            assert session.settle_timeouts == 1
+        finally:
+            session.close()
+
+    def test_the_cost_accumulates_across_calls(self, fake_ws):
+        """It is the TOTAL that eats the deadline, not any one wait."""
+        session = self._session(fake_ws)
+        try:
+            session._on_event({"method": "Network.requestWillBeSent", "params": {}})
+            session.wait_for_network_idle(quiet_ms=10, timeout=0.2)
+            session.wait_for_network_idle(quiet_ms=10, timeout=0.2)
+            assert session.settle_timeouts == 2
+            assert session.settle_timeout_seconds >= 0.4
+        finally:
+            session.close()

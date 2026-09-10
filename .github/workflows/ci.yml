@@ -96,23 +96,34 @@ jobs:
       # (bedrock-agentcore, and pydantic beneath it) are deliberately NOT
       # installed here, because the tests that would need them exercise the
       # browser and are covered against a fake instead.
+      #
+      # boto3 comes from the harness requirements file rather than a bare `pip
+      # install boto3`, so the versions the tests run against are the versions
+      # the step below audits. An unpinned install here would let CI pass on a
+      # closure nothing had checked -- which is how the harness ended up
+      # resolving a vulnerable urllib3 while the agent lock beside it was clean.
       - name: Install test deps
-        run: pip install boto3 pytest websocket-client
+        run: pip install -r agents/qa/harness/requirements.txt pytest websocket-client
 
       - name: pytest
         run: pytest -q
 
-      # SCA on the agent's runtime closure -- the one scan no existing gate
-      # covers (npm audit covers the app; checkov/trivy cover infra). Audits the
-      # hash-locked requirements.lock, so versions are fixed and the result is
-      # stable instead of whatever PyPI resolves that day. A real gate: the
-      # current closure audits clean (P2.5, 2026-09-04), so a newly introduced
+      # SCA on BOTH Python closures -- the scans no other gate covers (npm audit
+      # covers the app; checkov/trivy cover infra). Both inputs are fully
+      # pinned, so the result is stable instead of whatever PyPI resolves that
+      # day: the agent's hash-locked requirements.lock, and the harness's
+      # requirements.txt (added P0.6 -- until then nothing audited the harness
+      # at all, and it was resolving a urllib3 line with five open advisories
+      # while the lock beside it was clean).
+      #
+      # A real gate on both: each audits clean today, so a newly introduced
       # HIGH/CRITICAL prod dependency blocks the PR rather than being swept
       # under `|| true` -- a step that always goes green tells nobody anything.
-      - name: pip-audit (agent runtime closure)
+      - name: pip-audit (agent runtime closure + harness closure)
         run: |
           pip install pip-audit==2.10.1
           pip-audit -r agents/qa/agent/requirements.lock
+          pip-audit -r agents/qa/harness/requirements.txt
 
   node-app:
     name: App (build · test)

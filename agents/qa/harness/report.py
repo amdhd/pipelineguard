@@ -47,30 +47,106 @@ _ERROR_HINTS = {
 }
 
 
+def _safe(value: object) -> str:
+    """
+    Finding text, made safe to interpolate into the comment.
+
+    EVERY FIELD THIS TOUCHES IS UNTRUSTED, and the chain is short: text the
+    application under test renders -> the model's summary/evidence/actual ->
+    this string -> a comment on a PUBLIC repo. The model is not the adversary
+    here; the page it is reading is, and the model copies what it reads.
+
+    This repo has already settled that question on the other consumer of the
+    same fields. `agents/fix/prompt.py` runs its own `sanitise()` over summary,
+    evidence, expected and actual before they reach the fix model. Only the
+    renderer trusted them, and only because `_finding_block` emits raw HTML --
+    so a summary carrying `</summary></details>` closed the block and rendered
+    the rest as top-level comment body.
+
+    Distinct from `redact.py`, which runs earlier on the same dict. That removes
+    CREDENTIALS -- a presigned URL is a real key id in a public record. This
+    removes STRUCTURE -- a tag is a way to rewrite the report around the finding.
+    Neither subsumes the other: redaction leaves `</details>` untouched, and
+    escaping leaves an access key id perfectly readable.
+
+    HTML-escaping is the whole fix, and it is enough BECAUSE the block's own
+    structure (`<details>`, `<summary>`, `<code>`) is written by the template
+    below, never by a finding. Nothing here needs to emit a tag, so nothing here
+    may. Markdown is deliberately left alone: `**bold**` and backticks are how
+    real evidence text reads, escaping them would mangle every honest finding to
+    stop a cosmetic one, and markdown cannot break out of the block -- only a
+    tag can.
+    """
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _safe_inline(value: object) -> str:
+    """
+    As `_safe`, for the one-line contexts: `<summary>` and the ordered list.
+
+    A newline in either is a second structural break -- it ends the summary line
+    or the list item and drops what follows into the block at its own level --
+    so the escaping that stops a tag is not sufficient on its own there.
+    """
+    return " ".join(_safe(value).split())
+
+
+def _safe_cell(value: object) -> str:
+    """
+    As `_safe_inline`, plus the pipe escape a markdown table cell needs.
+
+    The three table renderers already escaped `|` and newlines in `summary` --
+    that half was right and predates this. Two things it missed: a tag is as
+    unwelcome in a cell as in the details block, and `page` was interpolated
+    into every one of those tables with no escaping at all, so a `|` in a route
+    name would have broken the table the same way a summary once could.
+    """
+    return _safe_inline(value).replace("|", "\\|")
+
+
 def _finding_block(f: dict) -> str:
     icon = SEVERITY_ICON.get(f["severity"], "")
     lines = [
-        f"<details><summary>{icon} <b>{f['severity']}</b> — <code>{f['page']}</code> — {f['summary']}</summary>",
+        f"<details><summary>{icon} <b>{_safe_inline(f['severity'])}</b> — "
+        f"<code>{_safe_inline(f['page'])}</code> — {_safe_inline(f['summary'])}</summary>",
         "",
-        f"**Expected:** {f['expected']}",
+        f"**Expected:** {_safe(f['expected'])}",
         "",
-        f"**Actual:** {f['actual']}",
+        f"**Actual:** {_safe(f['actual'])}",
         "",
-        f"**Evidence:** {f['evidence']}",
+        f"**Evidence:** {_safe(f['evidence'])}",
         "",
         "**Steps to reproduce:**",
     ]
-    lines += [f"{i}. {s}" for i, s in enumerate(f.get("steps_to_reproduce", []), 1)]
+    lines += [f"{i}. {_safe_inline(s)}" for i, s in enumerate(f.get("steps_to_reproduce", []), 1)]
 
     shot = f.get("screenshot")
     if isinstance(shot, dict) and shot.get("key"):
         # The KEY, never a link. redact.py has already removed the presigned URL
         # by the time this runs; not rendering one is the second half of that,
         # so a future caller handing us a signed link cannot republish it.
-        lines += ["", f"_Evidence: `{shot['key']}` in the reports bucket — presign it to view._"]
+        #
+        # Escaped, because the key is not ours: it ends in the label the MODEL
+        # chose for the screenshot (`screenshots/<session>/<label>.png`), so it
+        # carries model text into the comment like every other field here.
+        lines += [
+            "",
+            f"_Evidence: `{_safe_inline(shot['key'])}` in the reports bucket — "
+            "presign it to view._",
+        ]
 
     src = f.get("suspected_source")
-    lines += ["", f"**Suspected source:** {f'`{src}`' if src else '_not identified_'}", "", "</details>"]
+    lines += [
+        "",
+        f"**Suspected source:** {f'`{_safe_inline(src)}`' if src else '_not identified_'}",
+        "",
+        "</details>",
+    ]
     return "\n".join(lines)
 
 
@@ -172,8 +248,8 @@ def render_reverify(rows: list) -> str:
     ]
     for r in ordered:
         status = _REVERIFY_STATUS.get(r["status"], f"**{r['status'].upper()}**")
-        summary = r["summary"].replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {status} | `{r['page']}` | {summary} |")
+        summary = _safe_cell(r["summary"])
+        lines.append(f"| {status} | `{_safe_cell(r['page'])}` | {summary} |")
     if any(r["status"] == "unverified" for r in ordered):
         lines += [
             "",
@@ -231,9 +307,12 @@ def render_board(rows: list) -> str:
     ]
     for r in ordered:
         status = _REVERIFY_STATUS.get(r["status"], f"**{r['status'].upper()}**")
-        summary = r["summary"].replace("|", "\\|").replace("\n", " ")
-        label = r.get("label") or "_needs a human_"
-        lines.append(f"| {status} | `{r['page']}` | {summary} | {label} |")
+        summary = _safe_cell(r["summary"])
+        # `label` is a human verdict written downstream by score.py, not model
+        # output -- escaped anyway, because it reaches this table through
+        # board.json in S3 and a cell is a cell.
+        label = _safe_cell(r["label"]) if r.get("label") else "_needs a human_"
+        lines.append(f"| {status} | `{_safe_cell(r['page'])}` | {summary} | {label} |")
     if any(r.get("label") is None for r in ordered):
         lines += [
             "",
@@ -284,8 +363,10 @@ def render_unmatched(findings: list) -> str:
     ]
     for f in ordered:
         icon = SEVERITY_ICON.get(f["severity"], "")
-        summary = f["summary"].replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {icon} {f['severity']} | `{f['page']}` | {summary} |")
+        summary = _safe_cell(f["summary"])
+        lines.append(
+            f"| {icon} {_safe_cell(f['severity'])} | `{_safe_cell(f['page'])}` | {summary} |"
+        )
     return "\n".join(lines)
 
 

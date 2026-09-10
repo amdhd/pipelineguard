@@ -7,10 +7,16 @@
 # something else does the noticing -- otherwise "frozen" quietly becomes
 # "abandoned". This is that something.
 #
-# ONLY agents/qa/agent IS LISTED AMONG THE PYTHON DIRS, on purpose. Dependabot's value here is raising
-# an exact pin. agents/fix/requirements.txt declares `boto3>=1.34.0`, a floor
-# that already admits every new release, so there is nothing for a bump PR to
-# change; agents/converge/requirements.txt is a comment-only declaration (the
+# TWO PYTHON DIRS ARE LISTED, and the rule is the same for both: Dependabot's
+# value here is raising an exact pin. agents/qa/agent has used `==` since P2.4.
+# agents/qa/harness joined it in P0.6 -- it declared nothing at all until then,
+# which is how it came to resolve a urllib3 line carrying five open advisories
+# while the agent lock beside it audited clean.
+#
+# The other two stay out for the reason this note has always given.
+# agents/fix/requirements.txt declares `boto3>=1.34.0`, a floor that already
+# admits every new release, so there is nothing for a bump PR to change;
+# agents/converge/requirements.txt is a comment-only declaration (the
 # convergence session is pure stdlib). Add them here if either ever gains a pin.
 #
 # A MERGED BUMP CHANGES NOTHING THAT RUNS. This repo deploys an artifact, not a
@@ -23,6 +29,19 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: /agents/qa/agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The harness half. Unlike the agent block above, a merged bump here DOES
+  # change what runs -- the harness executes from the checkout on the GitHub
+  # runner, not from a deployed zip -- so treat one as shippable rather than as
+  # scheduled work. (Production still installs from vesselAI's own workflow;
+  # see the scope note in the requirements file.)
+  - package-ecosystem: pip
+    directory: /agents/qa/harness
     schedule:
       interval: weekly
     open-pull-requests-limit: 2

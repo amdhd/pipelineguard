@@ -40,6 +40,23 @@ updates:
   # runner, not from a deployed zip -- so treat one as shippable rather than as
   # scheduled work. (Production still installs from vesselAI's own workflow;
   # see the scope note in the requirements file.)
+  #
+  # GROUPED, because boto3 and botocore CANNOT MOVE SEPARATELY. boto3 1.43.89
+  # declares `botocore>=1.43.89`, so the two pins are not independent lines in a
+  # file -- they are one fact written twice. Ungrouped, Dependabot opened one PR
+  # each (#93, #94), both editing the same line, where ONE merge order works and
+  # the other produces a tree that cannot install:
+  #
+  #   botocore first -> boto3 1.43.87 wants >=1.43.87, gets 1.43.89.  fine
+  #   boto3 first    -> boto3 1.43.89 wants >=1.43.89, file says 1.43.87.  broken
+  #
+  # A recurring choice where one option is silently wrong is the shape this file
+  # already argues against for npm: "a queue of unmergeable PRs teaches people to
+  # ignore the queue." One PR carrying both removes the choice.
+  #
+  # Scoped to the aws-sdk pair rather than a catch-all group: anything else that
+  # lands here genuinely can move on its own, and grouping independent packages
+  # only means one bad member blocks the rest.
   - package-ecosystem: pip
     directory: /agents/qa/harness
     schedule:
@@ -47,6 +64,11 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      aws-sdk:
+        patterns:
+          - "boto3"
+          - "botocore"
 
   # The workflows themselves. Every `uses:` in ci.yml sits on a major tag, and
   # nothing was watching them -- the same "a pin buys reproducibility and costs

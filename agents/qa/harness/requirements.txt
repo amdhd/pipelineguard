@@ -33,7 +33,7 @@
 # installs from this file, CI is green on these versions while production
 # resolves its own. Flagged there, not silently forked here.
 boto3==1.43.87
-botocore==1.43.87
+botocore==1.43.89
 jmespath==1.1.0
 python-dateutil==2.9.0.post0
 s3transfer==0.19.2

@@ -121,17 +121,47 @@ before the navigation succeeds.
 ## 3. Performance — estimated time/memory vs. thresholds
 
 **Nothing breaches a hard threshold. Every resource is bounded by a backstop,
-and measured runs sit 3–10× below the ceilings. Memory is a non-issue.**
+and measured runs sit 2–6× below the ceilings. Memory is a non-issue.**
+(Re-measured 2026-09-12; this line said 3–10× against the older figures below.)
 
 | Meter | Ceiling | Measured | Backstop |
 |---|---|---|---|
 | QA turns | 62 (8 routes) | 18 turns (corpus run 33140269258) | `DEFAULT_DEADLINE_SECONDS=600` |
-| QA tokens | 3.34 M derived | ~90k–400k | deadline + `token_budget` |
+| QA tokens | 3.34 M derived | **363k–574k**, mean 488k (re-measured 2026-09-12, n=7; was recorded ~90k–400k) | deadline + `token_budget` |
 | QA wall-clock | ~470s at 7.6s/turn | 137s | 600s deadline |
-| QA cost | — | **$0.03–0.18/run** (vs ~$0.23 estimate) | token/deadline |
+| QA cost | — | **$0.26–$0.38/run**, mean **$0.33** (re-measured 2026-09-12, n=7; was recorded $0.03–0.18) | token/deadline |
 | Fix per run | 5 findings, 200k tokens | 29,402 tokens/finding; **$0.09–0.11/finding** | budget, `--max-findings` |
 | Loop | 3 rounds, 2 M tokens, 3600s wall-clock, 1500s/round | live 33599986790: 4 rounds, 4.7 M tokens, 2415s wall — **PASS** | cumulative caps from flags |
 | Idle runtime | — | ~$1.40/month | — |
+
+**Re-measured 2026-09-12 — the two rows above were understating by ~2×.** Every
+run then still in the reports bucket (7 runs, 2026-09-04 → 09-06, sonnet) was
+priced with `pricing.summarise` rather than estimated. 22–31 turns, 151–215s.
+
+Where the money actually goes, averaged over those 7:
+
+| Meter | Tokens | $/Mtok | Cost | Share |
+|---|---:|---:|---:|---:|
+| Cache **write** — history first seen | 31,473 | 3.75 | $0.1180 | 36% |
+| Cache **read** — history re-sent | 452,015 | 0.30 | $0.1356 | 41% |
+| Output | 4,367 | 15.00 | $0.0655 | 20% |
+| Input (uncached) | 29 | 3.00 | $0.0001 | 0% |
+| AgentCore runtime + browser | 191s | — | $0.0115 | 3% |
+| **Total** | | | **$0.3307** | |
+
+**Re-sending the conversation is 77% of the bill**, which is inherent: the loop
+re-sends its whole history every turn, so cost grows quadratically with TURNS.
+Caching is working well — 92–94% hit rate, uncached input down to 29 tokens —
+and that is precisely why the cache-read rate rather than the input rate
+dominates. Without it the same run would be roughly $1.40.
+
+**Compute is noise at 3%.** Anything aimed at cutting cost has to target turns,
+not seconds; `--max-routes` is the one knob that moves both (the budget is
+derived from it).
+
+The likely cause of the drift is `_INTERACTION_TURNS_PER_ROUTE`, which raised
+the derived ceilings ~2.2×. `agent.py`'s comment predicted measured spend would
+not follow — at 27 turns against the 18 in the old row, it partly did.
 
 **Flagged:** harness `read_timeout=900` exceeds the agent's 600s deadline — a
 single hung call can burn 900s, longer than the whole run's budget and 60% of

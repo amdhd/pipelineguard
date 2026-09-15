@@ -25,7 +25,7 @@
 # out of that deployed zip, not off PyPI -- so pinning changes nothing that runs
 # today. Moving either is a deliberate edit here, packaged and re-measured, not
 # a side effect of the calendar.
-bedrock-agentcore==1.22.0
+bedrock-agentcore==1.23.0
 websocket-client==1.9.2
 
 # Transitives are locked, but NOT here -- they live in requirements.lock, the

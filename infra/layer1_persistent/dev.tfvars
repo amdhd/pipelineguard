@@ -32,7 +32,7 @@ log_retention_days = 7
 #   AWS_PROFILE=pipelineguard ./scripts/package-qa-agent.sh
 #   ./scripts/apply-dev.sh
 qa_agent_code_key        = "agent/qa-agent-dev.zip"
-qa_agent_code_version_id = "xS.W8widF.mp.9eH3B_HsTdYp79gHLXh"
+qa_agent_code_version_id = "jD.7X5rIC348OrUJq96KpE8u_JP3c01f"
 
 # --- Phase 2 bug-fix agent ---
 #

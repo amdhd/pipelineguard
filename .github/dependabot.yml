@@ -75,13 +75,6 @@ updates:
   # you security patches" trade as the pip block above, one layer down. Unlike
   # that block, a merged bump here DOES change what runs: CI executes the
   # workflow from the repo, not from a deployed artifact.
-  #
-  # npm is still deliberately absent. app/'s production tree is clean; what
-  # remains is the vitest -> vite -> esbuild dev chain, whose fix needs Node
-  # >=22.12 against an app pinned to Node 20 in the runner and in both stages of
-  # app/Dockerfile. Dependabot would open bump PRs that cannot merge until that
-  # decision is made, and a queue of unmergeable PRs teaches people to ignore
-  # the queue. Add it once the Node version moves.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -89,3 +82,26 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(ci)"
+
+  # The sample app. Left out until #102, because the dev-chain advisories
+  # (vitest -> vite -> esbuild) looked like they needed Node >=22.12 against an
+  # app pinned to Node 20 in the runner and in both stages of app/Dockerfile, and
+  # a queue of unmergeable PRs teaches people to ignore the queue. #102 showed
+  # the fix never needed the Node move: vitest 4 accepts vite 6, and vite 6
+  # supports Node 20. It holds vite there with an `overrides` entry.
+  #
+  # VITE MAJORS ARE IGNORED for that same reason. vite 7+ needs Node
+  # >=20.19/22.12, so a vite major is a Node decision, not a dependency bump.
+  # Unignored, Dependabot would keep proposing vite 8 -- the exact PR (#48)
+  # that sat conflicted and unmergeable. Drop this ignore in the same change
+  # that moves the Node version.
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]

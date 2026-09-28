@@ -45,7 +45,7 @@ jobs:
             terraform -chdir="$dir" validate
           done
 
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: latest
 

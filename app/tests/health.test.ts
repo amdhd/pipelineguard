@@ -24,3 +24,14 @@ describe('unknown routes', () => {
     expect(res.status).toBe(404)
   })
 })
+
+describe('error handler', () => {
+  it('returns 400, not 500, for a malformed JSON body', async () => {
+    const res = await request(app)
+      .post('/health')
+      .set('Content-Type', 'application/json')
+      .send('{"broken":')
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ status: 'error', message: 'Bad Request' })
+  })
+})

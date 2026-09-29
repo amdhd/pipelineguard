@@ -66,3 +66,36 @@ def without_credentials(findings: dict) -> dict:
     return json.loads(
         _CREDENTIALED_STRING.sub('"[redacted credential]"', json.dumps(walked))
     )
+
+
+def without_values(node, values):
+    """
+    A copy with every occurrence of each of ``values`` replaced, in every string.
+
+    The QA LOGIN is the other credential in these records, and the pattern
+    passes above cannot see it: it has no shape, only a value. The agent hands
+    the model `Credentials: <email> / <password>` in plain text, and the model
+    writes it straight back into steps_to_reproduce -- "Log in as <email> /
+    <password>" is the natural phrasing, and every stored vesselAI report has
+    it. The harness is the one place that knows the exact values (it read them
+    from Secrets Manager), so exact-match replacement is the whole fix.
+
+    Today's target publishes its demo login in its own README, so nothing is
+    lost yet. This is here for the day the target changes and the login is a
+    real one.
+
+    Walks strings rather than the serialized JSON, so a value containing a
+    quote or backslash matches as written instead of in its escaped form.
+    Empty values are skipped: replacing "" would corrupt every string. Longest
+    first, so a password that is a substring of the email cannot leave the
+    email half-redacted.
+    """
+    values = sorted((v for v in values if v), key=len, reverse=True)
+    if isinstance(node, dict):
+        return {k: without_values(v, values) for k, v in node.items()}
+    if isinstance(node, list):
+        return [without_values(v, values) for v in node]
+    if isinstance(node, str):
+        for v in values:
+            node = node.replace(v, "[redacted]")
+    return node

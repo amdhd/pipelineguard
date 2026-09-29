@@ -487,6 +487,8 @@ def run(args) -> int:
     # records, and a presigned URL is a real key id and session token. Nothing
     # downstream needs the links. See redact.py.
     findings = redact.without_credentials(findings)
+    # The QA login, by value: the model echoes it into steps_to_reproduce.
+    findings = redact.without_values(findings, (payload["email"], payload["password"]))
 
     # PROVENANCE. Stamped by the harness, not the agent: the agent drives a
     # browser against a tunnel and has no idea what commit built the thing it is

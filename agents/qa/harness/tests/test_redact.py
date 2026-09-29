@@ -89,3 +89,94 @@ class TestPresignedUrlsAreRemoved:
         findings = {"screenshots": [{"key": "k.png", "url": SIGV2}]}
         redact.without_credentials(findings)
         assert findings["screenshots"][0]["url"] == SIGV2
+
+
+# Obviously fake: these assert on exact-value replacement, not on shape.
+EMAIL = "qa-login@example.test"
+PASSWORD = "not-a-real-pass-7"
+
+
+class TestTheQaLoginIsRemoved:
+    """The agent gives the model `Credentials: <email> / <password>`, and the
+    model writes it back into steps_to_reproduce ("Log in as <email> /
+    <password>") -- every stored vesselAI report carries it. Today's target
+    publishes that demo login in its README; these guard the day it does not."""
+
+    def test_the_login_is_replaced_wherever_it_appears(self):
+        findings = {
+            "findings": [
+                {
+                    "steps_to_reproduce": [f"Log in as {EMAIL} / {PASSWORD}", "Open /voyage"],
+                    "evidence": f"form still shows {EMAIL}",
+                    "nested": {"deep": [f"pw={PASSWORD}"]},
+                }
+            ]
+        }
+        out = redact.without_values(findings, (EMAIL, PASSWORD))
+        text = str(out)
+        assert EMAIL not in text and PASSWORD not in text
+        assert out["findings"][0]["steps_to_reproduce"] == [
+            "Log in as [redacted] / [redacted]",
+            "Open /voyage",
+        ]
+
+    def test_a_value_with_json_special_characters_still_matches(self):
+        """Walking strings, not the serialized JSON: a quote or backslash in the
+        password is escaped in json.dumps output and would never match there."""
+        pw = 'a"b\\c'
+        out = redact.without_values({"s": f"login {pw} done"}, ("", pw))
+        assert out == {"s": "login [redacted] done"}
+
+    def test_empty_values_change_nothing(self):
+        """No --email/--password and no secret leaves both values "". Replacing
+        "" would insert the placeholder between every character."""
+        clean = {"summary": "Signature pad does not clear", "n": 3, "ok": True}
+        assert redact.without_values(clean, ("", "")) == clean
+
+    def test_a_password_inside_the_email_leaves_no_fragment(self):
+        """Longest first: replacing "demo" before "demo@x.test" would leave
+        "[redacted]@x.test" -- half an identifier still in the record."""
+        out = redact.without_values({"s": "demo@x.test"}, ("demo", "demo@x.test"))
+        assert out == {"s": "[redacted]"}
+
+    def test_the_callers_dict_is_not_mutated(self):
+        findings = {"steps": [f"Log in as {EMAIL}"]}
+        redact.without_values(findings, (EMAIL,))
+        assert findings["steps"] == [f"Log in as {EMAIL}"]
+
+
+class TestBothPublishedRecordsAreRedacted:
+    def test_run_keeps_the_login_out_of_the_artifact_and_the_comment(self, monkeypatch, tmp_path):
+        """Wiring, not the function: the harness must apply it BEFORE both
+        durable sinks -- the --json-out artifact and the PR comment -- which on
+        vesselAI are both public."""
+        import main as harness
+
+        finding = {
+            "id": "F-001",
+            "severity": "HIGH",
+            "page": "/login",
+            "summary": f"Login as {EMAIL} fails",
+            "evidence": "error toast",
+            "steps_to_reproduce": [f"Log in as {EMAIL} / {PASSWORD}"],
+            "expected": "dashboard",
+            "actual": f"stays on login with {PASSWORD} still typed",
+        }
+        monkeypatch.setattr(
+            harness, "invoke",
+            lambda *a, **k: {"overall": "FAIL", "pages_tested": 1, "findings": [dict(finding)]},
+        )
+        monkeypatch.setattr(harness, "fetch_prior_report", lambda *a, **k: None)
+        args = harness.build_parser().parse_args([
+            "--runtime-arn", "arn:x", "--target-url", "https://t",
+            "--email", EMAIL, "--password", PASSWORD,
+            "--json-out", str(tmp_path / "findings.json"),
+            "--comment-out", str(tmp_path / "comment.md"),
+        ])
+
+        harness.run(args)
+        for name in ("findings.json", "comment.md"):
+            body = (tmp_path / name).read_text()
+            assert EMAIL not in body, name
+            assert PASSWORD not in body, name
+        assert "Log in as [redacted] / [redacted]" in (tmp_path / "comment.md").read_text()

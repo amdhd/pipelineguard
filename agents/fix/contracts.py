@@ -96,6 +96,7 @@ warn loudly -- because too much true context beats a little false context.
 import json
 from pathlib import Path
 
+import edits as edit_rules
 import paths as path_rules
 
 MANIFEST_NAME = ".qa-contracts.json"
@@ -325,7 +326,14 @@ def resolve(feature: dict | None, root: Path) -> dict:
         # Read-only entries are deduplicated on the SLICED identity, so one file
         # may legitimately contribute two regions (a request type and a response
         # type in the same types.ts) without being read twice.
-        target = root / relative
+        # Where the path LANDS, not just what it says. The allow-list reads the
+        # string; a symlink at an allowed path can point at .git/config (the
+        # checkout's token) or a .env, and this text goes into the model's prompt.
+        # Writes already go through the same check in edits.py.
+        target, reason = edit_rules._resolve(root, relative)
+        if target is None:
+            out["warnings"].append(f"manifest path {reason}; skipped")
+            continue
         if not target.is_file():
             out["warnings"].append(f"manifest_stale: {relative} does not exist; skipped")
             continue

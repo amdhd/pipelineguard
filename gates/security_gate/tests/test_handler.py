@@ -214,3 +214,37 @@ def test_summarise_checkov_defaults_severity_to_high():
     out = summarise_checkov(raw)
     assert out["HIGH"] == 1
     assert out["findings"][0]["check_id"] == "CKV_AWS_1"
+
+
+def _fake_response(text, stop_reason):
+    return types.SimpleNamespace(
+        content=[types.SimpleNamespace(text=text)], stop_reason=stop_reason
+    )
+
+
+def test_summary_budget_fits_the_requested_length(monkeypatch):
+    """
+    The prompt asks for up to 800 words (~1,100 tokens). A 1000-token cap cut
+    long reports off before their closing GO / NO-GO line.
+    """
+    import claude_summariser
+
+    client = MagicMock()
+    client.messages.create.return_value = _fake_response("report", "end_turn")
+    monkeypatch.setattr(claude_summariser.anthropic, "Anthropic", lambda **_: client)
+
+    assert claude_summariser.summarise_findings({}, {}, "sk") == "report"
+    assert client.messages.create.call_args.kwargs["max_tokens"] >= 1600
+
+
+def test_a_truncated_summary_says_so(monkeypatch):
+    """A report cut off at the cap must not be posted as if it were complete."""
+    import claude_summariser
+
+    client = MagicMock()
+    client.messages.create.return_value = _fake_response("## Report\n- CRITICAL: ope", "max_tokens")
+    monkeypatch.setattr(claude_summariser.anthropic, "Anthropic", lambda **_: client)
+
+    out = claude_summariser.summarise_findings({}, {}, "sk")
+    assert out.startswith("## Report")
+    assert "truncated" in out

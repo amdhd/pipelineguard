@@ -72,7 +72,12 @@ def _evaluate(plan_path: str, secrets: dict) -> dict[str, Any]:
         logger.info(message)
 
     _notify_slack(secrets.get("SLACK_WEBHOOK_URL"), message, "blocked" if blocked else "passed")
-    return {"blocked": blocked, "monthly_cost_delta": monthly_delta, "message": message}
+    return {
+        "blocked": blocked,
+        "monthly_cost_delta": monthly_delta,
+        "threshold": threshold,
+        "message": message,
+    }
 
 
 def _handle_direct(event: dict) -> dict:
@@ -117,7 +122,7 @@ def _handle_pipeline_job(event: dict) -> None:
                     "type": "JobFailed",
                     "message": (
                         f"Cost gate blocked: ${summary['monthly_cost_delta']:.2f}/month "
-                        f"exceeds threshold"
+                        f"exceeds threshold (${summary['threshold']:.2f}/month)"
                     ),
                 },
             )

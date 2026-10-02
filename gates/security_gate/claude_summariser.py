@@ -45,11 +45,17 @@ Produce the security gate report now."""
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1000,
+            # 800 words is ~1,100 tokens; 1000 cut long reports off before the
+            # GO / NO-GO line the prompt asks for at the end.
+            max_tokens=1600,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
-        return response.content[0].text
+        text = response.content[0].text
+        if response.stop_reason == "max_tokens":
+            # Say so, rather than posting a report that stops mid-sentence as if complete.
+            text += "\n\n_Report truncated at the length limit._"
+        return text
     except Exception as e:  # noqa: BLE001 — never let summarisation break the gate
         logger.error("Claude summarisation failed: %s", e)
         critical = trivy_results.get("CRITICAL", 0) + checkov_results.get("CRITICAL", 0)

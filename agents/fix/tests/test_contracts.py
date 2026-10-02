@@ -321,6 +321,35 @@ class TestTheAllowList:
         assert resolved["readonly"] == []
         assert any("not allow-listed" in w for w in resolved["warnings"])
 
+    def test_manifest_cannot_read_through_a_symlink(self, tree):
+        """
+        The allow-list checks the path STRING. `frontend/src/lib/notes.ts` is a
+        good string even when it is a symlink to `.git/config`, which holds the
+        checkout's token when credentials are persisted -- and a read-only entry
+        is pasted straight into the fix model's prompt. Where the link lands has
+        to pass the same rules, exactly as it already must for a write.
+        """
+        (tree / ".git").mkdir()
+        (tree / ".git" / "config").write_text("extraheader = AUTHORIZATION: basic SECRET\n")
+        (tree / "frontend" / "src" / "lib" / "notes.ts").symlink_to(tree / ".git" / "config")
+        write_manifest(
+            tree,
+            {
+                "version": 1,
+                "features": [
+                    {
+                        "id": "voyage",
+                        "match": {"page_prefix": "/voyage"},
+                        "context": [{"path": "frontend/src/lib/notes.ts"}],
+                    }
+                ],
+            },
+        )
+        resolved = contracts.for_finding(FINDING, tree)
+        assert resolved["readonly"] == []
+        assert "SECRET" not in json.dumps(resolved)
+        assert any("resolves to .git/config" in w for w in resolved["warnings"])
+
 
 class TestTheHundredAndThirtyShape:
     """

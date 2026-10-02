@@ -23,6 +23,19 @@ describe('unknown routes', () => {
     const res = await request(app).get('/does-not-exist')
     expect(res.status).toBe(404)
   })
+
+  it('returns the JSON error envelope, not an HTML page', async () => {
+    const res = await request(app).get('/does-not-exist')
+    expect(res.headers['content-type']).toMatch(/application\/json/)
+    expect(res.body).toEqual({ status: 'error', message: 'Not Found' })
+  })
+})
+
+describe('response headers', () => {
+  it('does not advertise the framework', async () => {
+    const res = await request(app).get('/health')
+    expect(res.headers['x-powered-by']).toBeUndefined()
+  })
 })
 
 describe('error handler', () => {

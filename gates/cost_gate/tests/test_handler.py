@@ -148,3 +148,35 @@ def test_direct_invoke_blocks_over_threshold(monkeypatch, _boto3_stub):
     )
     out = handler.lambda_handler({"plan_s3_bucket": "b", "plan_s3_key": "k"}, None)
     assert out["gate_status"] == "failed"
+
+
+def test_parse_diff_fails_closed_without_a_delta():
+    """
+    A missing delta is unknown, not $0. Defaulting it to zero would PASS any
+    plan Infracost failed to price -- fail closed, like the security gate.
+    """
+    from infracost_runner import _parse_diff
+
+    for raw in ({"totalMonthlyCost": "10"}, {"diffTotalMonthlyCost": None}):
+        with pytest.raises(RuntimeError, match="diffTotalMonthlyCost"):
+            _parse_diff(raw)
+
+
+def test_parse_diff_keeps_a_real_zero_delta():
+    """An explicit "0" is a measured no-change plan and must still pass."""
+    from infracost_runner import _parse_diff
+
+    assert _parse_diff({"diffTotalMonthlyCost": "0", "projects": []})["monthly_cost_delta"] == 0.0
+
+
+def test_block_message_names_the_threshold(monkeypatch, _boto3_stub):
+    """The console reader should not need the logs to learn what the limit was."""
+    handler, clients = _boto3_stub
+    monkeypatch.setattr(
+        handler, "run_infracost", lambda **_: {"monthly_cost_delta": 120.0, "top_resources": []}
+    )
+
+    handler.lambda_handler(_event(), None)
+
+    details = clients["codepipeline"].put_job_failure_result.call_args.kwargs["failureDetails"]
+    assert "$50.00/month" in details["message"]

@@ -489,6 +489,13 @@ def run(args) -> int:
     findings = redact.without_credentials(findings)
     # The QA login, by value: the model echoes it into steps_to_reproduce.
     findings = redact.without_values(findings, (payload["email"], payload["password"]))
+    # The PRIOR report too. It is the runtime's S3 archive, which only ever had
+    # presigned URLs stripped, and its summaries reach the comment through the
+    # re-verify table and the board.
+    if prior:
+        prior = redact.without_values(
+            redact.without_credentials(prior), (payload["email"], payload["password"])
+        )
 
     # PROVENANCE. Stamped by the harness, not the agent: the agent drives a
     # browser against a tunnel and has no idea what commit built the thing it is

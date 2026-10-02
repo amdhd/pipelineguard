@@ -115,6 +115,34 @@ class TestReverifyWiring:
         assert "Voyage History tab crashes" in comment
         assert "FIXED" not in comment
 
+    def test_the_prior_report_is_redacted_before_it_reaches_the_comment(
+        self, monkeypatch, tmp_path
+    ):
+        """
+        The prior is the runtime's own S3 archive, which only had presigned URLs
+        stripped -- the QA login the model echoed is still in it. Its summaries
+        are rendered into the re-verify table and the board, so redacting only
+        THIS run's findings would let last week's report republish the login.
+        """
+        prior = json.loads(json.dumps(_PRIOR))
+        prior["findings"][0]["summary"] = "Voyage History crashes after login as qa@x.io / hunter22"
+        args = _args(
+            tmp_path,
+            reports_bucket="bucket",
+            report_namespace="pr-125",
+            email="qa@x.io",
+            password="hunter22",
+        )
+        monkeypatch.setattr(harness, "invoke", lambda *a, **k: dict(_PASS))
+        monkeypatch.setattr(harness, "fetch_prior_report", lambda *a, **k: prior)
+        monkeypatch.setattr(harness, "_fetch_json", lambda *a, **k: None)
+
+        harness.run(args)
+        comment = Path(tmp_path / "comment.md").read_text()
+        assert "Voyage History crashes" in comment
+        assert "qa@x.io" not in comment
+        assert "hunter22" not in comment
+
     def test_the_namespace_is_forwarded_to_the_runtime(self, monkeypatch, tmp_path):
         seen = {}
 

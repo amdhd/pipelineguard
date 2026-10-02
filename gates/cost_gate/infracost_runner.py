@@ -62,7 +62,12 @@ def _parse_diff(data: dict[str, Any]) -> dict[str, Any]:
     monthlyCost is that resource's contribution to the delta.
     """
     total_monthly = float(data.get("totalMonthlyCost") or 0.0)
-    diff_monthly = float(data.get("diffTotalMonthlyCost") or 0.0)
+    # Fail closed: a missing or null delta is "unknown", not "$0". Reading it as
+    # zero would PASS any plan whose delta Infracost did not report -- the same
+    # silent pass checkov_runner refuses for the security gate.
+    if data.get("diffTotalMonthlyCost") is None:
+        raise RuntimeError("infracost output has no diffTotalMonthlyCost; refusing to pass")
+    diff_monthly = float(data["diffTotalMonthlyCost"])
 
     # Collect the changed resources across all projects to find the top drivers
     # of the delta. Fall back to the full breakdown if a diff block is absent.

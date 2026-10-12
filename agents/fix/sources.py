@@ -48,6 +48,7 @@ import re
 from pathlib import Path
 
 import contracts as contract_rules
+import edits as edit_rules
 import paths as path_rules
 
 # Files worth showing a code-fixing model. Deliberately code only: a finding
@@ -179,7 +180,8 @@ def candidate_files(root: Path) -> list[str]:
             if entry.suffix not in SOURCE_SUFFIXES:
                 continue
             relative = entry.relative_to(root).as_posix()
-            if path_rules.reject_reason(relative) is None:
+            target, _ = edit_rules._resolve(root, relative)
+            if path_rules.reject_reason(relative) is None and target is not None:
                 found.append(relative)
     return sorted(found)
 
@@ -253,7 +255,10 @@ def select(finding: dict, root: Path) -> dict:
     scored: list[tuple[int, str, str]] = []
     oversized: list[dict] = []
     for relative in candidate_files(root):
-        target = root / relative
+        # Re-check at the read boundary, including symlinked parent directories.
+        target, _ = edit_rules._resolve(root, relative)
+        if target is None:
+            continue
         try:
             size = target.stat().st_size
         except OSError:

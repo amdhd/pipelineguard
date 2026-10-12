@@ -88,6 +88,42 @@ class TestSearchTerms:
 
 
 class TestCandidateFiles:
+    @pytest.mark.parametrize("destination", ["outside", "infra"])
+    def test_symlinked_parent_cannot_expose_private_source(self, tmp_path, destination):
+        """
+        A regular file beneath a symlinked frontend directory is not itself a
+        symlink. Checking only the leaf lets private source reach the model,
+        both outside the checkout and inside its denied infrastructure tree.
+        """
+        root = tmp_path / "repo"
+        root.mkdir()
+        private = tmp_path / "private" if destination == "outside" else root / "infra"
+        (private / "src").mkdir(parents=True)
+        (private / "src" / "notes.ts").write_text('export const voyage = "PRIVATE_MARKER";')
+        (root / "frontend").symlink_to(private, target_is_directory=True)
+
+        assert selector.candidate_files(root) == []
+        selected = selector.select({"page": "/voyage", "summary": "voyage"}, root)
+        assert selected["files"] == []
+        assert "PRIVATE_MARKER" not in json.dumps(selected)
+
+    def test_selection_rechecks_the_destination_before_reading(self, tmp_path, monkeypatch):
+        """
+        Selection must enforce the boundary at the read as well as discovery.
+        A stale candidate list must not authorize reading a replaced directory.
+        """
+        root = tmp_path / "repo"
+        root.mkdir()
+        private = tmp_path / "private"
+        (private / "src").mkdir(parents=True)
+        (private / "src" / "notes.ts").write_text('export const voyage = "PRIVATE_MARKER";')
+        (root / "frontend").symlink_to(private, target_is_directory=True)
+        monkeypatch.setattr(selector, "candidate_files", lambda _: ["frontend/src/notes.ts"])
+
+        selected = selector.select({"page": "/voyage", "summary": "voyage"}, root)
+        assert selected["files"] == []
+        assert "PRIVATE_MARKER" not in json.dumps(selected)
+
     def test_only_allow_listed_source_is_walked(self, tree):
         found = selector.candidate_files(tree)
         assert "frontend/src/pages/Dashboard.tsx" in found

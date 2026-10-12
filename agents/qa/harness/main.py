@@ -568,6 +568,9 @@ def run(args) -> int:
         )
         # fix-#60 rule: even an errored fix-leg run leaves a verdict behind, all
         # rows unverified -- an empty re-measurement must not read as clean.
+        overall = "FAIL" if blocking_now else "PASS"
+        if findings.get("error") or findings.get("incomplete"):
+            overall = "INCONCLUSIVE"
         _put_report_json(
             args.reports_bucket,
             _latest_fix_verdict_key(f"pr-{origin_pr}"),
@@ -580,7 +583,7 @@ def run(args) -> int:
                 "fix_pr": own_pr,
                 "reports_bucket": args.reports_bucket,
                 "prior_findings_key": _latest_key(f"pr-{origin_pr}"),
-                "overall": "FAIL" if blocking_now else "PASS",
+                "overall": overall,
                 "rows": _ledger_rows(reverify_rows) if reverify_rows else [],
             },
             region=args.region,

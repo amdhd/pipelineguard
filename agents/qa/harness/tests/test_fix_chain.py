@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _HARNESS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_HARNESS))
 sys.path.insert(0, str(_HARNESS.parent / "agent"))
@@ -112,10 +114,47 @@ class TestFixPRRun:
         assert key == "reports/pr-125/latest/fix-verdict.json"
         assert payload["schema"] == "pipelineguard/fix-verdict/v1"
         assert payload["fix_pr"] == 126
+        assert payload["overall"] == "PASS"
         assert payload["origin"]["pr"] == 125
         row = payload["rows"][0]
         assert row["status"] == "fixed"
         assert row["page"] == "/voyage"
+
+    @pytest.mark.parametrize(
+        "current, expected_overall, expected_status",
+        [
+            ({"error": "runtime_unavailable", "findings": []}, "INCONCLUSIVE", "unverified"),
+            ({**_CLEAN, "incomplete": "deadline"}, "INCONCLUSIVE", "unverified"),
+            ({**_PRIOR, "incomplete": "deadline"}, "INCONCLUSIVE", "unverified"),
+            (_PRIOR, "FAIL", "still failing"),
+        ],
+    )
+    def test_fix_verdict_requires_a_complete_measurement(
+        self, monkeypatch, tmp_path, current, expected_overall, expected_status
+    ):
+        """
+        An empty failed measurement is not proof that a fix worked. A partial
+        measurement cannot establish an overall verdict even if it found a
+        blocker. Preserve the ledger, mark it inconclusive, and keep completed
+        blocking measurements failing as before.
+        """
+        monkeypatch.setenv("FIX_ORIGIN", json.dumps(_SIDECAR))
+        monkeypatch.setenv("GITHUB_HEAD_REF", "agent-fix/fix-125")
+        monkeypatch.setattr(harness, "invoke", lambda *a, **k: dict(current))
+        monkeypatch.setattr(harness, "fetch_prior_report", lambda *a, **k: dict(_PRIOR))
+        monkeypatch.setattr(harness, "_fetch_json", lambda *a, **k: None)
+        puts = []
+        monkeypatch.setattr(
+            harness, "_put_report_json",
+            lambda bucket, key, payload, **kw: (puts.append((key, payload)), True)[1],
+        )
+
+        assert harness.run(_args(tmp_path, namespace="pr-126")) != 0
+        assert len(puts) == 1
+        key, payload = puts[0]
+        assert key == "reports/pr-125/latest/fix-verdict.json"
+        assert payload["overall"] == expected_overall
+        assert payload["rows"][0]["status"] == expected_status
 
     def test_it_fetches_its_own_namespace_when_the_head_is_not_a_fix_head(self, monkeypatch, tmp_path):
         """

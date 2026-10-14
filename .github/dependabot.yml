@@ -83,18 +83,9 @@ updates:
     commit-message:
       prefix: "chore(ci)"
 
-  # The sample app. Left out until #102, because the dev-chain advisories
-  # (vitest -> vite -> esbuild) looked like they needed Node >=22.12 against an
-  # app pinned to Node 20 in the runner and in both stages of app/Dockerfile, and
-  # a queue of unmergeable PRs teaches people to ignore the queue. #102 showed
-  # the fix never needed the Node move: vitest 4 accepts vite 6, and vite 6
-  # supports Node 20. It holds vite there with an `overrides` entry.
-  #
-  # VITE MAJORS ARE IGNORED for that same reason. vite 7+ needs Node
-  # >=20.19/22.12, so a vite major is a Node decision, not a dependency bump.
-  # Unignored, Dependabot would keep proposing vite 8 -- the exact PR (#48)
-  # that sat conflicted and unmergeable. Drop this ignore in the same change
-  # that moves the Node version.
+  # The sample app now targets Node 24 in CI, Docker and CodeBuild. Vite major
+  # updates can be proposed again; the existing override remains until a
+  # separately reviewed dependency upgrade changes it.
   - package-ecosystem: npm
     directory: /app
     schedule:
@@ -102,6 +93,3 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "vite"
-        update-types: ["version-update:semver-major"]

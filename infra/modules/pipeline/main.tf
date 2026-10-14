@@ -372,7 +372,7 @@ resource "aws_codebuild_project" "test" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = false
     dynamic "environment_variable" {
@@ -406,7 +406,7 @@ resource "aws_codebuild_project" "build" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = true # Docker build
     dynamic "environment_variable" {
@@ -439,7 +439,7 @@ resource "aws_codebuild_project" "tf_plan" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = false
     dynamic "environment_variable" {
@@ -472,7 +472,7 @@ resource "aws_codebuild_project" "cost_gate" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = false
     dynamic "environment_variable" {
@@ -508,7 +508,7 @@ resource "aws_codebuild_project" "security_gate" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = false
     dynamic "environment_variable" {
@@ -544,7 +544,7 @@ resource "aws_codebuild_project" "deploy" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:5.0"
+    image           = "aws/codebuild/amazonlinux-x86_64-standard:6.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = false
     dynamic "environment_variable" {

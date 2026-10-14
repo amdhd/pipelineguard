@@ -459,6 +459,54 @@ class TestBudget:
 
 
 class TestTheReadOnlyGuard:
+    @pytest.mark.parametrize("contract_is_alias", [False, True])
+    def test_read_only_contract_rejects_both_alias_spellings(self, tree, contract_is_alias):
+        """Use real manifest selection so protection applies to context that
+        actually stayed read-only. Either side of the comparison can be a
+        symlink; a lexical mismatch must not grant permission to edit its target."""
+        canonical = "frontend/src/lib/types.ts"
+        alias = "frontend/src/lib/types-alias.ts"
+        (tree / alias).symlink_to("types.ts")
+        manifest = json.loads(json.dumps(VOYAGE_MANIFEST))
+        protected = alias if contract_is_alias else canonical
+        proposed = canonical if contract_is_alias else alias
+        manifest["features"][0]["context"][0]["path"] = protected
+        write_manifest(tree, manifest)
+        selection = selector.select(FINDING, tree)
+        read_only = frozenset(entry["path"] for entry in selection["contract"])
+        assert protected in read_only
+        before = (tree / canonical).read_text()
+
+        planned = edit_rules.plan(
+            [{"file": proposed, "old_string": "actualFuel: number",
+              "new_string": "actual_fuel: number"}],
+            tree, read_only=read_only,
+        )
+
+        assert planned["apply"] == []
+        assert "read-only API contract context" in planned["skip"][0]["reason"]
+        edit_rules.write(planned)
+        assert (tree / canonical).read_text() == before
+
+    def test_alias_of_an_editable_file_still_applies(self, tree):
+        """Canonical read-only enforcement must not ban all aliases. An
+        allowed alias to an ordinary editable route can still fix the wire
+        contract while the separate reference-only types remain unchanged."""
+        canonical = "backend/src/routes/voyage.ts"
+        alias = "backend/src/routes/voyage-alias.ts"
+        (tree / alias).symlink_to("voyage.ts")
+        before = (tree / "frontend/src/lib/types.ts").read_text()
+
+        planned = edit_rules.plan(
+            [{"file": alias, "old_string": "actual_fuel:", "new_string": "actualFuel:"}],
+            tree, read_only=frozenset({"frontend/src/lib/types.ts"}),
+        )
+
+        assert len(planned["apply"]) == 1
+        edit_rules.write(planned)
+        assert "actualFuel:" in (tree / canonical).read_text()
+        assert (tree / "frontend/src/lib/types.ts").read_text() == before
+
     def test_an_edit_naming_contract_context_is_rejected(self, tree):
         """
         Enforced here, not merely requested in the prompt. The failure it guards

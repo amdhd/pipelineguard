@@ -135,6 +135,9 @@ def plan(
     """
     to_apply: list[dict] = []
     to_skip: list[dict] = []
+    # Contract paths and proposed edits can use different symlink spellings.
+    # Protect the resolved destination, not just the name shown in the prompt.
+    read_only_targets = {(root / path).resolve() for path in read_only}
 
     for i, edit in enumerate(edits):
         reason = check_edit(edit, i)
@@ -143,7 +146,11 @@ def plan(
             continue
 
         relative = path_rules.normalise(edit["file"])
-        if relative in read_only:
+        target, reason = _resolve(root, relative)
+        if target is None:
+            to_skip.append({"edit": edit, "status": SKIPPED, "reason": reason})
+            continue
+        if relative in read_only or target in read_only_targets:
             to_skip.append(
                 {
                     "edit": edit,
@@ -152,10 +159,6 @@ def plan(
                     "source; it was shown so the cause could be identified, not patched",
                 }
             )
-            continue
-        target, reason = _resolve(root, relative)
-        if target is None:
-            to_skip.append({"edit": edit, "status": SKIPPED, "reason": reason})
             continue
         if not target.is_file():
             to_skip.append(

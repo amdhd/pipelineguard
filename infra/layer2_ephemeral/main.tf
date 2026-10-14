@@ -55,6 +55,9 @@ module "pipeline" {
   github_repo            = var.github_repo
   github_branch          = var.github_branch
   ecr_repo_url           = module.ecr.repository_url
+  ecr_repo_arn           = module.ecr.repository_arn
+  layer1_state_bucket    = var.layer1_state_bucket
+  layer1_state_key       = var.layer1_state_key
   ecs_cluster_name       = module.ecs.cluster_name
   ecs_service_name       = module.ecs.service_name
   cost_gate_arn          = module.gates.cost_gate_arn

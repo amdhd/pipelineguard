@@ -23,6 +23,21 @@ variable "ecr_repo_url" {
   type        = string
 }
 
+variable "ecr_repo_arn" {
+  description = "App repository ARN for the image-build role"
+  type        = string
+}
+
+variable "layer1_state_bucket" {
+  description = "Persistent core state bucket; plan/deploy roles receive read access only"
+  type        = string
+}
+
+variable "layer1_state_key" {
+  description = "Exact persistent core state object key"
+  type        = string
+}
+
 variable "ecs_cluster_name" {
   description = "ECS cluster name"
   type        = string

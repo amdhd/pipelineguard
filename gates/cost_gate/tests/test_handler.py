@@ -169,6 +169,27 @@ def test_parse_diff_keeps_a_real_zero_delta():
     assert _parse_diff({"diffTotalMonthlyCost": "0", "projects": []})["monthly_cost_delta"] == 0.0
 
 
+@pytest.mark.parametrize("delta,total,status", [(0, 10, "passed"), (70, 80, "failed")])
+def test_upgraded_infracost_output_preserves_gate_decisions(monkeypatch, _boto3_stub, delta, total, status):
+    """The pinned CLI upgrade must preserve the delta used by the $50 gate.
+
+    These are actual Linux amd64 v0.10.46 outputs from pre-priced dummy JSON,
+    captured with Docker networking disabled. They verify the output contract,
+    not live pricing. A real zero passes; a $70 increase must still block.
+    """
+    from infracost_runner import _parse_diff
+
+    raw = json.loads((Path(__file__).parent / "fixtures" / f"infracost-0.10.46-diff-{delta}.json").read_text())
+    parsed = _parse_diff(raw)
+    assert parsed["monthly_cost_delta"] == delta
+    assert parsed["total_monthly_cost"] == total
+    assert parsed["top_resources"] == ([{"name": "aws_instance.dummy", "monthly_cost": 70.0}] if delta else [])
+    handler, _ = _boto3_stub
+    monkeypatch.setattr(handler, "run_infracost", lambda **_: parsed)
+    result = handler.lambda_handler({"plan_s3_bucket": "dummy", "plan_s3_key": "plan.json"}, None)
+    assert result["gate_status"] == status
+
+
 def test_block_message_names_the_threshold(monkeypatch, _boto3_stub):
     """The console reader should not need the logs to learn what the limit was."""
     handler, clients = _boto3_stub

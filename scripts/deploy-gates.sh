@@ -23,7 +23,7 @@ REGION="${2:-ap-southeast-1}"
 IMAGE_TAG="${SECURITY_GATE_IMAGE_TAG:-latest}"
 mkdir -p "${LAYER_DIR}"
 
-INFRACOST_VERSION="${INFRACOST_VERSION:-v0.10.39}"
+INFRACOST_VERSION="${INFRACOST_VERSION:-v0.10.46}"
 
 # --- Cost gate: infracost binary layer ---
 echo "==> Building infracost layer..."

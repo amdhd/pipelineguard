@@ -1,11 +1,11 @@
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 # Harden the runtime image against the base-image HIGH CVEs Trivy flags:
 #  - `apk upgrade` patches OS packages (e.g. OpenSSL libcrypto3/libssl3).

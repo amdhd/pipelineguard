@@ -3,6 +3,7 @@
 import json
 import sys
 import types
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -124,6 +125,44 @@ def test_direct_invoke_passes_clean(monkeypatch, _stubs):
 
     out = handler.lambda_handler(_direct_event(), None)
     assert out["gate_status"] == "passed"
+
+
+@pytest.mark.parametrize("second_has_terraform", [False, True])
+def test_direct_invocations_scan_only_the_current_archive(monkeypatch, _stubs, tmp_path, second_has_terraform):
+    """A reused Lambda environment must not pass a README-only artifact using
+    yesterday's Terraform, or scan files removed from a legitimate new archive.
+    Keep download, extraction and the real file-presence guard in this test."""
+    handler, clients = _stubs
+    monkeypatch.setattr(handler.tempfile, "tempdir", str(tmp_path))
+    archives = []
+    for name, filename in [("first", "removed.tf"), ("second", "current.tf" if second_has_terraform else "README.md")]:
+        archive = tmp_path / f"{name}.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr(filename, "# harmless fixture\n")
+        archives.append(archive)
+    clients["s3"].download_file.side_effect = lambda bucket, key, dest: Path(dest).write_bytes(archives.pop(0).read_bytes())
+    monkeypatch.setattr(handler, "run_trivy", lambda *_: {"HIGH": 0, "CRITICAL": 0})
+    monkeypatch.setattr(handler, "summarise_findings", lambda **_: "clean")
+    scanned = []
+
+    def scan(directory):
+        from checkov_runner import _has_terraform_files
+
+        root = Path(directory)
+        scanned.append((root, {file.name for file in root.iterdir()}))
+        if not _has_terraform_files(directory):
+            raise RuntimeError("No .tf/.tf.json in current artifact")
+        return {"HIGH": 0, "CRITICAL": 0}
+
+    monkeypatch.setattr(handler, "run_checkov", scan)
+    first = handler.lambda_handler(_direct_event(), None)
+    second = handler.lambda_handler(_direct_event(), None)
+
+    assert first["gate_status"] == "passed"
+    assert second["gate_status"] == ("passed" if second_has_terraform else "failed")
+    assert "removed.tf" not in scanned[1][1]
+    assert scanned[0][0] != scanned[1][0]
+    assert all(not root.exists() for root, _ in scanned)
 
 
 @pytest.mark.parametrize("missing", ["terraform_s3_key", "terraform_s3_bucket"])

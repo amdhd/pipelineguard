@@ -4,7 +4,7 @@ phases:
   install:
     commands:
       - echo "Installing Terraform..."
-      - curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o /tmp/tf.zip
+      - curl -fsSL https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_amd64.zip -o /tmp/tf.zip
       - unzip -o /tmp/tf.zip -d /tmp/tfbin
       - mv /tmp/tfbin/terraform /usr/local/bin/
       - terraform version

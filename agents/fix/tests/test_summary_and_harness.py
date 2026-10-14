@@ -705,6 +705,86 @@ class TestOriginSidecar:
         monkeypatch.setattr(fix_model, "client", lambda *a, **k: bedrock)
         return bedrock
 
+    @pytest.mark.parametrize("destination", ["denied", "outside", "dangling"])
+    def test_sidecar_replaces_a_symlink_without_writing_its_target(self, tree, destination):
+        """The sidecar is an automatic write outside the model edit guard.
+        A checkout-controlled link must not redirect it into infra, outside
+        the checkout, or create a new file at a dangling destination."""
+        if destination == "denied":
+            sentinel = tree / "infra" / "sentinel.json"
+        else:
+            sentinel = tree.parent / f"{tree.name}-sentinel.json"
+        if destination != "dangling":
+            sentinel.write_text("unchanged\n")
+        sidecar = tree / "qa-fix-origin.json"
+        sidecar.symlink_to(sentinel)
+
+        written = fix_harness._write_origin_sidecar(
+            tree, origin_repo="example/target", origin_pr="7",
+            origin_findings_key="reports/pr-7/latest/findings.json",
+            applied_fingerprints=[],
+        )
+
+        assert written == sidecar
+        assert not sidecar.is_symlink()
+        assert json.loads(sidecar.read_text())["origin"]["pr"] == "7"
+        if destination == "dangling":
+            assert not sentinel.exists()
+        else:
+            assert sentinel.read_text() == "unchanged\n"
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_zero_edit_origin_runs_keep_sidecar_writes_confined(self, tree, monkeypatch, dry_run):
+        """Origin bookkeeping runs even when selection is only previewed or
+        the model skips every finding. Both paths must preserve the sentinel,
+        while retaining the existing empty applied-fingerprint sidecar."""
+        bedrock = self._stub(monkeypatch, {
+            "edits": [], "skipped": [{"finding_id": "F-001", "reason": "no fix"}],
+        })
+        sentinel = tree / "infra" / "sentinel.json"
+        sentinel.write_text("unchanged\n")
+        sidecar = tree / "qa-fix-origin.json"
+        sidecar.symlink_to(sentinel)
+
+        code = fix_harness.run(_args(
+            repo=tree, dry_run=True if dry_run else None,
+            origin_pr="7", origin_repo="example/target",
+        ))
+
+        assert code == 0
+        assert sentinel.read_text() == "unchanged\n"
+        assert not sidecar.is_symlink()
+        assert json.loads(sidecar.read_text())["applied_fingerprints"] == []
+        assert len(bedrock.calls) == (0 if dry_run else 1)
+
+    def test_existing_sidecar_is_updated(self, tree):
+        """A new origin run must still replace old provenance; refusing every
+        existing leaf would protect links by breaking normal reruns."""
+        sidecar = tree / "qa-fix-origin.json"
+        sidecar.write_text('{"origin": {"pr": "old"}}\n')
+
+        fix_harness._write_origin_sidecar(
+            tree, origin_repo="example/target", origin_pr="7",
+            origin_findings_key="reports/pr-7/latest/findings.json",
+            applied_fingerprints=[],
+        )
+
+        assert json.loads(sidecar.read_text())["origin"]["pr"] == "7"
+
+    def test_failed_sidecar_replacement_leaves_no_temporary_file(self, tree):
+        """An unexpected directory at the leaf must remain a failed write,
+        without leaving the newly introduced temporary payload in the tree."""
+        (tree / "qa-fix-origin.json").mkdir()
+
+        with pytest.raises(OSError):
+            fix_harness._write_origin_sidecar(
+                tree, origin_repo="example/target", origin_pr="7",
+                origin_findings_key="reports/pr-7/latest/findings.json",
+                applied_fingerprints=[],
+            )
+
+        assert list(tree.glob(".qa-fix-origin-*")) == []
+
     def test_an_origin_run_writes_the_sidecar_and_sets_origin(self, tree, monkeypatch, tmp_path):
         """
         End to end: an origin run resolves each applied finding_id to its origin

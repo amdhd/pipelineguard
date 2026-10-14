@@ -8,7 +8,7 @@
 # Silicon: `docker build --platform linux/amd64 ...` (handled by deploy-gates.sh).
 
 # --- Stage 1: fetch the Trivy binary (Trivy is a static Go binary; portable) ---
-FROM alpine:3.20 AS trivy
+FROM alpine:3.23 AS trivy
 ARG TRIVY_VERSION=0.72.0
 RUN apk add --no-cache curl tar \
  && curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \

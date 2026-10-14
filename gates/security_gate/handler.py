@@ -18,6 +18,7 @@ Two invocation modes:
 import json
 import logging
 import os
+import tempfile
 import zipfile
 from typing import Any
 
@@ -52,7 +53,7 @@ def lambda_handler(event: dict, context: Any) -> Any:
 def _download_terraform(bucket: str, key: str, dest: str) -> None:
     """Download the zipped Terraform artifact from S3 and extract it for Checkov."""
     os.makedirs(dest, exist_ok=True)
-    zip_path = "/tmp/terraform.zip"
+    zip_path = os.path.join(dest, "terraform.zip")
     s3.download_file(bucket, key, zip_path)
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(dest)
@@ -108,7 +109,6 @@ def _handle_direct(event: dict) -> dict:
     try:
         secrets = get_secrets()
         image_uri = event.get("ecr_image_uri", "")
-        terraform_dir = "/tmp/terraform"
         tf_bucket = event.get("terraform_s3_bucket") or os.environ.get("ARTIFACT_BUCKET")
         tf_key = event.get("terraform_s3_key")
         # No Terraform artifact means Checkov has nothing to scan. Skipping it
@@ -119,16 +119,18 @@ def _handle_direct(event: dict) -> dict:
                 "terraform_s3_bucket/terraform_s3_key missing from the event; "
                 "refusing to run the gate without the Terraform to scan."
             )
-        _download_terraform(tf_bucket, tf_key, terraform_dir)
-
-        summary = _evaluate(
-            image_uri,
-            terraform_dir,
-            secrets,
-            event.get("pr_number"),
-            event.get("github_repo"),
-            event.get("commit_sha"),
-        )
+        # Lambda can retain /tmp between invocations. Only this artifact may
+        # satisfy the nonempty Terraform guard; cleanup also covers failures.
+        with tempfile.TemporaryDirectory(prefix="pipelineguard-terraform-") as terraform_dir:
+            _download_terraform(tf_bucket, tf_key, terraform_dir)
+            summary = _evaluate(
+                image_uri,
+                terraform_dir,
+                secrets,
+                event.get("pr_number"),
+                event.get("github_repo"),
+                event.get("commit_sha"),
+            )
         return {
             "gate_status": "failed" if summary["blocked"] else "passed",
             "critical": summary["critical"],

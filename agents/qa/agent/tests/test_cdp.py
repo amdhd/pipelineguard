@@ -346,3 +346,215 @@ class TestSettleTimeoutsAreCounted:
             assert session.settle_timeout_seconds >= 0.4
         finally:
             session.close()
+
+
+class TestReadOnlyPolicy:
+    """Forced requests test handler enforcement, not model susceptibility.
+
+    The dummy application grants QA write access but gives the content author
+    read access only. The author can label a write as a chart switch; labels
+    have no bearing on the execution policy. No live model or target is used.
+    """
+
+    def policy(self):
+        return cdp.ReadOnlyPolicy("https://dummy.test", "qa@dummy.test", "fixture-only", ("/login", "/voyage"))
+
+    def login(self):
+        return {"method": "POST", "url": "https://dummy.test/api/auth/login",
+                "postData": json.dumps({"email": "qa@dummy.test", "password": "fixture-only"})}
+
+    def test_login_and_read_only_view_requests_work_but_writes_do_not(self):
+        policy = self.policy()
+        records = {"protected": "original"}
+        permissions = {"content_author": {"read"}, "qa": {"read", "write"}}
+        reached = []
+
+        def dummy_application(principal, request):
+            reached.append(request["method"])
+            if request["url"].endswith("/records/protected") and request["method"] == "PATCH":
+                if "write" not in permissions[principal]:
+                    return 403
+                records["protected"] = "changed"
+            return 200
+
+        write = {"method": "PATCH", "url": "https://dummy.test/records/protected"}
+        assert dummy_application("content_author", write) == 403
+        # Positive control: the same QA identity can mutate without the guard.
+        assert dummy_application("qa", write) == 200
+        assert records["protected"] == "changed"
+        records["protected"] = "original"
+        reached.clear()
+        for request in (self.login(), {"method": "GET", "url": "https://dummy.test/chart?view=table"}, write):
+            if policy.permits(request):
+                assert dummy_application("qa", request) == 200
+        assert reached == ["POST", "GET"]
+        assert records["protected"] == "original"
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "CONNECT", "TRACE"])
+    def test_unrequested_writes_are_denied_before_and_after_login(self, method):
+        policy = self.policy()
+        request = {"method": method, "url": "https://dummy.test/api/records"}
+        assert not policy.permits(request)
+        assert policy.permits(self.login())
+        assert not policy.permits(request)
+
+    def test_login_exception_is_exact_and_consumed_once(self):
+        policy = self.policy()
+        for request in (
+            {**self.login(), "url": "https://evil.test/api/auth/login"},
+            {**self.login(), "url": "https://dummy.test/api/auth/login?override=delete"},
+            {**self.login(), "postData": "invalid JSON"},
+            {**self.login(), "postData": json.dumps({"email": "qa@dummy.test", "password": "wrong"})},
+            {**self.login(), "postData": json.dumps({"email": "qa@dummy.test", "password": "fixture-only", "admin": True})},
+        ):
+            assert not policy.permits(request)
+        assert policy.permits(self.login())
+        assert not policy.permits(self.login())
+        assert not cdp.ReadOnlyPolicy("https://dummy.test", "", "", ()).permits(self.login())
+
+    def test_document_scope_and_external_requests_cannot_be_widened(self):
+        policy = self.policy()
+        assert policy.permits({"method": "GET", "url": "https://dummy.test/voyage"}, "Document")
+        for url in ("https://evil.test/voyage", "https://dummy.test/api/delete", "file:///etc/passwd"):
+            assert not policy.permits({"method": "GET", "url": url}, "Document")
+        assert not policy.permits({"method": "GET", "url": "https://evil.test/collect?secret=value"})
+        assert not policy.permits({"method": "GET", "url": "wss://dummy.test/socket"})
+
+
+class GuardWS(FakeWS):
+    """Replies dynamically so interception tests exercise the reader and worker."""
+
+    def __init__(self, reject=None):
+        super().__init__()
+        import queue
+        self.incoming = queue.Queue()
+        self.reject = reject
+
+    def recv(self):
+        import queue
+        try:
+            return self.incoming.get(timeout=0.01)
+        except queue.Empty:
+            raise WebSocketTimeoutException("quiet dummy socket")
+
+    def send(self, payload):
+        super().send(payload)
+        message = json.loads(payload)
+        if message["method"] == self.reject:
+            response = {"id": message["id"], "error": {"message": "unsupported"}}
+        else:
+            result = {"targetInfos": [{"targetId": "main", "type": "page"}]} if message["method"] == "Target.getTargets" else {"sessionId": "main-session"}
+            response = {"id": message["id"], "result": result}
+        self.incoming.put(json.dumps(response))
+
+
+def guarded_session(monkeypatch, reject=None):
+    ws = GuardWS(reject)
+    monkeypatch.setattr(websocket, "create_connection", lambda *a, **k: ws)
+    session = cdp.CDPSession("ws://dummy", {})
+    session.attach_to_page()
+    session.enforce_read_only(TestReadOnlyPolicy().policy())
+    return session, ws
+
+
+def wait_for_command(ws, method):
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        matching = [m for m in ws.sent if m["method"] == method]
+        if matching:
+            return matching[-1]
+        time.sleep(0.005)
+    pytest.fail(f"guard never sent {method}")
+
+
+def test_request_guard_sends_block_or_continue_on_the_originating_session(monkeypatch):
+    """A policy decision must reach CDP before the request is released."""
+    session, ws = guarded_session(monkeypatch)
+    try:
+        for request_id, method in (("read", "GET"), ("write", "DELETE")):
+            ws.incoming.put(json.dumps({"method": "Fetch.requestPaused", "sessionId": "main-session",
+                "params": {"requestId": request_id, "request": {"method": method, "url": "https://dummy.test/records/protected"}}}))
+        read = wait_for_command(ws, "Fetch.continueRequest")
+        write = wait_for_command(ws, "Fetch.failRequest")
+        assert read["params"] == {"requestId": "read"}
+        assert write["params"] == {"requestId": "write", "errorReason": "BlockedByClient"}
+        assert read["sessionId"] == write["sessionId"] == "main-session"
+    finally:
+        session.close()
+    assert ws.closed
+    assert wait_for_command(ws, "Browser.close").get("sessionId") is None
+
+
+@pytest.mark.parametrize("target_type", ["page", "iframe", "worker", "service_worker"])
+def test_new_targets_are_closed_without_resuming_them(monkeypatch, target_type):
+    """An alternate target cannot bypass the attached page's Fetch guard."""
+    session, ws = guarded_session(monkeypatch)
+    try:
+        auto_attach = [m for m in ws.sent if m["method"] == "Target.setAutoAttach"]
+        assert len(auto_attach) == 2
+        assert all(m["params"]["waitForDebuggerOnStart"] for m in auto_attach)
+        ws.incoming.put(json.dumps({"method": "Target.attachedToTarget", "params": {
+            "sessionId": "secondary", "waitingForDebugger": True,
+            "targetInfo": {"targetId": "secondary-target", "type": target_type}}}))
+        close = wait_for_command(ws, "Target.closeTarget")
+        assert close["params"] == {"targetId": "secondary-target"}
+        assert "sessionId" not in close
+        assert not any(m["method"] == "Runtime.runIfWaitingForDebugger" for m in ws.sent)
+    finally:
+        session.close()
+
+
+def test_guard_command_failure_blocks_further_tools_without_releasing_request(monkeypatch):
+    """A failed failRequest must not disconnect and thereby release the write."""
+    session, ws = guarded_session(monkeypatch, reject="Fetch.failRequest")
+    try:
+        ws.incoming.put(json.dumps({"method": "Fetch.requestPaused", "sessionId": "main-session",
+            "params": {"requestId": "write", "request": {"method": "DELETE", "url": "https://dummy.test/records"}}}))
+        wait_for_command(ws, "Fetch.failRequest")
+        deadline = time.monotonic() + 1
+        while not session._guard_error and time.monotonic() < deadline:
+            time.sleep(0.005)
+        with pytest.raises(cdp.CDPError, match="guard failed"):
+            session.send("Runtime.evaluate")
+        assert not ws.closed
+        assert not any(m["method"] == "Fetch.continueRequest" for m in ws.sent)
+    finally:
+        session.close()
+
+
+def test_guard_setup_failure_prevents_navigation(monkeypatch):
+    """An unsupported interception domain is fatal, never best-effort."""
+    ws = GuardWS(reject="Fetch.enable")
+    monkeypatch.setattr(websocket, "create_connection", lambda *a, **k: ws)
+    session = cdp.CDPSession("ws://dummy", {})
+    try:
+        session.attach_to_page()
+        with pytest.raises(cdp.CDPError, match="unsupported"):
+            session.enforce_read_only(TestReadOnlyPolicy().policy())
+        assert not any(m["method"] == "Page.navigate" for m in ws.sent)
+    finally:
+        session.close()
+
+
+def test_teardown_keeps_interception_attached_if_browser_close_is_unavailable(monkeypatch):
+    """The SDK must stop the browser before an intercepted write is released."""
+    session, ws = guarded_session(monkeypatch, reject="Browser.close")
+    session.close()
+    assert not ws.closed
+    # Simulate the owning SDK having stopped the browser, then clean the fake.
+    session._closed = True
+    ws.close()
+
+
+def test_only_the_already_guarded_main_target_can_resume(monkeypatch):
+    """Browser-level auto-attach may also report the main page a second time."""
+    session, ws = guarded_session(monkeypatch)
+    try:
+        ws.incoming.put(json.dumps({"method": "Target.attachedToTarget", "params": {
+            "sessionId": "additional-main-session", "waitingForDebugger": True,
+            "targetInfo": {"targetId": "main", "type": "page"}}}))
+        resumed = wait_for_command(ws, "Runtime.runIfWaitingForDebugger")
+        assert resumed["sessionId"] == "additional-main-session"
+        assert not any(m["method"] == "Target.closeTarget" for m in ws.sent)
+    finally:
+        session.close()

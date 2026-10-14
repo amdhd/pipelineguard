@@ -341,8 +341,15 @@ class TestRouteBudget:
 
     def test_no_cap_means_no_enforcement(self):
         s, _ = self._capped(None)
-        for r in ("/a", "/b", "/c", "/d", "/e"):
+        for r in ("/voyage", "/ports", "/sire", "/analytics", "/maintenance"):
             assert "error" not in s.navigate(r)
+
+    def test_route_scope_cannot_be_widened_by_a_tool_argument(self):
+        """Even an uncapped run must stay within the trusted rubric routes."""
+        s, fake = self._capped(None)
+        for path in ("/api/delete", "//evil.test", "/voyage/../api/delete"):
+            assert "outside the read-only QA scope" in s.navigate(path)["error"]
+        assert not fake.sent
 
     def test_a_failed_navigation_does_not_charge_the_route(self):
         """

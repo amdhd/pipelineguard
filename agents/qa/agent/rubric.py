@@ -269,6 +269,13 @@ them all on one route never reaches the rest of the list.
     this section is about controls INSIDE a route.
   - Log out.
 
+The browser enforces an HTTP request guard: only same-origin reads and one
+configured login POST are permitted. A request rejected with BlockedByClient
+is the QA safety policy working, not an application defect. Refute that
+failed-request candidate with this reason; do not report rendering loss caused
+by an excluded external dependency as an application defect. Stay in the
+attached page; popups and workers are blocked.
+
 If a route offers no such control, move on and say nothing about it. The absence
 of a tab is a missing feature, and missing features are product decisions.
 

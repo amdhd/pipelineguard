@@ -22,8 +22,10 @@ buying us very little to begin with.
 
 import json
 import logging
+import queue
 import threading
 import time
+from urllib.parse import urlsplit
 
 import websocket
 from websocket import WebSocketTimeoutException
@@ -51,6 +53,47 @@ class CDPError(RuntimeError):
     pass
 
 
+class ReadOnlyPolicy:
+    """Trusted request policy, independent of page content and model tool arguments.
+
+    HTTP reads remain available for charts and view switches. The sole write
+    exception is one JSON login POST with the caller's configured credentials.
+    This is defense in depth; a target that mutates on GET still needs a QA
+    principal denied write permissions by its server.
+    """
+
+    def __init__(self, base_url: str, email: str, password: str, routes: tuple[str, ...]):
+        self.base = urlsplit(base_url)
+        if self.base.scheme not in ("http", "https") or not self.base.netloc:
+            raise CDPError("QA target must be an HTTP(S) URL")
+        self.login_url = base_url.rstrip("/") + "/api/auth/login"
+        self.credentials = {"email": email, "password": password}
+        self.routes = routes
+        self.login_used = False
+
+    def permits(self, request: dict, resource_type: str = "") -> bool:
+        url = urlsplit(request.get("url", ""))
+        if url.scheme not in ("http", "https") or url.username or url.password:
+            return False
+        if (url.scheme, url.netloc) != (self.base.scheme, self.base.netloc):
+            return False
+        method = request.get("method", "").upper()
+        if method in ("GET", "HEAD", "OPTIONS"):
+            if resource_type == "Document":
+                return url.path in self.routes
+            return True
+        if method != "POST" or request.get("url") != self.login_url or self.login_used:
+            return False
+        try:
+            body = json.loads(request.get("postData", ""))
+        except (ValueError, TypeError):
+            return False
+        if not all(self.credentials.values()) or body != self.credentials:
+            return False
+        self.login_used = True
+        return True
+
+
 class CDPSession:
     """
     One attached page target.
@@ -70,6 +113,10 @@ class CDPSession:
         self._closed = False
         self._reader_stopped: str | None = None
         self.session_id: str | None = None
+        self._request_policy: ReadOnlyPolicy | None = None
+        self._guard_events = queue.Queue()
+        self._guard_error: str | None = None
+        self._page_target: str | None = None
 
         # Event state. Guarded by _lock because the reader thread writes it.
         self.console_errors: list[str] = []
@@ -154,6 +201,11 @@ class CDPSession:
         params = msg.get("params", {})
         self._last_activity = time.monotonic()
 
+        if self._request_policy and method in ("Fetch.requestPaused", "Target.attachedToTarget"):
+            # A separate worker can wait for command replies while this reader
+            # continues receiving them. Sending synchronously here deadlocks.
+            self._guard_events.put(msg)
+
         if method == "Runtime.exceptionThrown":
             detail = params.get("exceptionDetails", {})
             text = detail.get("exception", {}).get("description") or detail.get("text", "")
@@ -175,13 +227,17 @@ class CDPSession:
                     f"{params.get('errorText','failed')}: {params.get('type','')}"[:500],
                 )
 
-    def send(self, method: str, params: dict | None = None, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    def send(self, method: str, params: dict | None = None, timeout: float = DEFAULT_TIMEOUT,
+             *, session_id: str | None = None, browser: bool = False) -> dict:
+        if self._guard_error and method != "Browser.close":
+            raise CDPError(self._guard_error)
         with self._cv:
             self._id += 1
             msg_id = self._id
         payload = {"id": msg_id, "method": method, "params": params or {}}
-        if self.session_id:
-            payload["sessionId"] = self.session_id
+        target_session = session_id or (None if browser else self.session_id)
+        if target_session:
+            payload["sessionId"] = target_session
         try:
             self._ws.send(json.dumps(payload))
         except Exception as e:  # noqa: BLE001
@@ -215,12 +271,66 @@ class CDPSession:
         if not pages:
             raise CDPError("no page target available in the browser session")
         result = self.send("Target.attachToTarget", {"targetId": pages[0]["targetId"], "flatten": True})
+        self._page_target = pages[0]["targetId"]
         self.session_id = result["sessionId"]
 
         for domain in ("Page", "Runtime", "Log", "Network"):
             self.send(f"{domain}.enable")
 
+    def enforce_read_only(self, policy: ReadOnlyPolicy) -> None:
+        """Install before any navigation; unsupported commands fail the run closed.
+
+        Service workers cannot bypass interception. New targets (including
+        workers, popups and out-of-process frames) stay paused and are closed;
+        QA deliberately operates in its single attached page.
+        """
+        self._request_policy = policy
+        threading.Thread(target=self._guard_loop, daemon=True).start()
+        self.send("Network.setBypassServiceWorker", {"bypass": True})
+        self.send("Network.setBlockedURLs", {"urls": ["ws://*", "wss://*"]})
+        self.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+        params = {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True,
+                  "filter": [{"type": "browser", "exclude": True},
+                             {"type": "tab", "exclude": True}, {}]}
+        self.send("Target.setAutoAttach", params)
+        self.send("Target.setAutoAttach", params, browser=True)
+
+    def _guard_loop(self) -> None:
+        while not self._closed:
+            try:
+                event = self._guard_events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                params = event["params"]
+                if event["method"] == "Target.attachedToTarget":
+                    if params["targetInfo"]["targetId"] != self._page_target:
+                        # Never resume an unguarded target, even if close fails.
+                        self.send("Target.closeTarget", {"targetId": params["targetInfo"]["targetId"]}, browser=True)
+                    elif params.get("waitingForDebugger"):
+                        self.send("Runtime.runIfWaitingForDebugger", session_id=params["sessionId"])
+                    continue
+                allowed = self._request_policy.permits(params["request"], params.get("resourceType", ""))
+                command = "Fetch.continueRequest" if allowed else "Fetch.failRequest"
+                arguments = {"requestId": params["requestId"]}
+                if not allowed:
+                    arguments["errorReason"] = "BlockedByClient"
+                self.send(command, arguments, session_id=event.get("sessionId"))
+            except Exception as error:  # noqa: BLE001 -- never continue without enforcement
+                self._guard_error = f"read-only request guard failed: {type(error).__name__}"
+                logger.error(self._guard_error)
+                # Leave paused requests paused until browser teardown. Detach
+                # would release interception and could let the write through.
+
     def close(self) -> None:
+        if self._request_policy and not self._closed:
+            try:
+                self.send("Browser.close", timeout=2.0, browser=True)
+            except CDPError:
+                # Keep interception attached until the SDK stops its browser
+                # session. Disconnecting a live guarded browser is fail-open.
+                logger.warning("browser close unavailable; retaining guard until SDK teardown")
+                return
         self._closed = True
         try:
             self._ws.close()

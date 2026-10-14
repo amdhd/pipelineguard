@@ -83,6 +83,7 @@ resource "aws_cloudwatch_log_group" "codebuild" {
 # =========================================================================
 # IAM: CodeBuild role
 # =========================================================================
+# Keep the existing role identity for Test; it loses all deployment permissions.
 resource "aws_iam_role" "codebuild" {
   name = "${local.name_prefix}-codebuild"
   assume_role_policy = jsonencode({
@@ -91,13 +92,172 @@ resource "aws_iam_role" "codebuild" {
       Effect    = "Allow"
       Principal = { Service = "codebuild.amazonaws.com" }
       Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        ArnEquals    = { "aws:SourceArn" = "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:project/${local.name_prefix}-test" }
+      }
     }]
   })
 }
 
+resource "aws_iam_role" "codebuild_stage" {
+  for_each = toset(["build", "tf_plan", "cost_gate", "security_gate", "deploy"])
+  name     = "${local.name_prefix}-codebuild-${replace(each.key, "_", "-")}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "codebuild.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        ArnEquals    = { "aws:SourceArn" = "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:project/${local.name_prefix}-${replace(each.key, "_", "-")}" }
+      }
+    }]
+  })
+}
+
+locals {
+  codebuild_roles = merge(
+    { test = aws_iam_role.codebuild.id },
+    { for stage, role in aws_iam_role.codebuild_stage : stage => role.id }
+  )
+  layer2_state_bucket = "pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+  layer2_state_key    = "pipelineguard/layer2/${var.environment}/terraform.tfstate"
+  layer2_state_arn    = "arn:aws:s3:::${local.layer2_state_bucket}/${local.layer2_state_key}"
+  ecs_service_arn     = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.ecs_cluster_name}/${var.ecs_service_name}"
+  ecs_task_arn        = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task-definition/pipelineguard-app-${var.environment}:*"
+
+  # Both Terraform jobs read the persistent core, but never write or lock it.
+  terraform_read_statements = [
+    {
+      Sid      = "ReadLayer1State"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = ["arn:aws:s3:::${var.layer1_state_bucket}/${var.layer1_state_key}"]
+    },
+    {
+      Sid      = "ReadLayer2State"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = [local.layer2_state_arn]
+    },
+    {
+      # Backend workspace discovery needs ListBucket; object access is separate
+      # and restricted to the default workspace's exact state/lock keys.
+      Sid      = "ListStateBuckets"
+      Effect   = "Allow"
+      Action   = ["s3:ListBucket"]
+      Resource = distinct(["arn:aws:s3:::${local.layer2_state_bucket}", "arn:aws:s3:::${var.layer1_state_bucket}"])
+    },
+    {
+      Sid      = "Layer2StateLock"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+      Resource = ["${local.layer2_state_arn}.tflock"]
+    },
+    {
+      Sid      = "PlanDataSources"
+      Effect   = "Allow"
+      Action   = ["ec2:DescribeAvailabilityZones"]
+      Resource = ["*"]
+    }
+  ]
+
+  codebuild_stage_statements = {
+    build = [
+      {
+        Sid      = "EcrLogin"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = ["*"]
+      },
+      {
+        Sid    = "PushAppImage"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage", "ecr:PutImage", "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart", "ecr:CompleteLayerUpload"
+        ]
+        Resource = [var.ecr_repo_arn]
+      },
+      {
+        Sid      = "ReadEcrUrl"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [aws_ssm_parameter.ecr_repo_url.arn]
+      }
+    ]
+    tf_plan = local.terraform_read_statements
+    cost_gate = [{
+      Sid      = "InvokeCostGate"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = [var.cost_gate_arn]
+    }]
+    security_gate = [{
+      Sid      = "InvokeSecurityGate"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = [var.security_gate_arn]
+    }]
+    deploy = concat(local.terraform_read_statements, [
+      {
+        Sid      = "WriteLayer2State"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = [local.layer2_state_arn]
+      },
+      {
+        Sid      = "RollAppService"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService", "ecs:DescribeServices"]
+        Resource = [local.ecs_service_arn]
+      },
+      {
+        Sid      = "AppTaskRevisions"
+        Effect   = "Allow"
+        Action   = ["ecs:RegisterTaskDefinition", "ecs:DeregisterTaskDefinition"]
+        Resource = [local.ecs_task_arn]
+      },
+      {
+        # DescribeTaskDefinition has no resource type in AWS's action table.
+        Sid      = "ReadTaskDefinition"
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeTaskDefinition"]
+        Resource = ["*"]
+      },
+      {
+        Sid      = "AppEcsTags"
+        Effect   = "Allow"
+        Action   = ["ecs:TagResource", "ecs:UntagResource", "ecs:ListTagsForResource"]
+        Resource = [local.ecs_task_arn, local.ecs_service_arn]
+      },
+      {
+        Sid    = "PassAppTaskRoles"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/pipelineguard-ecs-execution-${var.environment}",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/pipelineguard-ecs-task-${var.environment}"
+        ]
+        Condition = { StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" } }
+      }
+    ])
+  }
+}
+
+# Preserve the old inline policy's state address as Test's common policy.
+moved {
+  from = aws_iam_role_policy.codebuild
+  to   = aws_iam_role_policy.codebuild["test"]
+}
+
 resource "aws_iam_role_policy" "codebuild" {
-  name = "${local.name_prefix}-codebuild-policy"
-  role = aws_iam_role.codebuild.id
+  for_each = local.codebuild_roles
+  name     = "${local.name_prefix}-codebuild-policy"
+  role     = each.value
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -114,111 +274,23 @@ resource "aws_iam_role_policy" "codebuild" {
         Resource = [aws_s3_bucket.artifacts.arn, "${aws_s3_bucket.artifacts.arn}/*"]
       },
       {
-        # Use the CMK for encrypted artifacts + SSM SecureString, and the reads
-        # Terraform's refresh needs (the deploy stage applies the KMS config).
-        Sid    = "UseCmk"
-        Effect = "Allow"
-        Action = [
-          "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*",
-          "kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus",
-          "kms:ListResourceTags", "kms:PutKeyPolicy", "kms:EnableKeyRotation",
-          "kms:TagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"
-        ]
+        Sid      = "UseCmk"
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
         Resource = [var.kms_key_arn]
-      },
-      {
-        Sid      = "KmsAliases"
-        Effect   = "Allow"
-        Action   = ["kms:ListAliases", "kms:CreateAlias", "kms:UpdateAlias", "kms:DeleteAlias"]
-        Resource = ["*"] # alias actions are not scopable to a single key ARN
-      },
-      {
-        Sid    = "EcrPushPull"
-        Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchGetImage",
-          "ecr:PutImage",
-          "ecr:InitiateLayerUpload",
-          "ecr:UploadLayerPart",
-          "ecr:CompleteLayerUpload"
-        ]
-        Resource = ["*"] # GetAuthorizationToken needs *; scoped repo below where possible
-      },
-      {
-        Sid      = "InvokeGates"
-        Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        Resource = [var.cost_gate_arn, var.security_gate_arn]
-      },
-      {
-        Sid      = "ReadSsm"
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = [aws_ssm_parameter.ecr_repo_url.arn]
-      },
-      {
-        # Terraform remote state (created out-of-band by scripts/bootstrap.sh).
-        Sid    = "TerraformStateBackend"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
-        Resource = [
-          "arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}",
-          "arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/*"
-        ]
-      },
-      {
-        # S3-native state locking (backend `use_lockfile = true`) releases a lock
-        # by DELETING the "<key>.tflock" object. Get/Put above is not enough: the
-        # first run would take a lock it could never release, and every run after
-        # it would fail to acquire one.
-        #
-        # Scoped to the single lock object rather than the bucket prefix -- this
-        # grants deletion of exactly one key, and notably NOT the state file
-        # itself, which the statement above can write but nothing can delete.
-        #
-        # Layer2's own state only: the plan/deploy stages run against
-        # layer2_ephemeral. They READ layer1's state for terraform_remote_state
-        # (the KMS ARN), which the TerraformStateBackend GetObject already
-        # covers, but they never lock it.
-        Sid      = "TerraformStateLock"
-        Effect   = "Allow"
-        Action   = ["s3:DeleteObject"]
-        Resource = ["arn:aws:s3:::pipelineguard-tfstate-${data.aws_caller_identity.current.account_id}-${var.aws_region}/pipelineguard/layer2/${var.environment}/terraform.tfstate.tflock"]
-      },
-      {
-        # `terraform plan -refresh=false` still evaluates data sources; the only
-        # AWS read it needs is the availability-zone lookup.
-        Sid      = "PlanDataSources"
-        Effect   = "Allow"
-        Action   = ["ec2:DescribeAvailabilityZones"]
-        Resource = ["*"]
-      },
-      {
-        # Deploy stage: `terraform apply -refresh=false` rolls the ECS service to
-        # the new image — register a task-def revision and update the service.
-        Sid    = "EcsDeploy"
-        Effect = "Allow"
-        Action = [
-          "ecs:RegisterTaskDefinition",
-          "ecs:DeregisterTaskDefinition",
-          "ecs:DescribeTaskDefinition",
-          "ecs:UpdateService",
-          "ecs:DescribeServices",
-          "ecs:TagResource"
-        ]
-        Resource = ["*"] # Register/DescribeTaskDefinition do not support resource scoping
-      },
-      {
-        # RegisterTaskDefinition passes the ECS execution + task roles.
-        Sid      = "PassEcsRoles"
-        Effect   = "Allow"
-        Action   = ["iam:PassRole"]
-        Resource = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/pipelineguard-ecs-*-${var.environment}"]
       }
     ]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_stage" {
+  for_each = local.codebuild_stage_statements
+  # checkov:skip=CKV_AWS_355:Only ECR authorization, AZ discovery and DescribeTaskDefinition require wildcard resources; write actions are scoped.
+  name = "${local.name_prefix}-codebuild-${replace(each.key, "_", "-")}-stage"
+  role = aws_iam_role.codebuild_stage[each.key].id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = each.value
   })
 }
 
@@ -327,7 +399,7 @@ resource "aws_codebuild_project" "test" {
 resource "aws_codebuild_project" "build" {
   # checkov:skip=CKV_AWS_316:Privileged mode is required to run `docker build` for the app image.
   name           = "${local.name_prefix}-build"
-  service_role   = aws_iam_role.codebuild.arn
+  service_role   = aws_iam_role.codebuild_stage["build"].arn
   encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
@@ -360,7 +432,7 @@ resource "aws_codebuild_project" "build" {
 
 resource "aws_codebuild_project" "tf_plan" {
   name           = "${local.name_prefix}-tf-plan"
-  service_role   = aws_iam_role.codebuild.arn
+  service_role   = aws_iam_role.codebuild_stage["tf_plan"].arn
   encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
@@ -393,7 +465,7 @@ resource "aws_codebuild_project" "tf_plan" {
 
 resource "aws_codebuild_project" "cost_gate" {
   name           = "${local.name_prefix}-cost-gate"
-  service_role   = aws_iam_role.codebuild.arn
+  service_role   = aws_iam_role.codebuild_stage["cost_gate"].arn
   encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
@@ -429,7 +501,7 @@ resource "aws_codebuild_project" "cost_gate" {
 
 resource "aws_codebuild_project" "security_gate" {
   name           = "${local.name_prefix}-security-gate"
-  service_role   = aws_iam_role.codebuild.arn
+  service_role   = aws_iam_role.codebuild_stage["security_gate"].arn
   encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }
@@ -465,7 +537,7 @@ resource "aws_codebuild_project" "security_gate" {
 
 resource "aws_codebuild_project" "deploy" {
   name           = "${local.name_prefix}-deploy"
-  service_role   = aws_iam_role.codebuild.arn
+  service_role   = aws_iam_role.codebuild_stage["deploy"].arn
   encryption_key = var.kms_key_arn # CKV_AWS_147
 
   artifacts { type = "CODEPIPELINE" }

@@ -45,6 +45,9 @@ jobs:
             terraform -chdir="$dir" validate
           done
 
+      - name: Pipeline IAM regressions (mock provider; no AWS calls)
+        run: terraform -chdir=infra/layer2_ephemeral test -filter=tests/pipeline_iam.tftest.hcl
+
       - uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: v0.64.0

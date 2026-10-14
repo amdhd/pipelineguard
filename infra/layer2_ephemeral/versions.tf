@@ -2,7 +2,7 @@
 # its own backend object, separate from layer1, so a demo-down can never touch
 # the QA core.
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.10, < 2.0"
 
   required_providers {
     aws = {

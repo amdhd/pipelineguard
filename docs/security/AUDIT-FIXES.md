@@ -70,7 +70,7 @@ The Terraform regression uses a mock AWS provider and dummy account/resources;
 its virtual apply never contacts AWS. It checks the rendered IAM documents and
 project attachments for denied pre-gate deployment, denied layer1 state writes,
 exact layer2 writes/locks, scoped ECR/ECS writes, task-role passing and retained
-encrypted artifact/remote-state access. It runs in CI with Terraform 1.7.5.
+encrypted artifact/remote-state access. It runs in CI with Terraform 1.15.8.
 These assertions are local policy evidence, not an observation of live IAM,
 bucket policies, permission boundaries or organization SCPs.
 Negative controls in the scratch copy deliberately added ECS authority to Test
@@ -90,12 +90,11 @@ changed. Terraform jobs assume an existing default-workspace layer2 state:
 initial stack provisioning, IAM/infrastructure changes and state recovery belong
 to an operator, not these constrained pipeline roles.
 
-There is a separate existing toolchain mismatch: the Plan and Deploy buildspecs
-install Terraform 1.7.5, while their configured S3 backend uses `use_lockfile`.
+The toolchain mismatch is resolved: Plan, Deploy and CI now pin Terraform
+1.15.8, and both roots require `>= 1.10, < 2.0` to support `use_lockfile`.
 S3 native locking was added in [Terraform 1.10](https://github.com/hashicorp/terraform/blob/v1.10.0/CHANGELOG.md).
-Those buildspec pins need a separate update before backend initialization can
-use the lock configuration. The mock regression intentionally bypasses the
-backend and therefore does not validate backend initialization or a live deploy.
+The mock regression intentionally bypasses the backend and therefore does not
+validate backend initialization or a live deploy.
 
 The current single-operator/main-admitted-code trust model makes this IAM work
 hardening; no lower-trust contributor exposure has been established.

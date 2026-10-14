@@ -1,7 +1,7 @@
 # LAYER 1 (persistent QA core) — always-up root. State lives in its own backend
 # object so demo teardown (layer2) can never touch it by accident.
 terraform {
-  required_version = ">= 1.7"
+  required_version = ">= 1.10, < 2.0"
 
   required_providers {
     aws = {

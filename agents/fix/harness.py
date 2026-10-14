@@ -29,8 +29,10 @@ import argparse
 import importlib.util
 import json
 import logging
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -161,7 +163,16 @@ def _write_origin_sidecar(
         "applied_fingerprints": applied_fingerprints,
     }
     path = root / "qa-fix-origin.json"
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    # Replace the leaf itself: opening it for writing would follow a symlink
+    # supplied by the checkout, even on a dry run that applied no model edits.
+    fd, temporary = tempfile.mkstemp(dir=root, prefix=".qa-fix-origin-")
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(json.dumps(payload, indent=2) + "\n")
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return path
 
 

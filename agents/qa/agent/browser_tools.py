@@ -16,7 +16,8 @@ import logging
 import os
 
 import candidates
-from cdp import CDPError, CDPSession
+import rubric
+from cdp import CDPError, CDPSession, ReadOnlyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -356,9 +357,11 @@ class BrowserSession:
     the class of bug this project exists to catch.
     """
 
-    def __init__(self, base_url: str, screenshot_sink, max_routes: int | None = None):
+    def __init__(self, base_url: str, screenshot_sink, max_routes: int | None = None,
+                 *, email: str = "", password: str = ""):
         self.base_url = base_url.rstrip("/")
         self._sink = screenshot_sink
+        self._request_policy = ReadOnlyPolicy(self.base_url, email, password, rubric.ALL_ROUTES)
         self.cdp: CDPSession | None = None
         self.screenshots: list[dict] = []
         # The explore-cap is a COST CONTROL, so it is enforced here rather than
@@ -379,10 +382,19 @@ class BrowserSession:
     def attach(self, ws_url: str, headers: dict) -> None:
         self.cdp = CDPSession(ws_url, headers)
         self.cdp.attach_to_page()
+        try:
+            self.cdp.enforce_read_only(self._request_policy)
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         if self.cdp is not None:
             self.cdp.close()
+
+    @property
+    def safety_error(self) -> str | None:
+        return self.cdp._guard_error if self.cdp is not None else None
 
     @property
     def settle_timeouts(self) -> int:
@@ -505,6 +517,8 @@ class BrowserSession:
     def navigate(self, path: str) -> dict:
         if not path.startswith("/"):
             return {"error": f"path must start with '/', got {path!r}"}
+        if path not in rubric.ALL_ROUTES:
+            return {"error": "route is outside the read-only QA scope"}
 
         # /login and /register do not count -- reaching the app requires them,
         # and charging them to the budget would silently cost two of the routes

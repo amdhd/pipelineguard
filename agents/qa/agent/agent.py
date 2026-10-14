@@ -977,7 +977,8 @@ def run_qa(payload: dict) -> dict:
     findings: dict = {}
     messages: list[dict] = []
     session = browser_tools.BrowserSession(
-        base_url, _screenshot_sink(session_id), max_routes=max_routes
+        base_url, _screenshot_sink(session_id), max_routes=max_routes,
+        email=email, password=password,
     )
 
     with browser_session(region=REGION) as client:
@@ -1000,6 +1001,9 @@ def run_qa(payload: dict) -> dict:
             )
 
             while True:
+                if session.safety_error:
+                    stop_reason = session.safety_error
+                    break
                 reason = budget.exhausted()
                 if reason:
                     stop_reason = reason

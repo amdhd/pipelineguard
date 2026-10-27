@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_TAG="${1:-pipelineguard-app:local}"
 
 echo "==> Building app image ${IMAGE_TAG}..."
-docker build -t "${IMAGE_TAG}" "${ROOT}/app"
+docker build --pull --no-cache -t "${IMAGE_TAG}" "${ROOT}/app"
 
 echo
 echo "==> Trivy: container CVE scan (HIGH/CRITICAL only)"

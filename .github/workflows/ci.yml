@@ -164,6 +164,34 @@ jobs:
       - name: npm audit (high+)
         run: npm audit --omit=dev --audit-level=high --prefix app
 
+  app-image:
+    name: App image (build · runtime · health)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with fresh base images
+        run: docker build --pull --no-cache -t pipelineguard-app:ci app
+      - name: Verify patched Node 24 runtime
+        run: |
+          docker run --rm --entrypoint node pipelineguard-app:ci -e '
+            const [major, minor, patch] = process.versions.node.split(".").map(Number);
+            console.log(`Image Node.js: ${process.versions.node}`);
+            if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) process.exit(1);
+          '
+      - name: Verify image health
+        run: |
+          docker run -d --name pipelineguard-app-ci pipelineguard-app:ci
+          trap 'docker logs pipelineguard-app-ci; docker rm -f pipelineguard-app-ci' EXIT
+          for attempt in $(seq 1 30); do
+            echo "Health check attempt $attempt"
+            status=$(docker inspect --format '{{.State.Health.Status}}' pipelineguard-app-ci)
+            if [ "$status" = healthy ]; then exit 0; fi
+            if [ "$status" = unhealthy ]; then exit 1; fi
+            sleep 2
+          done
+          exit 1
+
   workflow-script-lint:
     name: Workflows + scripts (actionlint · shellcheck)
     runs-on: ubuntu-latest

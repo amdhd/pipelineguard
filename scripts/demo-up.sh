@@ -41,7 +41,7 @@ aws ecr get-login-password --region "${REGION}" \
 # Apple Silicon, where a plain `docker build` would produce an arm64 image).
 docker buildx inspect pg-builder >/dev/null 2>&1 \
   || docker buildx create --name pg-builder --driver docker-container >/dev/null
-docker buildx build --builder pg-builder --platform linux/amd64 \
+docker buildx build --builder pg-builder --platform linux/amd64 --pull --no-cache \
   -t "${ECR_URL}:latest" \
   --push \
   "${ROOT}/app"

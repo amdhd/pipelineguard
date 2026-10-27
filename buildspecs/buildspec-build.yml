@@ -19,7 +19,13 @@ phases:
     commands:
       - echo "Building Docker image..."
       - cd app
-      - docker build -t $ECR_REPO_URL:$IMAGE_TAG .
+      - docker build --pull --no-cache -t $ECR_REPO_URL:$IMAGE_TAG .
+      - |
+        docker run --rm --entrypoint node "$ECR_REPO_URL:$IMAGE_TAG" -e '
+          const [major, minor, patch] = process.versions.node.split(".").map(Number);
+          console.log(`Built image Node.js: ${process.versions.node}`);
+          if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) process.exit(1);
+        '
       - cd ..
 
   post_build:

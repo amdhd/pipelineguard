@@ -18,8 +18,8 @@ aws --version  # should be 2.x
 # Docker (for building the app image locally to test)
 brew install --cask docker
 
-# Node.js 20 (for the sample app)
-brew install node@20
+# Node.js 24.22.1+ within the 24.x line (for the sample app)
+brew install node@24
 
 # Infracost CLI (for local cost gate testing)
 brew install infracost

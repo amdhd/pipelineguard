@@ -25,7 +25,12 @@
 # out of that deployed zip, not off PyPI -- so pinning changes nothing that runs
 # today. Moving either is a deliberate edit here, packaged and re-measured, not
 # a side effect of the calendar.
-bedrock-agentcore==1.23.1
+#
+# EXCEPTION, until re-measured: bedrock-agentcore 1.25.4 (from 1.23.1, with
+# boto3/botocore 1.43.87 -> 1.44.0 forced in requirements.lock) is pinned here
+# but NOT yet packaged or deployed. Merging it ships nothing -- run the CLAUDE.md
+# rule 5 sequence, then this note goes away.
+bedrock-agentcore==1.25.4
 websocket-client==1.9.2
 
 # Transitives are locked, but NOT here -- they live in requirements.lock, the

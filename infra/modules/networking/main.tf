@@ -1,8 +1,17 @@
 # VPC with 2 public + 2 private subnets across 2 AZs.
 # Single NAT Gateway (cost-conscious for a portfolio; prod would use one per AZ).
 
+# Allowlisted by zone ID, not just state, so the set cannot silently grow when
+# AWS adds an AZ (CKV_AWS_394). Zone IDs name the same physical AZ in every
+# account (names like ap-southeast-1a are shuffled per account). In this account
+# these two are ap-southeast-1a/1b -- the same pair names[0..1] already picked.
 data "aws_availability_zones" "available" {
   state = "available"
+
+  filter {
+    name   = "zone-id"
+    values = ["apse1-az1", "apse1-az2"]
+  }
 }
 
 resource "aws_vpc" "main" {
